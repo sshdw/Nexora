@@ -27,6 +27,7 @@ import type { Icon, IconProps } from "@phosphor-icons/react";
 import {
   ActivityIcon as PhosphorActivity,
   Archive,
+  ArrowDown,
   ArrowUp,
   BookOpen,
   BoxArrowUp,
@@ -105,6 +106,7 @@ export const PlusIcon = uiIcon(Plus, "PlusIcon");
 export const SearchIcon = uiIcon(MagnifyingGlass, "SearchIcon");
 export const ChevronDownIcon = uiIcon(CaretDown, "ChevronDownIcon");
 export const ArrowUpIcon = uiIcon(ArrowUp, "ArrowUpIcon");
+export const ArrowDownIcon = uiIcon(ArrowDown, "ArrowDownIcon");
 export const PaperclipIcon = uiIcon(Paperclip, "PaperclipIcon");
 export const CloseIcon = uiIcon(X, "CloseIcon");
 export const SettingsIcon = uiIcon(GearSix, "SettingsIcon");

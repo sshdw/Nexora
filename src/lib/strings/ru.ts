@@ -1520,6 +1520,31 @@ export const ru: Record<StringKey, string> = {
   "agent.checkpointHideDiff": "Скрыть дифф",
   "agent.checkpointNoDiff": "Предпросмотр диффа для этого файла не записан.",
 
+  "agent.questionTitle": "Уточняющий вопрос",
+  "agent.questionMultiHint": "Выберите один или несколько вариантов",
+  "agent.questionSingleHint": "Выберите один вариант",
+  "agent.questionFreeTextLabel": "Свой вариант или комментарий",
+  "agent.questionFreeTextPlaceholder": "Введите ответ…",
+  "agent.questionSubmit": "Отправить ответ",
+  "agent.questionSubmitting": "Отправка…",
+  "agent.questionValidationEmpty": "Выберите вариант или введите ответ перед отправкой.",
+
+  "composer.clarifyNow": "Уточнить сейчас",
+  "composer.clarifySent": "Уточнение отправлено в активный запуск.",
+  "composer.queuePrompt": "В очередь",
+  "composer.livePlaceholder": "Добавить уточнение или поставить следующую задачу в очередь…",
+
+  "queue.title": "Очередь задач",
+  "queue.count": "В очереди: {count}",
+  "queue.pausedBanner": "Очередь приостановлена — прошлый запуск не завершился успешно.",
+  "queue.runNext": "Запустить следующую",
+  "queue.moveUp": "Выше",
+  "queue.moveDown": "Ниже",
+  "queue.edit": "Изменить",
+  "queue.save": "Сохранить",
+  "queue.cancelEdit": "Отмена",
+  "queue.remove": "Удалить",
+
   "docs.newTitle": "Что изменилось в 2.0",
   "docs.newProfilesT": "Папки проекта .nexora/",
   "docs.newProfilesB":

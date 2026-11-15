@@ -138,7 +138,15 @@ export type GovernanceEventPayload =
       type: "stream_delta";
       kind: "text" | "thinking" | "tool_call";
       delta: string;
-    };
+    }
+  | { type: "question_requested"; question: PendingQuestionView }
+  | {
+      type: "question_resolved";
+      question_id: number;
+      call_id: string;
+      status: string;
+    }
+  | { type: "steering_injected"; content: string };
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =
@@ -341,11 +349,61 @@ export interface PendingApprovalView {
  * vocabulary; `pending_approval` is non-null only when the backend gate really
  * holds an unresolved park — it is never inferred from `status === "running"`.
  */
+/** Live snapshot of a parked `ask_user_question` prompt (Stage 6 PR 6A). */
+export interface PendingQuestionView {
+  question_id: number;
+  run_id: number;
+  conversation_id: number;
+  call_id: string;
+  question: string;
+  options: string[];
+  multi_select: boolean;
+  allow_free_text: boolean;
+  created_at: number;
+}
+
+/** Persisted row from `run_questions` (Stage 6 PR 6A). */
+export interface RunQuestion {
+  id: number;
+  run_id: number;
+  conversation_id: number;
+  call_id: string;
+  question: string;
+  options: string[];
+  multi_select: boolean;
+  allow_free_text: boolean;
+  status: "pending" | "answered" | "cancelled";
+  selected_options: string[];
+  free_text: string | null;
+  created_at: number;
+  answered_at: number | null;
+}
+
+/** Persisted row from `work_queue_items` (Stage 6 PR 6A). */
+export interface WorkQueueItem {
+  id: number;
+  conversation_id: number;
+  content: string;
+  provider: string;
+  model: string;
+  effort: string | null;
+  position: number;
+  status: "queued" | "running" | "done" | "cancelled";
+  created_at: number;
+  updated_at: number;
+}
+
 export interface LiveRunState {
   run_id: number;
   status: string;
-  parked_reason: "none" | "paused" | "awaiting_approval" | "awaiting_budget";
+  parked_reason:
+    | "none"
+    | "paused"
+    | "awaiting_approval"
+    | "awaiting_budget"
+    | "awaiting_question";
   pending_approval: PendingApprovalView | null;
+  pending_question: PendingQuestionView | null;
   started_at: number | null;
   finished_at: number | null;
   current_step_seq: number | null;
@@ -588,5 +646,85 @@ export function listConversationRunEvents(
     conversationId,
     afterEventId,
     limit,
+  });
+}
+
+/** List all persisted clarifying questions (`ask_user_question`) for a conversation. */
+export function listRunQuestions(conversationId: number): Promise<RunQuestion[]> {
+  return invoke<RunQuestion[]>("list_run_questions", { conversationId });
+}
+
+/** Submit the user's answer to a pending `ask_user_question` prompt. */
+export function answerRunQuestion(
+  runId: number,
+  questionId: number,
+  selectedOptions: string[],
+  freeText?: string
+): Promise<RunQuestion> {
+  return invoke<RunQuestion>("answer_run_question", {
+    runId,
+    questionId,
+    selectedOptions,
+    freeText: freeText ?? null,
+  });
+}
+
+/** Enqueue a live `Clarify now` steering message onto an active agent run. */
+export function clarifyAgentRun(runId: number, content: string): Promise<void> {
+  return invoke<void>("clarify_agent_run", { runId, content });
+}
+
+/** Append a prompt to the persistent FIFO work queue for a conversation. */
+export function enqueueWorkItem(
+  conversationId: number,
+  content: string,
+  provider: string,
+  model: string,
+  effort?: string | null
+): Promise<WorkQueueItem> {
+  return invoke<WorkQueueItem>("enqueue_work_item", {
+    conversationId,
+    content,
+    provider,
+    model,
+    effort: effort ?? null,
+  });
+}
+
+/** List currently queued FIFO work items for a conversation. */
+export function listWorkQueue(conversationId: number): Promise<WorkQueueItem[]> {
+  return invoke<WorkQueueItem[]>("list_work_queue", { conversationId });
+}
+
+/** Update the prompt text of a queued work item. */
+export function updateWorkQueueItem(
+  itemId: number,
+  content: string
+): Promise<WorkQueueItem> {
+  return invoke<WorkQueueItem>("update_work_queue_item", { itemId, content });
+}
+
+/** Reorder queued items for a conversation to match `orderedIds`. */
+export function reorderWorkQueue(
+  conversationId: number,
+  orderedIds: number[]
+): Promise<WorkQueueItem[]> {
+  return invoke<WorkQueueItem[]>("reorder_work_queue", {
+    conversationId,
+    orderedIds,
+  });
+}
+
+/** Cancel (remove) a queued work item. */
+export function cancelWorkQueueItem(itemId: number): Promise<void> {
+  return invoke<void>("cancel_work_queue_item", { itemId });
+}
+
+/** Manually claim and start the next queued work item in `conversationId`. */
+export function runNextWorkItem(
+  conversationId: number
+): Promise<{ run_id: number } | null> {
+  return invoke<{ run_id: number } | null>("run_next_work_item", {
+    conversationId,
   });
 }

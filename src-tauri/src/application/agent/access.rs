@@ -271,7 +271,7 @@ impl AccessContext {
         self.profile() != AccessProfile::ReadOnly
             || matches!(
                 call.name.as_str(),
-                "read_file" | "list_directory" | "search_files"
+                "read_file" | "list_directory" | "search_files" | "ask_user_question"
             )
     }
     /// Includes exact arguments as well as canonical target: changing content,

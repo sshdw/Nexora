@@ -1587,6 +1587,31 @@ export const en = {
   "agent.checkpointHideDiff": "Hide diff",
   "agent.checkpointNoDiff": "No diff preview recorded for this file.",
 
+  "agent.questionTitle": "Clarifying question",
+  "agent.questionMultiHint": "Select one or more options",
+  "agent.questionSingleHint": "Select one option",
+  "agent.questionFreeTextLabel": "Additional details",
+  "agent.questionFreeTextPlaceholder": "Type your response…",
+  "agent.questionSubmit": "Submit answer",
+  "agent.questionSubmitting": "Submitting…",
+  "agent.questionValidationEmpty": "Select an option or enter a response before submitting.",
+
+  "composer.clarifyNow": "Clarify now",
+  "composer.clarifySent": "Clarification sent to the active run.",
+  "composer.queuePrompt": "Queue",
+  "composer.livePlaceholder": "Add a clarification or queue the next task…",
+
+  "queue.title": "Queued follow-ups",
+  "queue.count": "{count} queued",
+  "queue.pausedBanner": "Queue paused — previous run did not complete. Resume when ready.",
+  "queue.runNext": "Run next",
+  "queue.moveUp": "Move up",
+  "queue.moveDown": "Move down",
+  "queue.edit": "Edit",
+  "queue.save": "Save",
+  "queue.cancelEdit": "Cancel",
+  "queue.remove": "Remove",
+
   "docs.newTitle": "What changed in 2.0",
   "docs.newProfilesT": ".nexora/ project folders",
   "docs.newProfilesB":

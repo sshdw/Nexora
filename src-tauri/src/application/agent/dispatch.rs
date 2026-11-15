@@ -13,6 +13,7 @@ use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOut
 use crate::application::agent::injection;
 use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore, RunPreset};
 use crate::application::agent::persistence::{ActiveRunRecord, StepProvenance};
+use crate::application::agent::question::{AskQuestionArgs, QuestionRunContext, QuestionWaitEnd};
 use crate::application::agent::roles::AgentRole;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{AiMessage, AiRole, ToolCall};
@@ -72,6 +73,8 @@ pub(crate) struct DispatchCtx<'a> {
     pub checkpoints: Option<&'a CheckpointRunContext>,
     /// Zero-based turn index within the current run (`0, 1, ...`).
     pub turn_index: usize,
+    /// Optional interactive question context for `ask_user_question`.
+    pub question_ctx: Option<&'a QuestionRunContext>,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -319,6 +322,9 @@ fn dispatch_one(
             return Ok(());
         }
     }
+    if call.name == "ask_user_question" {
+        return dispatch_ask_user_question(ctx, call, messages, record);
+    }
     let request_path = permissions::extract_path(&call.name, &call.arguments);
     let fallback = permissions::group_key(ctx.preset.as_str(), &call.name, request_path.as_deref());
     let call_group_key = ctx
@@ -407,6 +413,89 @@ fn dispatch_one(
     }
     execute_tool_call(ctx, call, messages, record, &call_group_key);
     Ok(())
+}
+
+fn dispatch_ask_user_question(
+    ctx: &DispatchCtx<'_>,
+    call: &ToolCall,
+    messages: &mut Vec<AiMessage>,
+    record: &mut Option<&mut ActiveRunRecord<'_>>,
+) -> Result<(), AgentError> {
+    let args = match AskQuestionArgs::parse(&call.arguments) {
+        Ok(parsed) => parsed,
+        Err(msg) => {
+            let observation = super::tools::ToolError::InvalidArguments(msg).to_string();
+            messages.push(observation_message(ctx, call, &observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    &observation,
+                    "failed",
+                    None,
+                    StepProvenance::system(),
+                );
+            }
+            return Ok(());
+        }
+    };
+    let Some(qctx) = ctx.question_ctx else {
+        let observation =
+            "Error: ask_user_question requires an active interactive run context".to_string();
+        messages.push(observation_message(ctx, call, &observation));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                &observation,
+                "failed",
+                None,
+                StepProvenance::system(),
+            );
+        }
+        return Ok(());
+    };
+    match qctx.gate.ask_and_wait(
+        &qctx.db,
+        qctx.run_id,
+        qctx.conversation_id,
+        &call.id,
+        &args,
+        ctx.sender,
+    ) {
+        Ok(answer) => {
+            let observation = serde_json::to_string(&answer)
+                .unwrap_or_else(|_| "{\"selected_options\":[],\"free_text\":null}".to_string());
+            messages.push(observation_message(ctx, call, &observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    &observation,
+                    "succeeded",
+                    None,
+                    StepProvenance::user(None),
+                );
+            }
+            Ok(())
+        }
+        Err(QuestionWaitEnd::Cancelled) => {
+            observe_transition(RunState::Running, RunState::Cancelled);
+            emit(ctx.sender, AgentRunEvent::Cancelled);
+            Err(AgentError::Cancelled)
+        }
+        Err(QuestionWaitEnd::Database(msg)) => {
+            let observation = format!("Error: failed to persist question: {msg}");
+            messages.push(observation_message(ctx, call, &observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    &observation,
+                    "failed",
+                    None,
+                    StepProvenance::system(),
+                );
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Continue dispatch after the permission store (NEX-AGENT-012): park

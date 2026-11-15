@@ -2005,4 +2005,32 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
     ).toBeInTheDocument();
     expect(field).toHaveFocus();
   });
+
+  it("renders Clarify now and Queue buttons while a run is live without breaking Stop", () => {
+    const onStop = vi.fn();
+    const onClarifyNow = vi.fn();
+    const onQueuePrompt = vi.fn();
+    renderComposer({
+      agentMode: true,
+      ready: true,
+      liveRunId: 42,
+      draft: "Focus on unit tests",
+      onStop,
+      onClarifyNow,
+      onQueuePrompt,
+    });
+
+    const clarifyBtn = screen.getByRole("button", { name: "Clarify now" });
+    const queueBtn = screen.getByRole("button", { name: "Queue" });
+    const stopBtn = screen.getByRole("button", { name: "Stop agent run" });
+
+    fireEvent.click(clarifyBtn);
+    expect(onClarifyNow).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(queueBtn);
+    expect(onQueuePrompt).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(stopBtn);
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
 });

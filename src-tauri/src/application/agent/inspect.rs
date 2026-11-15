@@ -65,6 +65,7 @@ use super::approval::PendingApprovalSnapshot;
 use super::governance::{AuditEntry, AuditLog, RunBudget};
 use super::lifecycle::RunState;
 use super::pipeline::Pipeline;
+use super::question::PendingQuestionSnapshot;
 use super::registry::AgentRunRegistry;
 use super::self_audit::SelfAuditReport;
 use super::snapshots::SnapshotStore;
@@ -197,6 +198,8 @@ pub(crate) struct LiveRunState {
     pub parked_reason: &'static str,
     /// The unresolved parked approval, if any.
     pub pending_approval: Option<PendingApprovalSnapshot>,
+    /// The unresolved parked clarifying question, if any.
+    pub pending_question: Option<PendingQuestionSnapshot>,
     /// Start timestamp, Unix seconds (`None` when no row is readable).
     pub started_at: Option<i64>,
     /// Termination timestamp, Unix seconds (`None` while active).
@@ -430,14 +433,15 @@ pub(crate) fn live_run_state(
     let persisted = super::service::list_runs_for_conversation(db, conversation_id)?;
     let live = registry.live_run_snapshot(conversation_id);
 
-    let (run_id, parked_reason, pending_approval) = match live.as_ref() {
+    let (run_id, parked_reason, pending_approval, pending_question) = match live.as_ref() {
         Some(snapshot) => (
             snapshot.run_id,
             snapshot.parked_reason,
             snapshot.pending_approval.clone(),
+            snapshot.pending_question.clone(),
         ),
         None => match persisted.first() {
-            Some(run) => (run.id, "none", None),
+            Some(run) => (run.id, "none", None, None),
             // No active run and nothing persisted: report nothing rather than
             // fabricating a state the backend cannot substantiate.
             None => return Ok(None),
@@ -473,6 +477,7 @@ pub(crate) fn live_run_state(
         status,
         parked_reason,
         pending_approval,
+        pending_question,
         started_at: row.map(|run| run.started_at),
         finished_at: row.and_then(|run| run.finished_at),
         current_step_seq,
@@ -1062,6 +1067,7 @@ mod tests {
                     },
                 ),
             }),
+            pending_question: None,
             started_at: Some(1_699_999_000),
             finished_at: None,
             current_step_seq: Some(4),
@@ -1073,6 +1079,7 @@ mod tests {
             "status",
             "parked_reason",
             "pending_approval",
+            "pending_question",
             "started_at",
             "finished_at",
             "current_step_seq",

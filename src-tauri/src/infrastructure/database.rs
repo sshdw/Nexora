@@ -79,8 +79,10 @@ mod tests {
             "permission_rules",
             "prompts",
             "providers",
+            "run_questions",
             "task_locks",
             "usage_ledger",
+            "work_queue_items",
         ] {
             assert!(
                 schema_object_exists(&conn, table, "table"),
@@ -112,8 +114,11 @@ mod tests {
             "idx_file_checkpoints_run_turn",
             "idx_messages_conversation_created",
             "idx_providers_name",
+            "idx_run_questions_conv_status",
+            "idx_run_questions_run_status",
             "idx_task_locks_expires",
             "idx_usage_ledger_day",
+            "idx_work_queue_conv_status_pos",
         ] {
             assert!(
                 schema_object_exists(&conn, index, "index"),
@@ -148,7 +153,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
     }
 
@@ -158,7 +163,7 @@ mod tests {
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
 
         let applied_at: i64 = conn
@@ -173,7 +178,7 @@ mod tests {
         let version_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |row| row.get(0))
             .expect("count schema_version rows");
-        assert_eq!(version_count, 17, "one row per applied migration");
+        assert_eq!(version_count, 18, "one row per applied migration");
     }
 
     #[test]
@@ -198,14 +203,14 @@ mod tests {
         let mut conn = in_memory_migrated();
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
 
         migrate(&mut conn).expect("a second migration run must succeed");
 
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         // The no-op run created or dropped nothing.
         assert!(schema_object_exists(&conn, "conversations", "table"));
@@ -398,7 +403,7 @@ mod tests {
         );
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
     }
 
@@ -1011,7 +1016,7 @@ mod tests {
         // Schema version covers every known migration (v5 plus later ones)
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         // Row preserved, new columns NULL for pre-v5 rows
         let (status, spent, limit): (String, Option<i64>, Option<i64>) = conn
@@ -1104,7 +1109,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v6");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         // Seeded row survives with a NULL workspace root.
         let root: Option<String> = conn
@@ -1182,7 +1187,7 @@ mod tests {
         migrate(&mut conn).expect("migrate to v7");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         // Old rows intact with NULL provenance.
         let (kind, rule_id, group_key, decided_by): (
@@ -1431,7 +1436,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         let fk_on: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -1617,7 +1622,7 @@ mod tests {
         );
         assert_eq!(rows(&conn, old_runs), runs_before);
         migrate(&mut conn).expect("v15 and later production migrations");
-        assert_eq!(schema_version_rows(&conn), (1..=17).collect::<Vec<_>>());
+        assert_eq!(schema_version_rows(&conn), (1..=18).collect::<Vec<_>>());
         assert_eq!(rows(&conn, old_runs), runs_before);
         assert_eq!(
             rows(&conn, "SELECT * FROM agent_steps ORDER BY id"),
@@ -1694,7 +1699,7 @@ mod tests {
         let conn = db.lock().expect("lock connection");
         assert_eq!(
             schema_version_rows(&conn),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
         );
         // Pre-existing row survives with NULL usage (honest unknown).
         let (input, output): (Option<i64>, Option<i64>) = conn

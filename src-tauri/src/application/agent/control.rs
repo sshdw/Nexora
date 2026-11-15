@@ -25,8 +25,9 @@
 //! [`AgentRunEvent`] values are delivered through an optional
 //! `std::sync::mpsc::Sender` wired to the Tauri layer in Milestone 5.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, Weak};
 
 use serde::Serialize;
 
@@ -128,6 +129,18 @@ pub(crate) enum AgentRunEvent {
         /// Whether the user approved the call.
         approved: bool,
     },
+    /// A tool call (`ask_user_question`) parked the run awaiting a user answer.
+    QuestionRequested {
+        question: super::question::PendingQuestionSnapshot,
+    },
+    /// A parked question was answered or cancelled.
+    QuestionResolved {
+        question_id: i64,
+        call_id: String,
+        status: String,
+    },
+    /// A live `Clarify now` steering message was injected into the run before a model turn.
+    SteeringInjected { content: String },
     /// A user cancellation was observed; the run aborted with
     /// `AgentError::Cancelled`.
     Cancelled,
@@ -223,6 +236,14 @@ pub(crate) struct RunControl {
     /// task loop's terminal-wait) can observe the park without contending
     /// the governor mutex. Shared by all clones.
     budget_parked: Arc<AtomicBool>,
+    /// Auxiliary waiters (such as [`QuestionGate`](super::question::QuestionGate))
+    /// woken immediately when `cancel` or `shutdown` fires.
+    extra_signals: Arc<Mutex<Vec<Weak<Condvar>>>>,
+    /// FIFO queue of live `Clarify now` steering messages injected before the
+    /// next model turn.
+    steering_queue: Arc<Mutex<VecDeque<String>>>,
+    /// Per-run interactive question gate (`ask_user_question`).
+    question_gate: super::question::QuestionGate,
 }
 
 impl Default for RunControl {
@@ -234,12 +255,67 @@ impl Default for RunControl {
 impl RunControl {
     /// Create a fresh control: running, budget-neutral, not cancelled.
     pub(crate) fn new() -> Self {
+        let token = CancellationToken::new();
+        let question_gate = super::question::QuestionGate::with_token(token.clone());
         Self {
-            token: CancellationToken::new(),
+            token,
             state: Arc::new(Mutex::new(GovernorState::default())),
             signal: Arc::new(Condvar::new()),
             budget_parked: Arc::new(AtomicBool::new(false)),
+            extra_signals: Arc::new(Mutex::new(Vec::new())),
+            steering_queue: Arc::new(Mutex::new(VecDeque::new())),
+            question_gate,
         }
+    }
+
+    /// Shared per-run [`QuestionGate`](super::question::QuestionGate).
+    #[must_use]
+    pub(crate) fn question_gate(&self) -> &super::question::QuestionGate {
+        &self.question_gate
+    }
+
+    /// Register an external [`Condvar`] to be notified on `cancel` / `shutdown`.
+    pub(crate) fn register_waiter(&self, waiter: Weak<Condvar>) {
+        let mut guard = self
+            .extra_signals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.retain(|w| w.strong_count() > 0);
+        guard.push(waiter);
+    }
+
+    fn notify_extra_waiters(&self) {
+        let mut guard = self
+            .extra_signals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.retain(|w| {
+            if let Some(condvar) = w.upgrade() {
+                condvar.notify_all();
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    /// Enqueue a live `Clarify now` steering message for injection before the
+    /// next model turn.
+    pub(crate) fn push_steering(&self, content: String) {
+        self.steering_queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push_back(content);
+    }
+
+    /// Drain all pending `Clarify now` steering messages in FIFO order.
+    #[must_use]
+    pub(crate) fn drain_steering(&self) -> Vec<String> {
+        let mut guard = self
+            .steering_queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.drain(..).collect()
     }
 
     /// Lock the shared state, recovering from poisoning (a panic in another
@@ -289,6 +365,8 @@ impl RunControl {
             self.token.cancel();
         }
         self.signal.notify_all();
+        self.question_gate.notify();
+        self.notify_extra_waiters();
     }
 
     /// Request cancellation by application shutdown (NEX-TASK-002). Wakes
@@ -302,6 +380,8 @@ impl RunControl {
             self.token.shutdown();
         }
         self.signal.notify_all();
+        self.question_gate.notify();
+        self.notify_extra_waiters();
     }
 
     /// Request a user pause. Takes effect at the runner's next step boundary;

@@ -1551,3 +1551,197 @@
   color: var(--muted-foreground);
   font-size: var(--type-size-body-small);
 }
+
+/* ---- Stage 6 PR 6A: Live actions, QuestionPanel, WorkQueueStrip ---- */
+
+.nex-composer-live-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+}
+
+.nex-composer-adjacent {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  padding: var(--space-xs) var(--space-md) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  font-family: var(--font-sans);
+}
+
+.nex-question-panel,
+.nex-queue-strip {
+  background: var(--card);
+  color: var(--foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-sm) var(--space-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.nex-question-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.nex-question-header,
+.nex-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.nex-question-badge,
+.nex-queue-title {
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--foreground);
+  letter-spacing: 0.02em;
+}
+
+.nex-question-hint,
+.nex-queue-count {
+  font-size: var(--type-size-label-small);
+  color: var(--muted-foreground);
+}
+
+.nex-queue-title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.nex-question-prompt {
+  margin: 0;
+  font-size: var(--type-size-body-medium);
+  color: var(--foreground);
+  line-height: 1.45;
+}
+
+.nex-question-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+  cursor: pointer;
+  font-size: var(--type-size-body-small);
+  transition: background-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-question-option:hover,
+.nex-question-option.is-selected {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border-color: var(--ring);
+}
+
+.nex-question-option-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.nex-question-freetext {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-question-freetext-label {
+  font-size: var(--type-size-label-small);
+  color: var(--muted-foreground);
+}
+
+.nex-question-textarea,
+.nex-queue-edit-input {
+  width: 100%;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--input);
+  border-radius: var(--radius-md);
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--type-size-body-small);
+  resize: vertical;
+}
+
+.nex-question-textarea:focus-visible,
+.nex-queue-edit-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.nex-question-error,
+.nex-queue-paused-banner {
+  margin: 0;
+  font-size: var(--type-size-body-small);
+  color: var(--destructive);
+}
+
+.nex-question-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.nex-queue-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-queue-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xxs) var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+}
+
+.nex-queue-index {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--muted-foreground);
+}
+
+.nex-queue-content {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--type-size-body-small);
+  color: var(--foreground);
+}
+
+.nex-queue-item-actions,
+.nex-queue-edit-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+}
+
+.nex-queue-edit-row {
+  flex: 1;
+  min-width: 0;
+}

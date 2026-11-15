@@ -46,6 +46,7 @@ use super::governance::{audit, AuditEvent, AuditLog};
 use super::lifecycle::{observe_transition, RunState};
 use super::permissions::RunPreset;
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
+use super::question::QuestionRunContext;
 use super::runner::AgentRunner;
 use crate::application::context_stats::context_limit_for;
 use crate::application::conversations::ConversationService;
@@ -55,6 +56,7 @@ use crate::application::execution::{
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
+use crate::infrastructure::repository::run_questions::RunQuestionRepository;
 
 // S3 split: the run registry lives in `super::registry`; re-exported here so
 // existing `service::{AgentRunRegistry, ActiveAgentRun, ResolveOutcome}`
@@ -298,6 +300,11 @@ pub(crate) trait AgentRunHost: Send + Sync + 'static {
     fn checkpoint_store(&self) -> Option<CheckpointStore> {
         None
     }
+
+    /// Invoked on the forwarder thread right after `RunFrame::Finished` is
+    /// emitted when `status == "completed"`, allowing the host to auto-advance
+    /// the conversation's FIFO work queue.
+    fn on_run_completed(&self, _conversation_id: i64, _registry: Arc<AgentRunRegistry>) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +890,7 @@ fn spawn_run(
     // runner is panic-free by design).
     let forward_db = db.clone();
     let forward_conversation_id = request.conversation_id;
+    let forward_registry = Arc::clone(&registry);
     let run_registry = Arc::clone(&registry);
     let run_host = Arc::clone(&host);
     let run_request = request;
@@ -891,6 +899,12 @@ fn spawn_run(
         .spawn(move || {
             // The recorder borrows this thread's sender clone; the runner owns
             // the recorder, so the borrow lives exactly as long as the loop.
+            let qctx = QuestionRunContext {
+                db: db.clone(),
+                run_id,
+                conversation_id: run_request.conversation_id,
+                gate: control.question_gate().clone(),
+            };
             let outcome = {
                 let tx_for_recorder = tx.clone();
                 let recorder = RunRecorder::new(&db)
@@ -927,6 +941,7 @@ fn spawn_run(
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_control(control)
                     .with_approval_gate(gate)
+                    .with_question_context(qctx)
                     .with_preset(preset)
                     .with_permission_store(permission_store)
                     .with_history(history)
@@ -998,6 +1013,7 @@ fn spawn_run(
             }
 
             let (status, final_content, error) = terminal_outcome(&outcome);
+            let _ = RunQuestionRepository::new(&db).cancel_pending_for_run(run_id);
             // Best-effort: if the send fails the run is already finished and
             // the terminal state is persisted on the `agent_runs` row.
             let _ = finish_tx.send(RunFinished {
@@ -1045,6 +1061,7 @@ fn spawn_run(
             // senders (and before releasing the registry entry), so it is
             // either buffered or in flight here — never lost.
             while let Ok(event) = finish_rx.recv() {
+                let completed = event.status == "completed";
                 notify_durable(
                     &forward_db,
                     forward_host.as_ref(),
@@ -1053,6 +1070,10 @@ fn spawn_run(
                     "terminal",
                 );
                 forward_host.emit(&RunFrame::Finished { run_id, event });
+                if completed {
+                    forward_host
+                        .on_run_completed(forward_conversation_id, Arc::clone(&forward_registry));
+                }
             }
         });
     let forward_handle = match forward_handle {
@@ -1070,6 +1091,38 @@ fn spawn_run(
     // NEX-TASK-002: retain both handles so orderly shutdown can join them.
     registry.track_threads(run_id, vec![run_handle, forward_handle]);
     Ok(())
+}
+
+/// Errors returned by [`clarify_run`].
+#[derive(Debug)]
+pub(crate) enum ClarifyRunError {
+    EmptyMessage,
+    RunNotActive,
+    Database(crate::infrastructure::database::DatabaseError),
+}
+
+/// Enqueue a live `Clarify now` steering message onto an active run and persist
+/// the user message into the owning conversation.
+pub(crate) fn clarify_run(
+    db: &Database,
+    registry: &AgentRunRegistry,
+    run_id: i64,
+    content: &str,
+) -> Result<i64, ClarifyRunError> {
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return Err(ClarifyRunError::EmptyMessage);
+    }
+    let Some(conversation_id) = registry.push_steering(run_id, trimmed.to_string()) else {
+        return Err(ClarifyRunError::RunNotActive);
+    };
+    if let Err(err) = ConversationService::new(db).persist_user_message(conversation_id, trimmed) {
+        log::warn!("clarify_run: failed to persist user message: {err}");
+        if let crate::application::conversations::ConversationError::Database(db_err) = err {
+            return Err(ClarifyRunError::Database(db_err));
+        }
+    }
+    Ok(conversation_id)
 }
 
 // ---------------------------------------------------------------------------

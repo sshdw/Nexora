@@ -428,6 +428,7 @@ pub(crate) const KNOWN_TOOL_NAMES: &[&str] = &[
     "execute_command",
     "edit_file",
     "search_files",
+    "ask_user_question",
 ];
 
 /// Whether a tool name is one of the six native tools (unknown tools never

@@ -39,15 +39,19 @@ use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::checkpoints::{self, CheckpointStore};
 use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect};
+use crate::application::agent::question::{self, QuestionResolveError};
 use crate::application::agent::service::{
-    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, RunFrame,
+    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, ClarifyRunError, RunFrame,
 };
 use crate::application::agent::spend::SpendDashboard;
+use crate::application::agent::work_queue::{self, WorkQueueError};
 use crate::application::conversations::ConversationService;
 use crate::application::execution::RequestExecutionService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::AgentRun;
 use crate::infrastructure::repository::file_checkpoints::FileCheckpoint;
+use crate::infrastructure::repository::run_questions::RunQuestion;
+use crate::infrastructure::repository::work_queue::{WorkQueueItem, WorkQueueRepository};
 
 use super::error::{CommandError, ErrorKind};
 
@@ -99,6 +103,134 @@ impl AgentRunHost for TauriAgentHost {
             .try_state::<CheckpointStore>()
             .map(|state| state.inner().clone())
     }
+
+    fn on_run_completed(&self, conversation_id: i64, registry: Arc<AgentRunRegistry>) {
+        advance_work_queue_on_completion(&self.app, &self.db, registry, conversation_id);
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct WorkQueueUpdatedPayload {
+    conversation_id: i64,
+}
+
+fn emit_work_queue_updated(app: &AppHandle, conversation_id: i64) {
+    if let Err(err) = app.emit(
+        "work-queue-updated",
+        WorkQueueUpdatedPayload { conversation_id },
+    ) {
+        log::warn!("work queue event emission failed: {err}");
+    }
+}
+
+struct ShellLaunchParams {
+    conversation_id: i64,
+    content: String,
+    provider: String,
+    model: String,
+    effort: Option<String>,
+}
+
+fn launch_run_from_shell(
+    app: &AppHandle,
+    db_ref: &Database,
+    registry_arc: Arc<AgentRunRegistry>,
+    params: ShellLaunchParams,
+) -> Result<i64, CommandError> {
+    let ShellLaunchParams {
+        conversation_id,
+        content,
+        provider,
+        model,
+        effort,
+    } = params;
+    if content.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "the user message must not be empty",
+        ));
+    }
+    if provider.trim().is_empty() || model.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "a provider and model are required",
+        ));
+    }
+    if let Some(raw_effort) = effort.as_deref() {
+        if let Some(parsed) = crate::application::execution::ReasoningEffort::parse(raw_effort) {
+            let _ = crate::application::settings::SettingsService::new(db_ref).write(
+                nexora_core::config::SELECTED_EFFORT_KEY,
+                Some(parsed.as_str()),
+            );
+        }
+    }
+
+    let credential = RequestExecutionService::new(db_ref)
+        .resolve_credential(&provider)
+        .map_err(CommandError::from)?;
+    let executor = RequestExecutionService::new(db_ref)
+        .resolve_executor_for(&provider)
+        .map_err(CommandError::from)?;
+
+    let root = workspace_root(app, db_ref)?;
+    let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(app.clone(), db_ref.clone()));
+    let mode = service::resolve_autonomy_mode_for_workspace(db_ref, Some(&root));
+    let preset = service::resolve_preset_for_workspace(db_ref, Some(&root));
+    let spend_limit_micro_usd = service::resolve_spend_limit_for_workspace(db_ref, Some(&root));
+
+    service::start_run(
+        db_ref,
+        registry_arc,
+        host,
+        executor,
+        root,
+        AgentRunRequest {
+            conversation_id,
+            user_request: content,
+            provider,
+            model,
+            credential,
+            max_iterations: None,
+            spend_limit_micro_usd,
+        },
+        mode,
+        preset,
+    )
+    .map_err(CommandError::from)
+}
+
+fn advance_work_queue_on_completion(
+    app: &AppHandle,
+    db: &Database,
+    registry: Arc<AgentRunRegistry>,
+    conversation_id: i64,
+) {
+    let repo = WorkQueueRepository::new(db);
+    let Ok(Some(item)) = repo.claim_next_queued(conversation_id) else {
+        return;
+    };
+    match launch_run_from_shell(
+        app,
+        db,
+        registry,
+        ShellLaunchParams {
+            conversation_id,
+            content: item.content,
+            provider: item.provider,
+            model: item.model,
+            effort: item.effort,
+        },
+    ) {
+        Ok(_) => {
+            let _ = repo.finish_claimed(item.id, true);
+        }
+        Err(err) => {
+            log::warn!("work queue auto-advance failed to launch run: {err:?}");
+            let _ = repo.revert_claim(item.id);
+        }
+    }
+    emit_work_queue_updated(app, conversation_id);
 }
 
 impl TauriAgentHost {
@@ -182,56 +314,18 @@ pub(crate) async fn start_agent_run(
         let db = handle.state::<Database>();
         let registry = handle.state::<ManagedRegistry>();
         let db_client = db.inner().clone();
-        let db_ref = &db_client;
-        if let Some(raw_effort) = effort.as_deref() {
-            if let Some(parsed) = crate::application::execution::ReasoningEffort::parse(raw_effort)
-            {
-                let _ = crate::application::settings::SettingsService::new(db_ref).write(
-                    nexora_core::config::SELECTED_EFFORT_KEY,
-                    Some(parsed.as_str()),
-                );
-            }
-        }
-        // Materialize the registry handle before `handle` moves below.
         let registry_arc = Arc::clone(registry.inner());
-
-        // 1. Resolve the credential inside the backend (FR-014 path shared
-        //    with plain chat). The value lives only inside the run thread.
-        let credential = RequestExecutionService::new(db_ref)
-            .resolve_credential(&provider)
-            .map_err(CommandError::from)?;
-
-        // 2. Resolve the provider executor (no fallback; same registry &
-        //    validated `openai_compat` path plain chat uses).
-        let executor = RequestExecutionService::new(db_ref)
-            .resolve_executor_for(&provider)
-            .map_err(CommandError::from)?;
-
-        let root = workspace_root(&handle, db_ref)?;
-        let host: Arc<dyn AgentRunHost> = Arc::new(TauriAgentHost::new(handle, db_client.clone()));
-        // Resolve autonomy mode from Project (.nexora/) > Personal (SQLite) > Default.
-        let mode = service::resolve_autonomy_mode_for_workspace(db_ref, Some(&root));
-        // Resolve run preset from Project (.nexora/) > Personal (SQLite) > Default.
-        let preset = service::resolve_preset_for_workspace(db_ref, Some(&root));
-        let spend_limit_micro_usd = service::resolve_spend_limit_for_workspace(db_ref, Some(&root));
-
-        let run_id = service::start_run(
-            db_ref,
+        let run_id = launch_run_from_shell(
+            &handle,
+            &db_client,
             registry_arc,
-            host,
-            executor,
-            root,
-            AgentRunRequest {
+            ShellLaunchParams {
                 conversation_id,
-                user_request: content,
+                content,
                 provider,
                 model,
-                credential,
-                max_iterations: None,
-                spend_limit_micro_usd,
+                effort,
             },
-            mode,
-            preset,
         )?;
         Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse { run_id })
     })
@@ -803,6 +897,207 @@ pub(crate) fn revert_turn_checkpoints(
         force.unwrap_or(false),
     )
     .map_err(CommandError::from)
+}
+
+/// List all persisted clarifying questions (`ask_user_question`) for `conversation_id`.
+#[tauri::command]
+pub(crate) fn list_run_questions(
+    conversation_id: i64,
+    db: State<'_, Database>,
+) -> Result<Vec<RunQuestion>, CommandError> {
+    question::list_for_conversation(db.inner(), conversation_id).map_err(CommandError::from)
+}
+
+/// Submit the user's answer to a pending `ask_user_question` prompt and unblock the owning run.
+#[tauri::command]
+pub(crate) fn answer_run_question(
+    run_id: i64,
+    question_id: i64,
+    selected_options: Vec<String>,
+    free_text: Option<String>,
+    registry: State<'_, ManagedRegistry>,
+    db: State<'_, Database>,
+) -> Result<RunQuestion, CommandError> {
+    registry
+        .resolve_question(db.inner(), run_id, question_id, selected_options, free_text)
+        .map_err(|err| match err {
+            QuestionResolveError::RunNotActive => CommandError::new(
+                ErrorKind::NotFound,
+                format!("no active agent run with id {run_id}"),
+            ),
+            QuestionResolveError::NotPending => CommandError::new(
+                ErrorKind::NotFound,
+                "the question is not pending or no longer matches the active run",
+            ),
+            QuestionResolveError::InvalidAnswer(msg) => {
+                CommandError::new(ErrorKind::InvalidInput, msg)
+            }
+            QuestionResolveError::Database(msg) => CommandError::new(ErrorKind::Database, msg),
+        })
+}
+
+/// Enqueue a live `Clarify now` steering message onto an active agent run.
+#[tauri::command]
+pub(crate) fn clarify_agent_run(
+    run_id: i64,
+    content: String,
+    registry: State<'_, ManagedRegistry>,
+    db: State<'_, Database>,
+) -> Result<(), CommandError> {
+    service::clarify_run(db.inner(), registry.inner(), run_id, &content)
+        .map(|_| ())
+        .map_err(|err| match err {
+            ClarifyRunError::EmptyMessage => CommandError::new(
+                ErrorKind::InvalidInput,
+                "clarification message must not be empty",
+            ),
+            ClarifyRunError::RunNotActive => CommandError::new(
+                ErrorKind::NotFound,
+                format!("no active agent run with id {run_id}"),
+            ),
+            ClarifyRunError::Database(db_err) => CommandError::from(db_err),
+        })
+}
+
+fn map_work_queue_error(err: WorkQueueError) -> CommandError {
+    match err {
+        WorkQueueError::InvalidInput(msg) => CommandError::new(ErrorKind::InvalidInput, msg),
+        WorkQueueError::NotFound(msg) => CommandError::new(ErrorKind::NotFound, msg),
+        WorkQueueError::Database(msg) => CommandError::new(ErrorKind::Database, msg),
+    }
+}
+
+/// Append a prompt to the persistent FIFO work queue for `conversation_id`.
+#[tauri::command]
+pub(crate) fn enqueue_work_item(
+    app: AppHandle,
+    conversation_id: i64,
+    content: String,
+    provider: String,
+    model: String,
+    effort: Option<String>,
+    db: State<'_, Database>,
+) -> Result<WorkQueueItem, CommandError> {
+    let item = work_queue::enqueue(
+        db.inner(),
+        conversation_id,
+        &content,
+        &provider,
+        &model,
+        effort.as_deref(),
+    )
+    .map_err(map_work_queue_error)?;
+    emit_work_queue_updated(&app, conversation_id);
+    Ok(item)
+}
+
+/// List currently queued FIFO items for `conversation_id`.
+#[tauri::command]
+pub(crate) fn list_work_queue(
+    conversation_id: i64,
+    db: State<'_, Database>,
+) -> Result<Vec<WorkQueueItem>, CommandError> {
+    work_queue::list(db.inner(), conversation_id).map_err(map_work_queue_error)
+}
+
+/// Update the prompt content of a queued work item.
+#[tauri::command]
+pub(crate) fn update_work_queue_item(
+    app: AppHandle,
+    item_id: i64,
+    content: String,
+    db: State<'_, Database>,
+) -> Result<WorkQueueItem, CommandError> {
+    let item =
+        work_queue::update_content(db.inner(), item_id, &content).map_err(map_work_queue_error)?;
+    emit_work_queue_updated(&app, item.conversation_id);
+    Ok(item)
+}
+
+/// Reorder queued items for `conversation_id`.
+#[tauri::command]
+pub(crate) fn reorder_work_queue(
+    app: AppHandle,
+    conversation_id: i64,
+    ordered_ids: Vec<i64>,
+    db: State<'_, Database>,
+) -> Result<Vec<WorkQueueItem>, CommandError> {
+    let items = work_queue::reorder(db.inner(), conversation_id, &ordered_ids)
+        .map_err(map_work_queue_error)?;
+    emit_work_queue_updated(&app, conversation_id);
+    Ok(items)
+}
+
+/// Cancel (remove) a queued work item.
+#[tauri::command]
+pub(crate) fn cancel_work_queue_item(
+    app: AppHandle,
+    item_id: i64,
+    db: State<'_, Database>,
+) -> Result<(), CommandError> {
+    let conv_id = WorkQueueRepository::new(db.inner())
+        .read_by_id(item_id)
+        .map_err(CommandError::from)?
+        .map(|item| item.conversation_id);
+    work_queue::cancel_item(db.inner(), item_id).map_err(map_work_queue_error)?;
+    if let Some(conversation_id) = conv_id {
+        emit_work_queue_updated(&app, conversation_id);
+    }
+    Ok(())
+}
+
+/// Manually start the next queued work item when the queue is paused (after error/cancelled/interrupted).
+#[tauri::command]
+pub(crate) async fn run_next_work_item(
+    app: AppHandle,
+    conversation_id: i64,
+) -> Result<Option<StartAgentRunResponse>, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        let registry = handle.state::<ManagedRegistry>();
+        let db_client = db.inner().clone();
+        let registry_arc = Arc::clone(registry.inner());
+        let repo = WorkQueueRepository::new(&db_client);
+        let Some(item) = repo.claim_next_queued(conversation_id)? else {
+            return Ok(None);
+        };
+        match launch_run_from_shell(
+            &handle,
+            &db_client,
+            registry_arc,
+            ShellLaunchParams {
+                conversation_id,
+                content: item.content,
+                provider: item.provider,
+                model: item.model,
+                effort: item.effort,
+            },
+        ) {
+            Ok(run_id) => {
+                let _ = repo.finish_claimed(item.id, true);
+                emit_work_queue_updated(&handle, conversation_id);
+                Ok(Some(StartAgentRunResponse { run_id }))
+            }
+            Err(err) => {
+                let _ = repo.revert_claim(item.id);
+                emit_work_queue_updated(&handle, conversation_id);
+                Err(err)
+            }
+        }
+    })
+    .await;
+
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("run_next_work_item blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Request,
+                "the queued run could not be started",
+            ))
+        }
+    }
 }
 
 impl From<AgentRunError> for CommandError {
