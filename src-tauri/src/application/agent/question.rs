@@ -106,12 +106,12 @@ pub(crate) enum QuestionWaitEnd {
 }
 
 /// Validation / state errors when resolving a pending question via IPC.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum QuestionResolveError {
     RunNotActive,
     NotPending,
     InvalidAnswer(String),
-    Database(String),
+    Database(DatabaseError),
 }
 
 #[derive(Debug, Default)]
@@ -312,7 +312,7 @@ impl QuestionGate {
 
         let updated = RunQuestionRepository::new(db)
             .answer_question(question_id, &deduped_selected, normalized_free.as_deref())
-            .map_err(|err| QuestionResolveError::Database(err.to_string()))?
+            .map_err(QuestionResolveError::Database)?
             .ok_or(QuestionResolveError::NotPending)?;
 
         {

@@ -51,7 +51,7 @@ use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::AgentRun;
 use crate::infrastructure::repository::file_checkpoints::FileCheckpoint;
 use crate::infrastructure::repository::run_questions::RunQuestion;
-use crate::infrastructure::repository::work_queue::{WorkQueueItem, WorkQueueRepository};
+use crate::infrastructure::repository::work_queue::WorkQueueItem;
 
 use super::error::{CommandError, ErrorKind};
 
@@ -206,8 +206,7 @@ fn advance_work_queue_on_completion(
     registry: Arc<AgentRunRegistry>,
     conversation_id: i64,
 ) {
-    let repo = WorkQueueRepository::new(db);
-    let Ok(Some(item)) = repo.claim_next_queued(conversation_id) else {
+    let Ok(Some(item)) = work_queue::claim_next(db, conversation_id) else {
         return;
     };
     match launch_run_from_shell(
@@ -223,11 +222,11 @@ fn advance_work_queue_on_completion(
         },
     ) {
         Ok(_) => {
-            let _ = repo.finish_claimed(item.id, true);
+            let _ = work_queue::finish_claimed(db, item.id, true);
         }
         Err(err) => {
             log::warn!("work queue auto-advance failed to launch run: {err:?}");
-            let _ = repo.revert_claim(item.id);
+            let _ = work_queue::revert_claim(db, item.id);
         }
     }
     emit_work_queue_updated(app, conversation_id);
@@ -908,6 +907,21 @@ pub(crate) fn list_run_questions(
     question::list_for_conversation(db.inner(), conversation_id).map_err(CommandError::from)
 }
 
+fn map_question_resolve_error(run_id: i64, err: QuestionResolveError) -> CommandError {
+    match err {
+        QuestionResolveError::RunNotActive => CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {run_id}"),
+        ),
+        QuestionResolveError::NotPending => CommandError::new(
+            ErrorKind::NotFound,
+            "the question is not pending or no longer matches the active run",
+        ),
+        QuestionResolveError::InvalidAnswer(msg) => CommandError::new(ErrorKind::InvalidInput, msg),
+        QuestionResolveError::Database(db_err) => CommandError::from(db_err),
+    }
+}
+
 /// Submit the user's answer to a pending `ask_user_question` prompt and unblock the owning run.
 #[tauri::command]
 pub(crate) fn answer_run_question(
@@ -920,20 +934,7 @@ pub(crate) fn answer_run_question(
 ) -> Result<RunQuestion, CommandError> {
     registry
         .resolve_question(db.inner(), run_id, question_id, selected_options, free_text)
-        .map_err(|err| match err {
-            QuestionResolveError::RunNotActive => CommandError::new(
-                ErrorKind::NotFound,
-                format!("no active agent run with id {run_id}"),
-            ),
-            QuestionResolveError::NotPending => CommandError::new(
-                ErrorKind::NotFound,
-                "the question is not pending or no longer matches the active run",
-            ),
-            QuestionResolveError::InvalidAnswer(msg) => {
-                CommandError::new(ErrorKind::InvalidInput, msg)
-            }
-            QuestionResolveError::Database(msg) => CommandError::new(ErrorKind::Database, msg),
-        })
+        .map_err(|err| map_question_resolve_error(run_id, err))
 }
 
 /// Enqueue a live `Clarify now` steering message onto an active agent run.
@@ -963,7 +964,7 @@ fn map_work_queue_error(err: WorkQueueError) -> CommandError {
     match err {
         WorkQueueError::InvalidInput(msg) => CommandError::new(ErrorKind::InvalidInput, msg),
         WorkQueueError::NotFound(msg) => CommandError::new(ErrorKind::NotFound, msg),
-        WorkQueueError::Database(msg) => CommandError::new(ErrorKind::Database, msg),
+        WorkQueueError::Database(db_err) => CommandError::from(db_err),
     }
 }
 
@@ -1035,14 +1036,9 @@ pub(crate) fn cancel_work_queue_item(
     item_id: i64,
     db: State<'_, Database>,
 ) -> Result<(), CommandError> {
-    let conv_id = WorkQueueRepository::new(db.inner())
-        .read_by_id(item_id)
-        .map_err(CommandError::from)?
-        .map(|item| item.conversation_id);
-    work_queue::cancel_item(db.inner(), item_id).map_err(map_work_queue_error)?;
-    if let Some(conversation_id) = conv_id {
-        emit_work_queue_updated(&app, conversation_id);
-    }
+    let conversation_id =
+        work_queue::cancel_item(db.inner(), item_id).map_err(map_work_queue_error)?;
+    emit_work_queue_updated(&app, conversation_id);
     Ok(())
 }
 
@@ -1058,8 +1054,9 @@ pub(crate) async fn run_next_work_item(
         let registry = handle.state::<ManagedRegistry>();
         let db_client = db.inner().clone();
         let registry_arc = Arc::clone(registry.inner());
-        let repo = WorkQueueRepository::new(&db_client);
-        let Some(item) = repo.claim_next_queued(conversation_id)? else {
+        let Some(item) =
+            work_queue::claim_next(&db_client, conversation_id).map_err(map_work_queue_error)?
+        else {
             return Ok(None);
         };
         match launch_run_from_shell(
@@ -1075,12 +1072,12 @@ pub(crate) async fn run_next_work_item(
             },
         ) {
             Ok(run_id) => {
-                let _ = repo.finish_claimed(item.id, true);
+                let _ = work_queue::finish_claimed(&db_client, item.id, true);
                 emit_work_queue_updated(&handle, conversation_id);
                 Ok(Some(StartAgentRunResponse { run_id }))
             }
             Err(err) => {
-                let _ = repo.revert_claim(item.id);
+                let _ = work_queue::revert_claim(&db_client, item.id);
                 emit_work_queue_updated(&handle, conversation_id);
                 Err(err)
             }
@@ -1785,5 +1782,45 @@ mod tests {
             );
             assert!(safe_message(&cmd_err));
         }
+    }
+
+    #[test]
+    fn question_and_work_queue_database_errors_map_secret_free() {
+        use crate::infrastructure::database::DatabaseError;
+
+        let question_db_err = DatabaseError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("SELECT secret FROM run_questions WHERE api_key='sk-live-q'".to_string()),
+        ));
+        let question_cmd_err =
+            map_question_resolve_error(12, QuestionResolveError::Database(question_db_err));
+        assert_eq!(question_cmd_err.kind, ErrorKind::Database);
+        assert_eq!(
+            question_cmd_err.message,
+            "a database operation failed; no data was changed"
+        );
+        assert!(safe_message(&question_cmd_err));
+
+        let queue_db_err = DatabaseError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("SELECT secret FROM work_queue_items WHERE api_key='sk-live-wq'".to_string()),
+        ));
+        let queue_cmd_err = map_work_queue_error(WorkQueueError::Database(queue_db_err));
+        assert_eq!(queue_cmd_err.kind, ErrorKind::Database);
+        assert_eq!(
+            queue_cmd_err.message,
+            "a database operation failed; no data was changed"
+        );
+        assert!(safe_message(&queue_cmd_err));
+    }
+
+    #[test]
+    fn commands_agent_does_not_import_work_queue_repository() {
+        const SOURCE: &str = include_str!("agent.rs");
+        let needle = concat!("WorkQueue", "Repository");
+        assert!(
+            !SOURCE.contains(needle),
+            "commands/agent.rs must delegate work-queue persistence to application::agent::work_queue"
+        );
     }
 }

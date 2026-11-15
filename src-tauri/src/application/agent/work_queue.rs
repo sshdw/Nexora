@@ -5,16 +5,16 @@ use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::work_queue::{WorkQueueItem, WorkQueueRepository};
 
 /// Classified application errors for work queue operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum WorkQueueError {
     InvalidInput(&'static str),
     NotFound(&'static str),
-    Database(String),
+    Database(DatabaseError),
 }
 
 impl From<DatabaseError> for WorkQueueError {
     fn from(err: DatabaseError) -> Self {
-        Self::Database(err.to_string())
+        Self::Database(err)
     }
 }
 
@@ -87,13 +87,39 @@ pub(crate) fn reorder(
     Ok(WorkQueueRepository::new(db).reorder(conversation_id, ordered_ids)?)
 }
 
-/// Cancel (remove from queue) a queued item.
-pub(crate) fn cancel_item(db: &Database, item_id: i64) -> Result<(), WorkQueueError> {
-    if WorkQueueRepository::new(db).cancel_item(item_id)? {
-        Ok(())
+/// Cancel (remove from queue) a queued item and return its owning `conversation_id`.
+pub(crate) fn cancel_item(db: &Database, item_id: i64) -> Result<i64, WorkQueueError> {
+    let repo = WorkQueueRepository::new(db);
+    let item = repo
+        .read_by_id(item_id)?
+        .ok_or(WorkQueueError::NotFound("queued item not found"))?;
+    if repo.cancel_item(item_id)? {
+        Ok(item.conversation_id)
     } else {
         Err(WorkQueueError::NotFound("queued item not found"))
     }
+}
+
+/// Atomically claim the next FIFO `queued` item (`status = 'running'`) for `conversation_id`.
+pub(crate) fn claim_next(
+    db: &Database,
+    conversation_id: i64,
+) -> Result<Option<WorkQueueItem>, WorkQueueError> {
+    Ok(WorkQueueRepository::new(db).claim_next_queued(conversation_id)?)
+}
+
+/// Finalize a claimed `'running'` item to `'completed'` or `'cancelled'`.
+pub(crate) fn finish_claimed(
+    db: &Database,
+    item_id: i64,
+    completed: bool,
+) -> Result<bool, WorkQueueError> {
+    Ok(WorkQueueRepository::new(db).finish_claimed(item_id, completed)?)
+}
+
+/// Restore a claimed `'running'` item back to `'queued'` if starting the run failed.
+pub(crate) fn revert_claim(db: &Database, item_id: i64) -> Result<bool, WorkQueueError> {
+    Ok(WorkQueueRepository::new(db).revert_claim(item_id)?)
 }
 
 #[cfg(test)]
@@ -134,9 +160,28 @@ mod tests {
         assert_eq!(reordered[0].id, second.id);
         assert_eq!(reordered[1].id, first.id);
 
-        cancel_item(&db, second.id).expect("cancel");
+        assert_eq!(cancel_item(&db, second.id).expect("cancel"), conv_id);
+        assert!(matches!(
+            cancel_item(&db, second.id),
+            Err(WorkQueueError::NotFound(_))
+        ));
         let remaining = list(&db, conv_id).expect("list after cancel");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, first.id);
+
+        let claimed = claim_next(&db, conv_id)
+            .expect("claim next")
+            .expect("claimed item");
+        assert_eq!(claimed.id, first.id);
+        assert_eq!(claimed.status, "running");
+        assert!(revert_claim(&db, claimed.id).expect("revert claim"));
+        assert_eq!(list(&db, conv_id).expect("list after revert").len(), 1);
+
+        let reclaimed = claim_next(&db, conv_id)
+            .expect("reclaim")
+            .expect("reclaimed item");
+        assert!(finish_claimed(&db, reclaimed.id, true).expect("finish claimed"));
+        assert!(list(&db, conv_id).expect("list after finish").is_empty());
+        assert!(claim_next(&db, conv_id).expect("empty claim").is_none());
     }
 }

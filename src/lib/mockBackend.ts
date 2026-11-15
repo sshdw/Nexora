@@ -606,7 +606,7 @@ type MockWorkQueueItem = {
   model: string;
   effort: string | null;
   position: number;
-  status: "queued" | "running" | "done" | "cancelled";
+  status: "queued" | "running" | "completed" | "cancelled";
   created_at: number;
   updated_at: number;
 };
@@ -2452,7 +2452,7 @@ async function invoke(
         .filter((w) => w.conversation_id === conversationId && w.status === "queued")
         .sort((a, b) => a.position - b.position || a.id - b.id)[0];
       if (!next) return null;
-      next.status = "done";
+      next.status = "completed";
       emitWorkQueueUpdated(conversationId);
       return { run_id: Date.now() };
     }

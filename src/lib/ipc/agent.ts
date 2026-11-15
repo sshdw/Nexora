@@ -388,7 +388,7 @@ export interface WorkQueueItem {
   model: string;
   effort: string | null;
   position: number;
-  status: "queued" | "running" | "done" | "cancelled";
+  status: "queued" | "running" | "completed" | "cancelled";
   created_at: number;
   updated_at: number;
 }
