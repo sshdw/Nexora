@@ -547,11 +547,9 @@ mod tests {
         set_test_status(&ws, true, Duration::ZERO);
         assert_eq!(status(&ws).posture, "Verified");
 
+        fail_next_sandboxed_spawn();
         let outcome = authorized(&ws, true, || {
-            spawn_authorized(
-                &mut Command::new("nexora-nonexistent-sandboxed-binary-xyz"),
-                &ws,
-            )
+            spawn_authorized(&mut Command::new("never-executed"), &ws)
         });
         assert!(
             matches!(outcome, Err(super::super::tools::ToolError::Io(_))),
