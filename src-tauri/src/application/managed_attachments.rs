@@ -8,17 +8,80 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use sha2::{Digest, Sha256};
 
+use crate::infrastructure::database::{Database, DatabaseError};
+
 pub(crate) const MAX_FILES: usize = 10;
 pub(crate) const MAX_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
 pub(crate) const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 static LIFECYCLE: Mutex<()> = Mutex::new(());
 
-/// Serializes app-side admission, materialization/linking, removal and deletion.
-/// The database transaction independently defends against stale draft links.
-pub(crate) fn lifecycle() -> MutexGuard<'static, ()> {
-    LIFECYCLE
+/// Lock order: path lookup (released), process mutex, OS lease, then `SQLite`.
+/// This is separate from the lifetime shared instance lease. The stable lock
+/// lives beside the database, outside every managed-copy purge directory.
+pub(crate) struct LifecycleGuard {
+    _process: MutexGuard<'static, ()>,
+    _file: Option<std::fs::File>,
+}
+
+fn lifecycle_file(db: &Database) -> Result<Option<std::fs::File>, DatabaseError> {
+    let path = {
+        let conn = db.read().map_err(|_| DatabaseError::Io(invalid()))?;
+        conn.path()
+            .filter(|path| !path.is_empty() && *path != ":memory:")
+            .map(PathBuf::from)
+    };
+    let Some(path) = path else {
+        // In-memory connections cannot be shared by independent processes.
+        return Ok(None);
+    };
+    let open = || -> std::io::Result<std::fs::File> {
+        let path = std::fs::canonicalize(path)?;
+        let parent = directory(path.parent().ok_or_else(invalid)?)?;
+        let mut name = path.file_name().ok_or_else(invalid)?.to_os_string();
+        name.push(".attachments.lock");
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .follow(FollowSymlinks::No);
+        let file = parent.open_with(name, &options)?;
+        if !file.metadata()?.is_file() {
+            return Err(invalid());
+        }
+        Ok(file.into_std())
+    };
+    // Keep filesystem paths and OS details out of all propagated errors.
+    open().map(Some).map_err(|_| DatabaseError::Io(invalid()))
+}
+
+/// Serialize admission, byte preparation/linking, removal and delete/clear
+/// through post-commit purge across every process sharing this database.
+/// Dropping the guard also releases the OS lease on error or unwind.
+pub(crate) fn lifecycle(db: &Database) -> Result<LifecycleGuard, DatabaseError> {
+    let file = lifecycle_file(db)?;
+    let process = LIFECYCLE
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(file) = &file {
+        file.lock().map_err(|_| DatabaseError::Io(invalid()))?;
+    }
+    Ok(LifecycleGuard {
+        _process: process,
+        _file: file,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn assert_lifecycle_contended(db: &Database) {
+    let file = lifecycle_file(db)
+        .unwrap()
+        .expect("file-backed synthetic DB");
+    assert!(
+        matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        "another process must retain the lifecycle lease after deletion commit"
+    );
 }
 
 fn invalid() -> std::io::Error {
@@ -350,5 +413,49 @@ mod tests {
         let dir = directory(&outside).unwrap();
         symlink("secret.txt", outside.join("alias.txt")).unwrap();
         assert!(read_bounded(&dir, Path::new("alias.txt"), MAX_FILE_BYTES).is_err());
+    }
+
+    #[test]
+    fn lifecycle_lease_releases_on_unwind_and_purge_preserves_lock_identity() {
+        let fixture = Fixture::new();
+        let db = Database::new(
+            crate::infrastructure::database::open(fixture.0.join("nexora.db")).unwrap(),
+        );
+        let store = fixture.store();
+        let existing = lifecycle_file(&db).unwrap().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _lease = lifecycle(&db).unwrap();
+            assert!(matches!(
+                existing.try_lock(),
+                Err(std::fs::TryLockError::WouldBlock)
+            ));
+            store.purge(None).unwrap();
+            panic!("synthetic lifecycle unwind");
+        }));
+        assert!(result.is_err());
+        existing.try_lock().unwrap();
+        existing.unlock().unwrap();
+        // The handle opened before purge still contends with the next lease:
+        // no operation unlinked/replaced the lock inode.
+        let _lease = lifecycle(&db).unwrap();
+        assert!(matches!(
+            existing.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lifecycle_lock_refuses_symlinks_without_touching_the_target() {
+        let fixture = Fixture::new();
+        let db = Database::new(
+            crate::infrastructure::database::open(fixture.0.join("nexora.db")).unwrap(),
+        );
+        let original = fixture.0.join("original.txt");
+        std::fs::write(&original, b"original").unwrap();
+        std::os::unix::fs::symlink(&original, fixture.0.join("nexora.db.attachments.lock"))
+            .unwrap();
+        assert!(lifecycle(&db).is_err());
+        assert_eq!(std::fs::read(original).unwrap(), b"original");
     }
 }

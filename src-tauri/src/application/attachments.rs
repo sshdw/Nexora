@@ -54,6 +54,7 @@ impl From<Attachment> for AttachmentView {
 /// orchestration and validation; persistence behavior and schema constraints
 /// remain in the repositories and the database.
 pub(crate) struct AttachmentService<'a> {
+    db: &'a Database,
     attachments: AttachmentRepository<'a>,
     conversations: ConversationRepository<'a>,
     store: Option<AttachmentStore>,
@@ -63,6 +64,7 @@ impl<'a> AttachmentService<'a> {
     /// Create a service over the shared application [`Database`].
     pub(crate) fn new(db: &'a Database) -> Self {
         Self {
+            db,
             attachments: AttachmentRepository::new(db),
             conversations: ConversationRepository::new(db),
             store: None,
@@ -84,7 +86,7 @@ impl<'a> AttachmentService<'a> {
         file_path: &str,
         mime_type: Option<&str>,
     ) -> Result<Attachment> {
-        let _lifecycle = managed_attachments::lifecycle();
+        let _lifecycle = managed_attachments::lifecycle(self.db)?;
         validate_attachment_input(file_name, file_path, mime_type)?;
         if !self.conversations.exists(conversation_id)? {
             return Err(AttachmentError::ConversationNotFound {
@@ -189,7 +191,7 @@ impl<'a> AttachmentService<'a> {
     /// Returns [`AttachmentError::AttachmentNotFound`] when no attachment with
     /// `id` exists, or [`AttachmentError::Database`] if the delete fails.
     pub(crate) fn remove(&self, id: i64) -> Result<()> {
-        let _lifecycle = managed_attachments::lifecycle();
+        let _lifecycle = managed_attachments::lifecycle(self.db)?;
         let attachment = self
             .attachments
             .read(id)?

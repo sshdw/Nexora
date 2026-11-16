@@ -962,6 +962,12 @@ fn start_run_claimed(
         Err(crate::application::conversations::ConversationError::NotFound { id }) => {
             return Err(AgentRunError::ConversationNotFound { id });
         }
+        // Lifecycle coordination must fail closed before any provider request.
+        Err(crate::application::conversations::ConversationError::Database(
+            err @ crate::infrastructure::database::DatabaseError::Io(_),
+        )) => {
+            return Err(AgentRunError::Database(err));
+        }
         Err(other) => {
             log::warn!("agent run setup: history load failed, continuing empty: {other}");
             Vec::new()
@@ -4333,6 +4339,97 @@ mod tests {
         );
         assert!(registry.claim_conversation(conversation));
         assert_eq!(std::fs::read(source).unwrap(), b"source");
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_lock_failure_preserves_agent_draft_and_releases_claim() {
+        let workspace = temp_workspace("attachment-lifecycle-failure");
+        let app_data = workspace.join("app-data");
+        std::fs::create_dir(&app_data).unwrap();
+        let db = Database::new(
+            crate::infrastructure::database::open(app_data.join("nexora.db")).unwrap(),
+        );
+        let conversation = ConversationService::new(&db)
+            .create("lock failure")
+            .unwrap();
+        let original = workspace.join("original.txt");
+        std::fs::write(&original, b"original").unwrap();
+        let store = crate::application::managed_attachments::AttachmentStore::open(
+            app_data.join("attachments"),
+        )
+        .unwrap();
+        let copy = store
+            .copy(conversation, "original.txt", b"original")
+            .unwrap();
+        let attachments =
+            crate::infrastructure::repository::attachments::AttachmentRepository::new(&db);
+        let attachment = attachments
+            .create(
+                conversation,
+                "original.txt",
+                &copy.to_string_lossy(),
+                Some(8),
+                Some("text/plain"),
+            )
+            .unwrap();
+        std::fs::create_dir(app_data.join("nexora.db.attachments.lock")).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        let executor = Arc::new(CapturingScriptedExecutor::new(Vec::new()));
+        let registry = Arc::new(AgentRunRegistry::default());
+        let error = start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host.clone(),
+            executor.clone(),
+            workspace.clone(),
+            request(conversation, "guarded secret content"),
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                attachment_ids: vec![attachment],
+                ..RunLaunchOptions::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, AgentRunError::Database(_)));
+        let safe = crate::commands::error::CommandError::from(error);
+        assert_eq!(
+            safe.message,
+            "a database operation failed; no data was changed"
+        );
+        assert!(executor.captured.lock().unwrap().is_empty());
+        assert!(host.persisted.lock().unwrap().is_empty());
+        assert!(rx.try_recv().is_err());
+        assert!(ConversationService::new(&db)
+            .history(conversation)
+            .unwrap()
+            .is_empty());
+        assert!(list_runs_for_conversation(&db, conversation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            attachments.read(attachment).unwrap().unwrap().message_id,
+            None
+        );
+        assert!(
+            registry.claim_conversation(conversation),
+            "failed setup must release its claim"
+        );
+        registry.unclaim_conversation(conversation);
+        assert_eq!(
+            crate::application::managed_attachments::read(&copy).unwrap(),
+            b"original"
+        );
+        assert_eq!(std::fs::read(&original).unwrap(), b"original");
+        drop(host);
+        drop(db);
+        drop(store);
         std::fs::remove_dir_all(workspace).unwrap();
     }
 

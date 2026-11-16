@@ -337,7 +337,7 @@ impl<'a> ConversationService<'a> {
         model: &str,
         ids: &[i64],
     ) -> Result<(i64, Vec<AiAttachment>)> {
-        let _lifecycle = super::managed_attachments::lifecycle();
+        let _lifecycle = super::managed_attachments::lifecycle(self.db)?;
         if !self.conversations.exists(conversation_id)? {
             return Err(ConversationError::NotFound {
                 id: conversation_id,
@@ -458,6 +458,7 @@ impl<'a> ConversationService<'a> {
         current_message_id: i64,
         current_attachments: &[AiAttachment],
     ) -> Result<Vec<AiMessage>> {
+        let _lifecycle = super::managed_attachments::lifecycle(self.db)?;
         let history = self.messages.list_by_conversation(conversation_id)?;
         let mut messages = self.build_history(
             &history,
@@ -505,6 +506,7 @@ impl<'a> ConversationService<'a> {
         conversation_id: i64,
         provider: &str,
     ) -> Result<Vec<AiMessage>> {
+        let _lifecycle = super::managed_attachments::lifecycle(self.db)?;
         if !self.conversations.exists(conversation_id)? {
             return Err(ConversationError::NotFound {
                 id: conversation_id,
