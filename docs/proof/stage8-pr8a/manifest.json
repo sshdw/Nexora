@@ -1,0 +1,132 @@
+[
+  {
+    "file": "01-baseline-empty.jpg",
+    "md5": "94dd2db84b547d9dc9d2afc825296172",
+    "colors": 5511,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Pre-change supplied production binary; empty synthetic database."
+  },
+  {
+    "file": "02-baseline-agent.jpg",
+    "md5": "6524ab8c34af2bc61120ce071d753880",
+    "colors": 9882,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Pre-change Agent composer; no selected model or provider."
+  },
+  {
+    "file": "03-final-legacy-missing.jpg",
+    "md5": "49e6afe8fc26bd0050e9687bf140dadf",
+    "colors": 18387,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Final build: seeded legacy history and draft show Missing; original existing legacy file remains available."
+  },
+  {
+    "file": "04-final-agent-attach-menu.jpg",
+    "md5": "32634daae84afe2d434c5169068efe28",
+    "colors": 10267,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Final Agent mode: Attach files action is available."
+  },
+  {
+    "file": "05-final-agent-files.jpg",
+    "md5": "919c37056548100afe87ba0d65501da4",
+    "colors": 13323,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "TXT and PNG selected through the real native file picker; both managed draft copies appear in Agent."
+  },
+  {
+    "file": "06-final-chat-files.jpg",
+    "md5": "081e163da4c996b02c71f395d2e1dbf7",
+    "colors": 13118,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Switching to Chat retains both draft attachments."
+  },
+  {
+    "file": "07-final-oversize-draft-retained.jpg",
+    "md5": "2816e24cc706ffb8b295824590120cb0",
+    "colors": 18961,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "20 MiB + 1 byte rejected; existing files and typed synthetic Russian text remain."
+  },
+  {
+    "file": "08-final-sensitive-path-draft-retained.jpg",
+    "md5": "4bc564c80b9dd202083220c36b6245f9",
+    "colors": 19167,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Synthetic .env path rejected; existing files and typed text remain."
+  },
+  {
+    "file": "09-final-managed-copy-removed.jpg",
+    "md5": "f8bbd29a68f76f83855fb060a48a39dc",
+    "colors": 15594,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "After removing PNG, TXT and typed text remain; disk/DB receipts confirm only the PNG managed copy was removed."
+  },
+  {
+    "file": "10-final-ru-agent-draft.jpg",
+    "md5": "93ff8f84d075725731c23698936bcd46",
+    "colors": 13329,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Russian interface after Settings round-trip; TXT and typed draft retained."
+  },
+  {
+    "file": "11-final-ru-legacy-missing.jpg",
+    "md5": "617eab08cac86d39c22e3d79814947bc",
+    "colors": 20874,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Russian historical and draft \u041d\u0435\u0442 \u0444\u0430\u0439\u043b\u0430 indicators."
+  },
+  {
+    "file": "12-final-ru-narrow-missing.jpg",
+    "md5": "19918d73c179fb39af5603f609948a00",
+    "colors": 20527,
+    "size": [
+      1026,
+      824
+    ],
+    "shown": "Russian Missing state at1026x824 window geometry."
+  },
+  {
+    "file": "13-final-keyboard-remove-focus.jpg",
+    "md5": "6628982e83454adea8aa71c050273299",
+    "colors": 20681,
+    "size": [
+      1026,
+      824
+    ],
+    "shown": "Shift+Tab reaches the attachment removal button with visible focus ring and Russian tooltip."
+  }
+]
