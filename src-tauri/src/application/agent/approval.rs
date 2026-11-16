@@ -2026,11 +2026,17 @@ mod tests {
         let request_id = gate.prepare_pending(&install_call);
         let park_gate = gate.clone();
         let park_call = install_call.clone();
-        let park_thread = std::thread::spawn(move || park_gate.park_until_resolved(&park_call));
+        let (expired_read_tx, expired_read_rx) = std::sync::mpsc::channel();
+        let park_thread = std::thread::spawn(move || {
+            // Initial identity and first validation are fresh. Cross the TTL
+            // boundary during the next identity read of an established park.
+            super::super::sandbox::expire_identity_read_for_test(2, Some(expired_read_tx));
+            park_gate.park_until_resolved(&park_call)
+        });
 
-        std::thread::sleep(Duration::from_millis(40));
-        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
-        std::thread::sleep(Duration::from_millis(60));
+        expired_read_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("parked identity read crossed the TTL boundary");
         assert!(
             gate.has_any_pending(),
             "TTL expiry alone must not invalidate a parked Verified consent"
