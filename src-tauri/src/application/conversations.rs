@@ -1207,7 +1207,28 @@ mod tests {
                      CHECK(file_size_bytes IS NULL OR file_size_bytes >= 0),
                  mime_type TEXT
                      CHECK(mime_type IS NULL OR length(mime_type) <= 127)
-             );",
+             );
+             CREATE TABLE conversation_compactions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 conversation_id INTEGER NOT NULL
+                     REFERENCES conversations(id) ON DELETE CASCADE,
+                 run_id INTEGER NULL,
+                 reason TEXT NOT NULL
+                     CHECK(reason IN ('threshold', 'overflow', 'manual')),
+                 after_message_id INTEGER NOT NULL DEFAULT 0,
+                 goal TEXT NOT NULL DEFAULT '',
+                 active_plan TEXT NOT NULL DEFAULT '',
+                 key_decisions TEXT NOT NULL DEFAULT '',
+                 touched_files TEXT NOT NULL DEFAULT '[]',
+                 summary TEXT NOT NULL,
+                 before_tokens INTEGER NOT NULL DEFAULT 0,
+                 after_tokens INTEGER NOT NULL DEFAULT 0,
+                 summarized_messages INTEGER NOT NULL DEFAULT 0,
+                 retained_messages INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX idx_conversation_compactions_conv
+                 ON conversation_compactions (conversation_id, id DESC);",
         )
         .expect("create test schema");
         Database::new(conn)
