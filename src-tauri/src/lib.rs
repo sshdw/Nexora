@@ -244,6 +244,9 @@ pub fn run() {
             )
             .map_err(|err| std::io::Error::other(err.summary()))?;
             app.manage(checkpoint_store);
+            app.manage(application::managed_attachments::AttachmentStore::open(
+                db_dir.join("attachments"),
+            )?);
             // Hold the active-run registry as managed state (Task 5.1): an
             // `Arc` so the agent IPC commands can clone an owned handle into
             // `spawn_blocking` and the spawned run threads.

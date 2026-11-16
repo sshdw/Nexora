@@ -7,8 +7,8 @@
 //! selected provider/model (FR-004). User and assistant messages are kept
 //! visually distinguishable by role, chronological order comes from the
 //! backend, and request failures surface as a visible error without inventing
-//! or corrupting persisted state. A failed AI request additionally restores
-//! the sent text into the composer so it can be resent without retyping —
+//! or corrupting persisted state. Failed Chat sends retain the text in the
+//! composer so it can be resent without retyping —
 //! frontend draft state only; persisted history is never modified.
 //!
 //! #220: the composer moved to `Composer.tsx` — it is now one dominant
@@ -167,6 +167,17 @@ export default function ConversationView({
   const [liveActionBusy, setLiveActionBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const chatDraftRef = useRef<{ conversationId: number; draft: string } | null>(
+    null
+  );
+  useLayoutEffect(() => {
+    // A new identity on each draft/conversation change also detects edits
+    // followed by a return to the original text, and unmount invalidates it.
+    chatDraftRef.current = { conversationId, draft };
+    return () => {
+      chatDraftRef.current = null;
+    };
+  }, [conversationId, draft]);
 
   // Insertion-motion bookkeeping (presentation only): the message ids shown
   // in the previous committed render, so genuinely inserted messages can be
@@ -499,7 +510,8 @@ export default function ConversationView({
           selectedProvider,
           selectedModel,
           effectiveEffort,
-          agentMode && planMode
+          agentMode && planMode,
+          attachmentIds
         );
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
@@ -520,7 +532,7 @@ export default function ConversationView({
       }
       return;
     }
-    setDraft("");
+    const submittedDraft = chatDraftRef.current;
     const failure = await send(
       content,
       selectedProvider,
@@ -528,16 +540,12 @@ export default function ConversationView({
       attachmentIds,
       effectiveEffort
     );
-    // A failed AI request keeps the persisted user message and creates no
-    // assistant message (DATABASE.md §7.2). Offline/network failures arrive
-    // classified under the backend's "request" kind (commands/error.rs maps
-    // every provider execution failure there), so the exact sent text is
-    // restored into the composer: the user can edit or resend it once
-    // connectivity returns without retyping. Restoration is frontend state
-    // only — nothing is written to or removed from history, so resending
-    // goes through the normal single-turn send flow.
-    if (failure !== null && failure.kind === "request") {
-      setDraft(content);
+    // Admission can reject before the user message is persisted. Keep the
+    // draft for every failure, including provider requests, and clear only
+    // after success if this pane still owns the unchanged submitted draft.
+    // History remains exclusively backend-owned (DATABASE.md §7.2).
+    if (failure === null && chatDraftRef.current === submittedDraft) {
+      setDraft("");
     }
     // The backend is the source of truth: on success the drafts are now
     // message-linked and disappear; on failure they remain drafts and
@@ -548,7 +556,7 @@ export default function ConversationView({
 
   const handleClarifyNow = useCallback(async () => {
     const content = draft.trim();
-    if (!content || liveRunId === null || liveActionBusy) return;
+    if (!content || liveRunId === null || liveActionBusy || attachments.length > 0) return;
     setAgentError(null);
     setLiveActionBusy(true);
     try {
@@ -565,11 +573,11 @@ export default function ConversationView({
     } finally {
       setLiveActionBusy(false);
     }
-  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft]);
+  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft, attachments.length]);
 
   const handleQueuePrompt = useCallback(async () => {
     const content = draft.trim();
-    if (!content || !selectedProvider || !selectedModel || liveActionBusy) return;
+    if (!content || !selectedProvider || !selectedModel || liveActionBusy || attachments.length > 0) return;
     setAgentError(null);
     setLiveActionBusy(true);
     try {
@@ -597,6 +605,7 @@ export default function ConversationView({
     selectedModel,
     effectiveEffort,
     liveActionBusy,
+    attachments.length,
     enqueueQueueItem,
     setDraft,
   ]);
@@ -790,6 +799,16 @@ export default function ConversationView({
                   {/* ADD-01: only model-authored bodies are markdown-
                       interpreted (05-ADD §3.1); user text is data, not
                       formatting, and stays plain escaped text. */}
+                  {(item.message.attachments?.length ?? 0) > 0 && (
+                    <ul className="nex-message-attachments" aria-label={t("conv.attachedFiles")}>
+                      {item.message.attachments?.map((attachment) => (
+                        <li key={attachment.id} className="nex-chip">
+                          <span className="nex-chip-name">{attachment.file_name}</span>
+                          {attachment.availability === "missing" && <span className="nex-attachment-missing">{t("conv.attachmentMissing")}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {item.message.role === "assistant" ? (
                     <MessageMarkdown
                       messageId={item.message.id}

@@ -854,6 +854,14 @@ enum OpenAiContentPart {
     /// An image supplied as a base64 data URI (OpenAI has no inline PDF or
     /// arbitrary-binary input in Chat Completions).
     ImageUrl { image_url: OpenAiImageUrl },
+    /// Inline PDF document input for Chat Completions.
+    File { file: OpenAiFile },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct OpenAiFile {
+    filename: String,
+    file_data: String,
 }
 
 /// The data-URI wrapper of an OpenAI image part.
@@ -979,6 +987,15 @@ fn openai_message(message: &AiMessage) -> OpenAiMessage {
                 .mime_type
                 .as_deref()
                 .unwrap_or("application/octet-stream");
+            if mime == "application/pdf" {
+                parts.push(OpenAiContentPart::File {
+                    file: OpenAiFile {
+                        filename: attachment.file_name.clone(),
+                        file_data: format!("data:application/pdf;base64,{data}"),
+                    },
+                });
+                continue;
+            }
             parts.push(OpenAiContentPart::ImageUrl {
                 image_url: OpenAiImageUrl {
                     url: format!("data:{mime};base64,{data}"),
@@ -1634,6 +1651,35 @@ mod tests {
         assert!(json.contains("data:image/png;base64,cG5nIQ=="));
         // No filesystem path can appear: the boundary never carries one.
         assert!(!json.contains("/tmp/"));
+    }
+
+    #[test]
+    fn pdf_attachments_serialize_as_file_parts_with_bytes_and_filename() {
+        let mut request = sample_request();
+        std::sync::Arc::get_mut(&mut request.messages)
+            .unwrap()
+            .push(AiMessage {
+                role: AiRole::User,
+                content: "read PDF".into(),
+                attachments: vec![AiAttachment {
+                    file_name: "paper.pdf".into(),
+                    file_size_bytes: Some(8),
+                    mime_type: Some("application/pdf".into()),
+                    payload: AiAttachmentPayload::Base64("JVBERi0xLjc=".into()),
+                }],
+                tool_calls: Vec::new(),
+                tool_result: None,
+            });
+        let value = serde_json::to_value(chat_completion_request(&request, true)).unwrap();
+        let turn = value["messages"].as_array().unwrap().last().unwrap();
+        let parts = turn["content"].as_array().unwrap();
+        assert_eq!(parts[1]["type"], "file");
+        assert_eq!(parts[1]["file"]["filename"], "paper.pdf");
+        assert_eq!(
+            parts[1]["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0xLjc="
+        );
+        assert!(parts.iter().all(|part| part["type"] != "image_url"));
     }
 
     #[test]

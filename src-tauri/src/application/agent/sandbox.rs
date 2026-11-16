@@ -117,21 +117,44 @@ pub(crate) fn refresh_if_expired(path: &Path) {
 /// Returns `(posture, identity)` atomically after refreshing any TTL-expired entry.
 pub(crate) fn posture_and_identity(path: &Path) -> (&'static str, String) {
     let path = root(path);
-    refresh_if_expired(&path);
-    let fresh = fingerprint(&path);
-    let map = entries()
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (posture, revision) = match map.get(&path) {
-        Some(entry)
-            if entry.fingerprint == fresh && entry.checked.elapsed() < Duration::from_secs(30) =>
-        {
-            (entry.status.posture, entry.revision)
+    #[cfg(test)]
+    let mut expired_read_observer = None;
+    let mut retry_expired = true;
+    let result = loop {
+        refresh_if_expired(&path);
+        #[cfg(test)]
+        if expired_read_observer.is_none() {
+            expired_read_observer = expire_identity_read_if_requested(&path);
         }
-        Some(entry) => ("PerCommandConsent", entry.revision),
-        None => ("PerCommandConsent", 0),
+        let fresh = fingerprint(&path);
+        let map = entries()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (posture, revision) = match map.get(&path) {
+            Some(entry)
+                if entry.fingerprint == fresh
+                    && entry.checked.elapsed() < Duration::from_secs(30) =>
+            {
+                (entry.status.posture, entry.revision)
+            }
+            Some(entry) if retry_expired && !entry.invalidated && entry.fingerprint == fresh => {
+                // TTL can elapse after refresh_if_expired's check. Re-probe rather
+                // than emitting a transient identity change or trusting stale Verified.
+                // Retry once; another expiry or any real identity change fails closed.
+                retry_expired = false;
+                drop(map);
+                continue;
+            }
+            Some(entry) => ("PerCommandConsent", entry.revision),
+            None => ("PerCommandConsent", 0),
+        };
+        break (posture, format!("{fresh}:{posture}:{revision}"));
     };
-    (posture, format!("{fresh}:{posture}:{revision}"))
+    #[cfg(test)]
+    if let Some(observer) = expired_read_observer {
+        let _ = observer.send(());
+    }
+    result
 }
 fn verify_probe(path: &Path) -> SandboxVerificationStatus {
     #[cfg(test)]
@@ -243,6 +266,43 @@ thread_local! { static PERMIT: RefCell<Option<Permit>> = const { RefCell::new(No
 #[cfg(test)]
 thread_local! {
     static FORCE_SANDBOX_SPAWN_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static IDENTITY_READ_EXPIRY: RefCell<Option<TestIdentityReadExpiry>> = const { RefCell::new(None) };
+}
+#[cfg(test)]
+struct TestIdentityReadExpiry {
+    reads_to_skip: usize,
+    observer: Option<std::sync::mpsc::Sender<()>>,
+}
+/// Cross the TTL boundary after the refresh check, without scheduler-dependent sleeps.
+#[cfg(test)]
+pub(crate) fn expire_identity_read_for_test(
+    reads_to_skip: usize,
+    observer: Option<std::sync::mpsc::Sender<()>>,
+) {
+    IDENTITY_READ_EXPIRY.with(|slot| {
+        *slot.borrow_mut() = Some(TestIdentityReadExpiry {
+            reads_to_skip,
+            observer,
+        });
+    });
+}
+#[cfg(test)]
+fn expire_identity_read_if_requested(path: &Path) -> Option<std::sync::mpsc::Sender<()>> {
+    let expiry = IDENTITY_READ_EXPIRY.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let expiry = slot.as_mut()?;
+        if expiry.reads_to_skip > 0 {
+            expiry.reads_to_skip -= 1;
+            return None;
+        }
+        slot.take()
+    });
+    if let Some(expiry) = expiry {
+        age_test_status(path, Duration::from_secs(31));
+        expiry.observer
+    } else {
+        None
+    }
 }
 #[cfg(test)]
 pub(crate) struct TestSandboxGuard {
@@ -252,6 +312,7 @@ pub(crate) struct TestSandboxGuard {
 impl Drop for TestSandboxGuard {
     fn drop(&mut self) {
         FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(false));
+        IDENTITY_READ_EXPIRY.with(|slot| *slot.borrow_mut() = None);
         PERMIT.with(|slot| *slot.borrow_mut() = None);
         entries()
             .write()
@@ -272,6 +333,7 @@ pub(crate) fn test_lock() -> TestSandboxGuard {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     FORCE_SANDBOX_SPAWN_FAIL.with(|flag| flag.set(false));
+    IDENTITY_READ_EXPIRY.with(|slot| *slot.borrow_mut() = None);
     PERMIT.with(|slot| *slot.borrow_mut() = None);
     entries()
         .write()
@@ -633,6 +695,41 @@ mod tests {
         refresh(&ws);
         assert_ne!(identity(&ws), id_unavail_b);
         assert_ne!(identity(&ws), id_invalidated);
+
+        clear_test_status(&ws);
+        std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[test]
+    fn identity_read_rechecks_ttl_expiring_after_refresh_check() {
+        let _sandbox_lock = test_lock();
+        let ws = super::super::tools::test_support::temp_workspace();
+        set_test_probe(
+            &ws,
+            Some(SandboxVerificationStatus::Verified {
+                mechanism: "test-sandbox".into(),
+            }),
+        );
+        assert_eq!(refresh(&ws).posture, "Verified");
+        let verified = posture_and_identity(&ws);
+
+        expire_identity_read_for_test(0, None);
+        assert_eq!(posture_and_identity(&ws), verified);
+        assert_eq!(status(&ws).posture, "Verified");
+
+        // Re-verification must actually run; returning the expired Verified entry
+        // would incorrectly preserve identity when the boundary probe degrades.
+        set_test_probe(
+            &ws,
+            Some(SandboxVerificationStatus::Unavailable {
+                reason: "degraded at the TTL boundary".into(),
+            }),
+        );
+        expire_identity_read_for_test(0, None);
+        let degraded = posture_and_identity(&ws);
+        assert_eq!(degraded.0, "PerCommandConsent");
+        assert_ne!(degraded.1, verified.1);
+        assert_eq!(status(&ws).state, "unavailable");
 
         clear_test_status(&ws);
         std::fs::remove_dir_all(&ws).unwrap();

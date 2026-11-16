@@ -15,11 +15,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::service::resolve_effective_effort;
 use crate::application::capabilities::resolve_model_capabilities;
-use crate::application::conversations::ConversationService;
+use crate::application::conversations::{ConversationService, MessageWithAttachments};
 use crate::application::execution::{AiResponse, ReasoningEffort, StreamEvent};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::conversations::Conversation;
-use crate::infrastructure::repository::messages::Message;
 
 use super::error::{CommandError, ErrorKind};
 
@@ -49,9 +48,9 @@ pub(crate) fn list_conversations(
 pub(crate) fn conversation_history(
     conversation_id: i64,
     db: State<'_, Database>,
-) -> Result<Vec<Message>, CommandError> {
+) -> Result<Vec<MessageWithAttachments>, CommandError> {
     ConversationService::new(db.inner())
-        .history(conversation_id)
+        .history_with_attachments(conversation_id)
         .map_err(Into::into)
 }
 

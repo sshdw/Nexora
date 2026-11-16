@@ -14,11 +14,12 @@ export interface Attachment {
   file_path: string;
   file_size_bytes: number | null;
   mime_type: string | null;
+  /** Availability of a persisted legacy reference or managed copy. */
+  availability?: "available" | "missing";
 }
 
-/** Attach a local-file reference to the conversation as a draft attachment via
- * the existing `attach_file` command (FR-008). No content is uploaded; only
- * metadata (name, path, size, media type) is persisted locally.
+/** Admit a local file and copy it into the conversation-owned attachment store
+ * via `attach_file`. Bytes are sent only with a user-initiated AI request.
  *
  * SEC-01: the file size is derived BACKEND-side from the picked file's own
  * metadata and returned in the persisted `Attachment` row — the renderer

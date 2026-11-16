@@ -202,3 +202,25 @@ it("reads authoritative sandbox status without arguments", async () => {
   await barrel.getSandboxStatus();
   expect(invoke).toHaveBeenLastCalledWith("get_sandbox_status");
 });
+
+
+it("routes Agent attachment IDs with the same Plan and effort selection", async () => {
+  await barrel.startAgentRun(7, "read these files", "openai", "gpt-4o", "high", true, [12, 13]);
+  expect(invoke).toHaveBeenLastCalledWith("start_agent_run", {
+    conversationId: 7, content: "read these files", provider: "openai", model: "gpt-4o",
+    effort: "high", isPlan: true, attachmentIds: [12, 13],
+  });
+});
+
+it("sends an explicit empty Agent attachment selection when callers omit it", async () => {
+  await barrel.startAgentRun(7, "plain request", "openai", "gpt-4o");
+  expect(invoke).toHaveBeenLastCalledWith("start_agent_run", {
+    conversationId: 7,
+    content: "plain request",
+    provider: "openai",
+    model: "gpt-4o",
+    effort: null,
+    isPlan: null,
+    attachmentIds: [],
+  });
+});

@@ -4,6 +4,7 @@
 //! (commands/context.rs).
 
 import { invoke } from "./core";
+import type { Attachment } from "./attachments";
 import { OP_DELETE_CONVERSATION, requestConfirmation } from "./confirmations";
 
 /** A conversation row as persisted by the backend (DATABASE.md §7.1). */
@@ -39,6 +40,7 @@ export interface Message {
   provider_id: number | null;
   model_name: string | null;
   created_at: number; // seconds since unix epoch
+  attachments?: Attachment[];
 }
 
 /** Load a conversation's persisted messages via `conversation_history`, in the

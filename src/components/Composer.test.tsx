@@ -684,14 +684,14 @@ describe("composer — modes", () => {
 });
 
 describe("composer — attachment policy (R4-02 / G-20)", () => {
-  it("renders the attach control in Chat mode only", () => {
+  it("renders the attach control in both Chat and Agent modes", () => {
     const { rerender, props } = renderComposer();
     const plusBtn = screen.getByRole("button", { name: "Add" });
     expect(plusBtn).toBeInTheDocument();
     fireEvent.click(plusBtn);
     expect(
-      screen.queryByRole("menuitem", { name: "Attach files" })
-    ).not.toBeInTheDocument();
+      screen.getByRole("menuitem", { name: "Attach files" })
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("menuitem", { name: /Commands/ })
     ).toBeInTheDocument();
@@ -709,27 +709,29 @@ describe("composer — attachment policy (R4-02 / G-20)", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows nothing about attachments in Agent mode — the absence is the statement", () => {
-    // `start_agent_run` takes no attachment ids, so a draft file
-    // shown in Agent mode would be a promise the run silently breaks.
-    // Absent — not disabled, not dead, not chipped, not hinted.
+  it("shows managed draft attachments and the attach action in Agent mode", () => {
     renderComposer({ attachments: [attachmentStub()] });
-
-    expect(
-      screen.queryByRole("button", { name: "Add file" })
-    ).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Attached files")).not.toBeInTheDocument();
-    expect(screen.queryByText("notes.md")).not.toBeInTheDocument();
-
+    expect(screen.getByLabelText("Attached files")).toBeInTheDocument();
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(
-      screen.queryByRole("menuitem", { name: "Attach files" })
-    ).not.toBeInTheDocument();
-
-    // …and there is no teaching line left to advertise it: the chip row was
-    // the rejected "teach chips" pattern (D-03) and is gone in both modes.
-    expect(document.querySelector(".nex-composer-teach")).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Attach files" })).toBeEnabled();
   });
+
+  it("keeps attachment-bearing live drafts visible and blocks text-only live actions", () => {
+    const onClarifyNow = vi.fn();
+    const onQueuePrompt = vi.fn();
+    renderComposer({ attachments: [attachmentStub({ availability: "missing" })], draft: "next task", liveRunId: 4, onClarifyNow, onQueuePrompt });
+    expect(screen.getByText("Missing")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clarify now" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Attachments stay in this draft");
+    fireEvent.click(screen.getByRole("button", { name: "Clarify now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Queue" }));
+    expect(onClarifyNow).not.toHaveBeenCalled();
+    expect(onQueuePrompt).not.toHaveBeenCalled();
+    expect(screen.getByText("notes.md")).toBeInTheDocument();
+  });
+
 });
 
 describe("composer — model picker (R6-02)", () => {

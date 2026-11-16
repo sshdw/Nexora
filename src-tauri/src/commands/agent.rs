@@ -135,6 +135,7 @@ struct ShellLaunchParams {
     model: String,
     effort: Option<String>,
     is_plan: bool,
+    attachment_ids: Vec<i64>,
 }
 
 struct ResolvedShellTarget {
@@ -198,6 +199,7 @@ fn launch_run_from_shell(
         model,
         effort,
         is_plan,
+        attachment_ids,
     } = params;
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -222,35 +224,22 @@ fn launch_run_from_shell(
         spend_limit_micro_usd: target.spend_limit_micro_usd,
     };
 
-    if is_plan {
-        service::start_run_with_options(
-            db_ref,
-            registry_arc,
-            target.host,
-            target.executor,
-            target.root,
-            request,
-            target.mode,
-            target.preset,
-            RunLaunchOptions {
-                is_plan: true,
-                ..RunLaunchOptions::default()
-            },
-        )
-        .map_err(CommandError::from)
-    } else {
-        service::start_run(
-            db_ref,
-            registry_arc,
-            target.host,
-            target.executor,
-            target.root,
-            request,
-            target.mode,
-            target.preset,
-        )
-        .map_err(CommandError::from)
-    }
+    service::start_run_with_options(
+        db_ref,
+        registry_arc,
+        target.host,
+        target.executor,
+        target.root,
+        request,
+        target.mode,
+        target.preset,
+        RunLaunchOptions {
+            is_plan,
+            attachment_ids,
+            ..RunLaunchOptions::default()
+        },
+    )
+    .map_err(CommandError::from)
 }
 
 fn advance_work_queue_on_completion(
@@ -273,6 +262,7 @@ fn advance_work_queue_on_completion(
             model: item.model,
             effort: item.effort,
             is_plan: false,
+            attachment_ids: Vec::new(),
         },
     ) {
         Ok(_) => {
@@ -339,6 +329,8 @@ pub(crate) struct StartAgentRunResponse {
 /// run in the same conversation (DP-4), unknown/missing-credential providers
 /// (FR-014), or persistence/thread failures. No secrets ever cross IPC.
 #[tauri::command]
+// Keep independently named IPC arguments for the established Tauri wire contract.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn start_agent_run(
     app: AppHandle,
     conversation_id: i64,
@@ -347,6 +339,7 @@ pub(crate) async fn start_agent_run(
     model: String,
     effort: Option<String>,
     is_plan: Option<bool>,
+    attachment_ids: Option<Vec<i64>>,
 ) -> Result<StartAgentRunResponse, CommandError> {
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -380,6 +373,7 @@ pub(crate) async fn start_agent_run(
                 model,
                 effort,
                 is_plan: is_plan.unwrap_or(false),
+                attachment_ids: attachment_ids.unwrap_or_default(),
             },
         )?;
         Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse { run_id })
@@ -1250,6 +1244,7 @@ pub(crate) async fn run_next_work_item(
                 model: item.model,
                 effort: item.effort,
                 is_plan: false,
+                attachment_ids: Vec::new(),
             },
         ) {
             Ok(run_id) => {
@@ -1302,6 +1297,7 @@ impl From<AgentRunError> for CommandError {
                 format!("only interrupted agent runs can be continued (status: {status})"),
             ),
             AgentRunError::Request(inner) => Self::from(inner),
+            AgentRunError::Attachment(inner) => Self::from(inner),
             AgentRunError::RunNotPersisted => {
                 Self::new(ErrorKind::Database, "the agent run could not be persisted")
             }
@@ -1721,6 +1717,7 @@ mod tests {
                     "model",
                     "effort",
                     "isPlan",
+                    "attachmentIds",
                 ],
             ),
             (

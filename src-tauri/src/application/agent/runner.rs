@@ -156,6 +156,7 @@ pub(crate) struct AgentRunner<'a> {
     /// Prior conversation turns carried into the next run (agent memory
     /// slice). Empty by default; applied via [`Self::with_history`].
     prior_messages: Vec<AiMessage>,
+    current_attachments: Vec<crate::application::execution::AiAttachment>,
     /// Prior runs' compressed action trace (Layer-2 action memory). `None`
     /// by default; applied via [`Self::with_action_summary`].
     action_summary: Option<ActionSummary>,
@@ -242,6 +243,7 @@ impl<'a> AgentRunner<'a> {
             audit_log: None,
             role: None,
             prior_messages: Vec::new(),
+            current_attachments: Vec::new(),
             action_summary: None,
             assembly_stage: None,
             context_limit_tokens: None,
@@ -253,6 +255,14 @@ impl<'a> AgentRunner<'a> {
             question_ctx: None,
             is_plan: false,
         }
+    }
+
+    pub(crate) fn with_attachments(
+        mut self,
+        attachments: Vec<crate::application::execution::AiAttachment>,
+    ) -> Self {
+        self.current_attachments = attachments;
+        self
     }
 
     /// Attach hierarchical workspace instructions (`AGENTS.md` /
@@ -696,6 +706,11 @@ impl<'a> AgentRunner<'a> {
                 user_request,
             )
         };
+        if let Some(current) = messages.last_mut() {
+            if current.role == AiRole::User {
+                current.attachments.clone_from(&self.current_attachments);
+            }
+        }
         if self.is_plan {
             if let Some(system_msg) = messages.first_mut() {
                 if system_msg.role == AiRole::System {

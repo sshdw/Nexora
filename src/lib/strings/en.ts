@@ -205,6 +205,8 @@ export const en = {
   "conv.originTitle": "Provider and model used for this message",
   "conv.responding": "Assistant is responding",
   "conv.agentWorking": "Agent is working",
+  "conv.attachmentMissing": "Missing",
+  "conv.attachmentsWaitForRun": "Attachments stay in this draft. Wait for the run to finish, or remove them before clarifying or queuing.",
   "conv.attachedFiles": "Attached files",
   "conv.removeFile": "Remove {name}",
   // The field has no chrome of its own (the shell is the control), so the

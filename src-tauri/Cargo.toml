@@ -50,6 +50,7 @@ tree-sitter = "=0.25.10"
 tree-sitter-bash = "=0.25.0"
 tree-sitter-powershell = "=0.26.4"
 sha2 = "=0.10.9"
+uuid = { version = "=1.24.0", features = ["v4"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 
 [lints.rust]
