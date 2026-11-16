@@ -211,3 +211,16 @@ it("routes Agent attachment IDs with the same Plan and effort selection", async 
     effort: "high", isPlan: true, attachmentIds: [12, 13],
   });
 });
+
+it("sends an explicit empty Agent attachment selection when callers omit it", async () => {
+  await barrel.startAgentRun(7, "plain request", "openai", "gpt-4o");
+  expect(invoke).toHaveBeenLastCalledWith("start_agent_run", {
+    conversationId: 7,
+    content: "plain request",
+    provider: "openai",
+    model: "gpt-4o",
+    effort: null,
+    isPlan: null,
+    attachmentIds: [],
+  });
+});

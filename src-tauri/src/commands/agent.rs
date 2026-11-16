@@ -1717,6 +1717,7 @@ mod tests {
                     "model",
                     "effort",
                     "isPlan",
+                    "attachmentIds",
                 ],
             ),
             (
