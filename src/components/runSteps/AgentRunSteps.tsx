@@ -694,6 +694,24 @@ function AgentRunSteps({
       {isInterrupted && (
         <p className="nex-agent-run-summary">{t("agent.interruptedHistory")}</p>
       )}
+      {run.compaction_status === "compacting" && (
+        <p className="nex-agent-run-summary" role="status">
+          {t("agent.compacting")}
+        </p>
+      )}
+      {run.compaction_status === "compacted" && run.last_compaction && (
+        <p className="nex-agent-run-summary" role="status">
+          {t("agent.compacted", {
+            summarized: run.last_compaction.summarized,
+            retained: run.last_compaction.retained,
+          })}
+        </p>
+      )}
+      {run.compaction_status === "failed" && (
+        <p className="nex-agent-run-summary" role="status">
+          {t("agent.compactionFailed")}
+        </p>
+      )}
       {isErrorRun && (
         <div className="nex-agent-failure" role="alert">
           <p className="nex-agent-failure-line">

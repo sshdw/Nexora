@@ -134,6 +134,16 @@ export interface AgentRunView {
   checkpoints?: FileCheckpoint[];
   /** True after `listRunCheckpoints` has completed for the current run view. */
   checkpoints_loaded?: boolean;
+  /** In-run context compaction status (`M16`). */
+  compaction_status?: "compacting" | "compacted" | "failed" | null;
+  /** Latest compaction details observed on this run (`M16`). */
+  last_compaction?: {
+    reason: string;
+    summarized: number;
+    retained: number;
+    before_tokens?: number;
+    after_tokens?: number;
+  } | null;
 }
 
 export type RevertOutcome =
@@ -210,6 +220,8 @@ export interface AgentRunStore {
   runs: AgentRunView[];
   loading: boolean;
   error: string | null;
+  /** Monotonic counter bumped whenever a durable or live `context_compacted` event lands. */
+  compactionVersion?: number;
   reload: () => Promise<void>;
   /** AC-102/ADD-08: lazy-load one run's persisted step list (bounded
    * previews, NEX-PERF-003). Idempotent — a no-op for live runs (their steps
@@ -360,6 +372,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
   const [runs, setRuns] = useState<AgentRunView[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [compactionVersion, setCompactionVersion] = useState(0);
   // A fresh object per effect lifetime fences A -> B -> A and unmount, not
   // merely changes of numeric conversation id. All async writes use it.
   const sessionRef = useRef<ConversationSession | null>(null);
@@ -444,9 +457,23 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
                 ) {
                   throw new Error("Run history identity mismatch");
                 }
+                if (event.kind === "context_compacted") {
+                  setCompactionVersion((v) => v + 1);
+                  if (
+                    event.run_id !== null &&
+                    event.run_id >= session.historyFloor
+                  ) {
+                    applyDurable(session, event, protectedTerminals);
+                  }
+                  continue;
+                }
                 // Old history remains bounded to the metadata page. Process its
                 // cursor identities without materializing off-screen old runs.
-                if (event.run_id < session.historyFloor) continue;
+                if (
+                  event.run_id === null ||
+                  event.run_id < session.historyFloor
+                )
+                  continue;
                 applyDurable(session, event, protectedTerminals);
               }
               if (
@@ -473,7 +500,35 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
         event: DurableRunEvent,
         protectedTerminals: Set<number>
       ) => {
+        if (event.run_id === null) return;
         patch(owner, event.run_id, (run) => {
+          if (event.kind === "context_compacted") {
+            let parsed: {
+              reason?: string;
+              summarized?: number;
+              retained?: number;
+              before_tokens?: number;
+              after_tokens?: number;
+            } = {};
+            if (event.payload) {
+              try {
+                parsed = JSON.parse(event.payload) as typeof parsed;
+              } catch {
+                parsed = {};
+              }
+            }
+            return {
+              ...run,
+              compaction_status: "compacted",
+              last_compaction: {
+                reason: parsed.reason ?? "threshold",
+                summarized: parsed.summarized ?? 0,
+                retained: parsed.retained ?? 0,
+                before_tokens: parsed.before_tokens,
+                after_tokens: parsed.after_tokens,
+              },
+            };
+          }
           if (event.step) {
             // Only wholly unloaded terminal history stays lazy. A partial
             // live list must accept missing committed steps even when Finished
@@ -500,7 +555,11 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           }
           // A read issued before a newer terminal live frame or metadata
           // snapshot cannot replace that terminal presentation on completion.
-          if (event.terminal && protectedTerminals.has(event.run_id))
+          if (
+            event.terminal &&
+            event.run_id !== null &&
+            protectedTerminals.has(event.run_id)
+          )
             return run;
           if (event.terminal)
             return {
@@ -1102,6 +1161,40 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               ...run,
               last_steering: gov.content,
             };
+          if (gov.type === "compaction_started")
+            return {
+              ...run,
+              compaction_status: "compacting",
+            };
+          if (gov.type === "compaction_finished")
+            return {
+              ...run,
+              compaction_status: "compacted",
+              last_compaction: {
+                reason: gov.reason,
+                summarized: gov.summarized,
+                retained: gov.retained,
+              },
+            };
+          if (gov.type === "context_compacted") {
+            setCompactionVersion((v) => v + 1);
+            return {
+              ...run,
+              compaction_status: "compacted",
+              last_compaction: {
+                reason: gov.reason,
+                summarized: gov.summarized,
+                retained: gov.retained,
+                before_tokens: gov.before_tokens,
+                after_tokens: gov.after_tokens,
+              },
+            };
+          }
+          if (gov.type === "compaction_failed")
+            return {
+              ...run,
+              compaction_status: "failed",
+            };
           if (gov.type === "cancelled")
             return {
               ...run,
@@ -1194,6 +1287,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     runs,
     loading,
     error,
+    compactionVersion,
     reload,
     loadRunSteps,
     expandStep,

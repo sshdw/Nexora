@@ -53,7 +53,9 @@ use crate::application::agent::injection::redact_secrets;
 use crate::application::agent::runner::AgentError;
 use crate::application::execution::{TokenUsage, ToolCall};
 use crate::infrastructure::database::{Database, DatabaseError};
-use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+use crate::infrastructure::repository::agent_runs::{
+    AgentRunRepository, NewConversationCompaction,
+};
 
 /// Maximum persisted step-text size in chars (NEX-SEC-003): tool arguments
 /// and observations are unbounded (a `write_file` call carries the whole
@@ -515,6 +517,7 @@ pub(crate) struct ActiveRunRecord<'a> {
     next_seq: i64,
     /// Test-only accounting hook, never a persistence input.
     recorded_steps: i64,
+    compaction_seq: i64,
     required: bool,
     checkpoint_failed: bool,
 }
@@ -535,6 +538,7 @@ impl<'a> ActiveRunRecord<'a> {
             run_id,
             next_seq: 1,
             recorded_steps: 0,
+            compaction_seq: 0,
             required: recorder.conversation_id.is_some()
                 || run_id.is_some_and(|id| {
                     AgentRunRepository::new(recorder.db)
@@ -762,6 +766,80 @@ impl<'a> ActiveRunRecord<'a> {
                 self.checkpoint_failed = true;
             }
             None
+        }
+    }
+
+    /// Persist a durable `context_compacted` event into `durable_run_events`
+    /// (and `conversation_compactions` when linked to a conversation).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_context_compacted(
+        &mut self,
+        reason: &str,
+        goal: &str,
+        active_plan: &str,
+        key_decisions: &str,
+        touched_files: &[String],
+        summary: &str,
+        before_tokens: u64,
+        after_tokens: u64,
+        summarized: usize,
+        retained: usize,
+    ) -> Option<i64> {
+        let run_id = self.run_id?;
+        self.compaction_seq += 1;
+        let source_key = format!("run:{run_id}:compaction:{}", self.compaction_seq);
+        let payload = serde_json::json!({
+            "reason": reason,
+            "goal": goal,
+            "active_plan": active_plan,
+            "key_decisions": key_decisions,
+            "touched_files": touched_files,
+            "before_tokens": before_tokens,
+            "after_tokens": after_tokens,
+            "summarized": summarized,
+            "retained": retained,
+        })
+        .to_string();
+        let repo = AgentRunRepository::new(self.recorder.db);
+        if let Some(conversation_id) = self.recorder.conversation_id {
+            let after_message_id =
+                crate::infrastructure::repository::messages::MessageRepository::new(
+                    self.recorder.db,
+                )
+                .list_by_conversation(conversation_id)
+                .ok()
+                .and_then(|msgs| msgs.last().map(|m| m.id))
+                .unwrap_or(0);
+            let input = NewConversationCompaction {
+                conversation_id,
+                run_id: Some(run_id),
+                reason,
+                after_message_id,
+                goal,
+                active_plan,
+                key_decisions,
+                touched_files,
+                summary,
+                before_tokens,
+                after_tokens,
+                summarized_messages: u64::try_from(summarized).unwrap_or(u64::MAX),
+                retained_messages: u64::try_from(retained).unwrap_or(u64::MAX),
+            };
+            match repo.record_compaction(&input, &source_key, &payload) {
+                Ok((_, event_id)) => Some(event_id),
+                Err(err) => {
+                    log::warn!("agent run persistence: context_compacted failed: {err}");
+                    None
+                }
+            }
+        } else {
+            match repo.record_run_compaction_event(run_id, &source_key, &payload) {
+                Ok(event_id) => Some(event_id),
+                Err(err) => {
+                    log::warn!("agent run persistence: context_compacted event failed: {err}");
+                    None
+                }
+            }
         }
     }
 

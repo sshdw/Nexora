@@ -44,6 +44,7 @@
 //! network (ROADMAP.md Phase 10).
 
 use crate::infrastructure::database::{Database, DatabaseError};
+use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 use crate::infrastructure::repository::attachments::{Attachment, AttachmentRepository};
 use crate::infrastructure::repository::conversations::{Conversation, ConversationRepository};
 use crate::infrastructure::repository::messages::{Message, MessageRepository};
@@ -460,12 +461,23 @@ impl<'a> ConversationService<'a> {
     ) -> Result<Vec<AiMessage>> {
         let _lifecycle = super::managed_attachments::lifecycle(self.db)?;
         let history = self.messages.list_by_conversation(conversation_id)?;
+        let compaction = AgentRunRepository::new(self.db).latest_compaction(conversation_id)?;
+        let filtered: Vec<Message> = match &compaction {
+            Some(c) => history
+                .into_iter()
+                .filter(|m| m.id > c.after_message_id || m.id == current_message_id)
+                .collect(),
+            None => history,
+        };
         let mut messages = self.build_history(
-            &history,
+            &filtered,
             provider,
             Some((current_message_id, current_attachments)),
             AttachmentFailure::Fail,
         )?;
+        if let Some(c) = compaction {
+            prepend_compaction_summary(&mut messages, &c.summary);
+        }
         if let Some(ws) = crate::application::settings::configured_workspace_root(self.db) {
             if let Ok(instructions) =
                 crate::application::project_dir::discover_instructions(&ws, None)
@@ -513,7 +525,20 @@ impl<'a> ConversationService<'a> {
             });
         }
         let history = self.messages.list_by_conversation(conversation_id)?;
-        self.build_history(&history, provider, None, AttachmentFailure::Skip)
+        let compaction = AgentRunRepository::new(self.db).latest_compaction(conversation_id)?;
+        let filtered: Vec<Message> = match &compaction {
+            Some(c) => history
+                .into_iter()
+                .filter(|m| m.id > c.after_message_id)
+                .collect(),
+            None => history,
+        };
+        let mut messages =
+            self.build_history(&filtered, provider, None, AttachmentFailure::Skip)?;
+        if let Some(c) = compaction {
+            prepend_compaction_summary(&mut messages, &c.summary);
+        }
+        Ok(messages)
     }
 
     /// Shared per-message conversion for [`Self::ai_history`] and
@@ -724,6 +749,36 @@ enum AttachmentFailure {
     Fail,
     /// Log a warning and keep the message without that attachment.
     Skip,
+}
+
+fn prepend_compaction_summary(messages: &mut Vec<AiMessage>, summary: &str) {
+    let summary_text = format!(
+        "{}\n\n{}",
+        super::agent::compaction::SUMMARY_PREFIX,
+        summary.trim()
+    );
+    if let Some(first) = messages.first_mut() {
+        if first.role == AiRole::User && first.tool_calls.is_empty() && first.tool_result.is_none()
+        {
+            let tail = std::mem::take(&mut first.content);
+            first.content = if tail.trim().is_empty() {
+                summary_text
+            } else {
+                format!("{summary_text}\n\n{tail}")
+            };
+            return;
+        }
+    }
+    messages.insert(
+        0,
+        AiMessage {
+            role: AiRole::User,
+            content: summary_text,
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        },
+    );
 }
 
 /// Map a persisted [`Message`] to the provider-independent [`AiMessage`] used
@@ -1152,7 +1207,28 @@ mod tests {
                      CHECK(file_size_bytes IS NULL OR file_size_bytes >= 0),
                  mime_type TEXT
                      CHECK(mime_type IS NULL OR length(mime_type) <= 127)
-             );",
+             );
+             CREATE TABLE conversation_compactions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 conversation_id INTEGER NOT NULL
+                     REFERENCES conversations(id) ON DELETE CASCADE,
+                 run_id INTEGER NULL,
+                 reason TEXT NOT NULL
+                     CHECK(reason IN ('threshold', 'overflow', 'manual')),
+                 after_message_id INTEGER NOT NULL DEFAULT 0,
+                 goal TEXT NOT NULL DEFAULT '',
+                 active_plan TEXT NOT NULL DEFAULT '',
+                 key_decisions TEXT NOT NULL DEFAULT '',
+                 touched_files TEXT NOT NULL DEFAULT '[]',
+                 summary TEXT NOT NULL,
+                 before_tokens INTEGER NOT NULL DEFAULT 0,
+                 after_tokens INTEGER NOT NULL DEFAULT 0,
+                 summarized_messages INTEGER NOT NULL DEFAULT 0,
+                 retained_messages INTEGER NOT NULL DEFAULT 0,
+                 created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX idx_conversation_compactions_conv
+                 ON conversation_compactions (conversation_id, id DESC);",
         )
         .expect("create test schema");
         Database::new(conn)

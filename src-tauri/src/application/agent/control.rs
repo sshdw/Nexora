@@ -95,8 +95,31 @@ pub(crate) enum AgentRunEvent {
     /// A context compaction failed (empty plan or a failed summarizer call):
     /// the run continues uncompacted and never fails for this alone.
     CompactionFailed {
-        /// `"threshold"` or `"overflow"`.
+        /// `"threshold"` or `"overflow"` or `"manual"`.
         reason: String,
+    },
+    /// Durable structured compaction summary & accounting event (`M16`).
+    ContextCompacted {
+        /// `"threshold"`, `"overflow"`, or `"manual"`.
+        reason: String,
+        /// Preserved user goal.
+        goal: String,
+        /// Preserved active plan.
+        active_plan: String,
+        /// Preserved key decisions.
+        key_decisions: String,
+        /// Preserved touched files.
+        touched_files: Vec<String>,
+        /// Estimated tokens before compaction.
+        before_tokens: u64,
+        /// Estimated tokens after compaction.
+        after_tokens: u64,
+        /// Messages folded into the summary.
+        summarized: usize,
+        /// Messages retained verbatim.
+        retained: usize,
+        /// Durable journal `event_id`, if persisted.
+        event_id: Option<i64>,
     },
     /// A tool call is awaiting user approval (Task 4.1).
     ApprovalRequested {
@@ -268,6 +291,9 @@ pub(crate) struct RunControl {
     steering_queue: Arc<Mutex<VecDeque<String>>>,
     /// Per-run interactive question gate (`ask_user_question`).
     question_gate: super::question::QuestionGate,
+    /// Pending manual compaction request (`/compact` or `ContextRing` button)
+    /// honoured at the next step boundary.
+    compaction_requested: Arc<AtomicBool>,
 }
 
 impl Default for RunControl {
@@ -289,7 +315,20 @@ impl RunControl {
             extra_signals: Arc::new(Mutex::new(Vec::new())),
             steering_queue: Arc::new(Mutex::new(VecDeque::new())),
             question_gate,
+            compaction_requested: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Request manual context compaction at the next step boundary (`M16`).
+    pub(crate) fn request_compaction(&self) {
+        self.compaction_requested.store(true, Ordering::SeqCst);
+        self.signal.notify_all();
+    }
+
+    /// Atomically consume a pending manual compaction request.
+    #[must_use]
+    pub(crate) fn take_compaction_request(&self) -> bool {
+        self.compaction_requested.swap(false, Ordering::SeqCst)
     }
 
     /// Shared per-run [`QuestionGate`](super::question::QuestionGate).

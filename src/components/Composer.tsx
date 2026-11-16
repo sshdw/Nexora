@@ -64,6 +64,7 @@ import { formatBytes } from "../lib/format";
 import type {
   Attachment,
   AutonomyMode,
+  CompactionResult,
   ConnectionModelCapabilities,
 } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
@@ -167,6 +168,12 @@ export interface ComposerProps {
   /** Focus the field when an empty conversation opens (D1). The effect
    *  never steals focus from a modal or from another field. */
   autoFocusField?: boolean;
+  /** Trigger manual `/compact` context compaction (`M16`). */
+  onCompactContext?: () => void;
+  /** True while manual `/compact` is in flight. */
+  compactBusy?: boolean;
+  /** Notified when `ContextRing` completes a manual compaction. */
+  onCompacted?: (result: CompactionResult) => void;
 }
 
 export default function Composer({
@@ -208,6 +215,9 @@ export default function Composer({
   liveActionBusy = false,
   workspace,
   autoFocusField = false,
+  onCompactContext,
+  compactBusy = false,
+  onCompacted,
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
@@ -275,6 +285,13 @@ export default function Composer({
           }
         },
       },
+      {
+        id: "compact",
+        command: "/compact",
+        description: t("conv.slashCompactDesc"),
+        disabled: compactBusy || !onCompactContext,
+        run: () => onCompactContext?.(),
+      },
       { id: "attach", command: "/attach", description: t("conv.slashAttachDesc"),
         disabled: busy || attachmentsBusy || live,
         run: () => onPickFiles(),
@@ -307,9 +324,11 @@ export default function Composer({
     live,
     draft.length,
     onAgentModeChange,
+    onCompactContext,
     onDraftChange,
     onOpenSettings,
     onPickFiles,
+    compactBusy,
     setPlanEnabled,
     slashQuery,
     t,
@@ -971,6 +990,9 @@ export default function Composer({
               <ContextRing
                 conversationId={conversationId}
                 revision={contextRevision}
+                selectedConnectionId={selectedConnectionId}
+                selectedModel={selectedModel}
+                onCompacted={onCompacted}
               />
 
               {/* Model picker (R6-02). A real searchable listbox now: the

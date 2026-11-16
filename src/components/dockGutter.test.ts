@@ -427,6 +427,13 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
       note: "centred card above the composer, not a full-width band",
     },
     {
+      root: "nex-composer-strip-status",
+      sheet: composerSheet,
+      selector: ".nex-composer-strip-status",
+      kind: "content",
+      note: "centred status card above the composer, not a full-width band",
+    },
+    {
       root: "nex-composer-adjacent",
       sheet: composerSheet,
       selector: ".nex-composer-adjacent",
@@ -555,9 +562,14 @@ describe("stage sweep — no surface may be left ending at the inset", () => {
 
     // A card: it does paint, but its edge is bounded and centred, so the
     // inset is where its content belongs — it neither stretches nor bleeds.
-    const strip = ruleBody(composerSheet, ".nex-composer-strip-error");
-    expect(declaration(strip, "max-width")).toBe("760px");
-    expect(declaration(strip, "margin")).toBe("0 auto");
+    for (const selector of [
+      ".nex-composer-strip-error",
+      ".nex-composer-strip-status",
+    ]) {
+      const strip = ruleBody(composerSheet, selector);
+      expect(declaration(strip, "max-width"), selector).toBe("760px");
+      expect(declaration(strip, "margin"), selector).toBe("0 auto");
+    }
 
     const adjacent = ruleBody(composerSheet, ".nex-composer-adjacent");
     expect(declaration(adjacent, "background")).toBeUndefined();

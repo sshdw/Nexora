@@ -121,10 +121,10 @@ pub struct AgentStep {
 pub struct DurableRunEvent {
     /// Global committed event identity.
     pub event_id: i64,
-    /// Owning conversation, derived through the run.
+    /// Owning conversation, derived through the run or directly recorded.
     pub conversation_id: i64,
-    /// Original run identity.
-    pub run_id: i64,
+    /// Original run identity (`None` for conversation-scoped compactions outside a run).
+    pub run_id: Option<i64>,
     /// Initial lifecycle kind.
     pub kind: String,
     /// Original step identity, for step records only.
@@ -133,11 +133,79 @@ pub struct DurableRunEvent {
     pub schema_version: i64,
     /// Unix seconds assigned on insert.
     pub created_at: i64,
+    /// Optional structured JSON payload (for `context_compacted` events).
+    pub payload: Option<String>,
     /// Original immutable step, projected by application adapters.
     pub step: Option<AgentStep>,
     /// Only terminal records carry a terminal projection; starts never pretend
     /// the run's current state was its initial state.
     pub terminal: Option<AgentRun>,
+}
+
+/// Persisted structured context compaction checkpoint (`conversation_compactions`, v20 / M16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConversationCompaction {
+    /// Surrogate row id.
+    pub id: i64,
+    /// Owning conversation id.
+    pub conversation_id: i64,
+    /// Associated agent run id, when compacted during or against a run.
+    pub run_id: Option<i64>,
+    /// Trigger reason (`"threshold"`, `"overflow"`, or `"manual"`).
+    pub reason: String,
+    /// Highest persisted message id folded into this compaction (`0` if none).
+    pub after_message_id: i64,
+    /// Preserved user goal.
+    pub goal: String,
+    /// Preserved active implementation plan.
+    pub active_plan: String,
+    /// Preserved key decisions.
+    pub key_decisions: String,
+    /// Preserved touched file paths.
+    pub touched_files: Vec<String>,
+    /// Full structured summary text.
+    pub summary: String,
+    /// Estimated tokens before compaction.
+    pub before_tokens: u64,
+    /// Estimated tokens after compaction.
+    pub after_tokens: u64,
+    /// Number of messages folded into the summary.
+    pub summarized_messages: u64,
+    /// Number of recent messages retained verbatim.
+    pub retained_messages: u64,
+    /// Unix timestamp in seconds.
+    pub created_at: i64,
+}
+
+/// Input parameters for recording a durable compaction checkpoint.
+#[derive(Debug, Clone)]
+pub struct NewConversationCompaction<'a> {
+    /// Owning conversation id.
+    pub conversation_id: i64,
+    /// Optional associated agent run id.
+    pub run_id: Option<i64>,
+    /// Trigger reason (`"threshold"`, `"overflow"`, or `"manual"`).
+    pub reason: &'a str,
+    /// Highest persisted message id folded into this compaction (`0` if none).
+    pub after_message_id: i64,
+    /// Preserved user goal.
+    pub goal: &'a str,
+    /// Preserved active plan.
+    pub active_plan: &'a str,
+    /// Preserved key decisions.
+    pub key_decisions: &'a str,
+    /// Preserved touched file paths.
+    pub touched_files: &'a [String],
+    /// Full structured summary text.
+    pub summary: &'a str,
+    /// Estimated tokens before compaction.
+    pub before_tokens: u64,
+    /// Estimated tokens after compaction.
+    pub after_tokens: u64,
+    /// Number of messages folded into the summary.
+    pub summarized_messages: u64,
+    /// Number of recent messages retained verbatim.
+    pub retained_messages: u64,
 }
 
 /// A snapshot page. Advance only to `next_cursor` after processing every item.
@@ -199,9 +267,9 @@ impl AgentRunRepository<'_> {
         )?;
         let mut events = {
             let mut stmt = tx.prepare(
-                "SELECT e.event_id,r.conversation_id,e.run_id,e.kind,e.step_id,e.schema_version,e.created_at
-                 FROM durable_run_events e JOIN agent_runs r ON r.id=e.run_id
-                 WHERE r.conversation_id=?1 AND e.event_id>?2 AND e.event_id<=?3
+                "SELECT e.event_id,COALESCE(e.conversation_id,r.conversation_id),e.run_id,e.kind,e.step_id,e.schema_version,e.created_at,e.payload
+                 FROM durable_run_events e LEFT JOIN agent_runs r ON r.id=e.run_id
+                 WHERE COALESCE(e.conversation_id,r.conversation_id)=?1 AND e.event_id>?2 AND e.event_id<=?3
                  ORDER BY e.event_id LIMIT ?4")?;
             let rows = stmt
                 .query_map(
@@ -215,6 +283,7 @@ impl AgentRunRepository<'_> {
                             step_id: row.get(4)?,
                             schema_version: row.get(5)?,
                             created_at: row.get(6)?,
+                            payload: row.get(7)?,
                             step: None,
                             terminal: None,
                         })
@@ -234,10 +303,12 @@ impl AgentRunRepository<'_> {
                      rule_id,group_key,decided_by,input_tokens,output_tokens FROM agent_steps WHERE id=?1",
                     [id], row_to_agent_step)?);
             } else if matches!(event.kind.as_str(), "run_finished" | "run_interrupted") {
-                event.terminal = Some(tx.query_row(
-                    "SELECT id,conversation_id,model,mode,status,started_at,finished_at,total_steps,
-                     final_content,error,spent_micro_usd,limit_micro_usd,interrupted FROM agent_runs WHERE id=?1",
-                    [event.run_id], row_to_agent_run)?);
+                if let Some(run_id) = event.run_id {
+                    event.terminal = Some(tx.query_row(
+                        "SELECT id,conversation_id,model,mode,status,started_at,finished_at,total_steps,
+                         final_content,error,spent_micro_usd,limit_micro_usd,interrupted FROM agent_runs WHERE id=?1",
+                        [run_id], row_to_agent_run)?);
+                }
             }
         }
         let next_cursor = if has_more {
@@ -267,6 +338,167 @@ impl AgentRunRepository<'_> {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// Persist a conversation compaction checkpoint AND an immutable
+    /// `context_compacted` row in `durable_run_events` atomically.
+    /// Returns `(compaction_id, event_id)`.
+    ///
+    /// # Errors
+    /// Returns a [`DatabaseError`] when the transaction fails.
+    pub fn record_compaction(
+        &self,
+        input: &NewConversationCompaction<'_>,
+        source_key: &str,
+        event_payload_json: &str,
+    ) -> Result<(i64, i64)> {
+        self.transaction(|tx| {
+            let touched_json =
+                serde_json::to_string(input.touched_files).unwrap_or_else(|_| "[]".to_string());
+            let before_i64 = i64::try_from(input.before_tokens).unwrap_or(i64::MAX);
+            let after_i64 = i64::try_from(input.after_tokens).unwrap_or(i64::MAX);
+            let summarized_i64 = i64::try_from(input.summarized_messages).unwrap_or(i64::MAX);
+            let retained_i64 = i64::try_from(input.retained_messages).unwrap_or(i64::MAX);
+            tx.execute(
+                "INSERT INTO conversation_compactions
+                 (conversation_id, run_id, reason, after_message_id, goal, active_plan, key_decisions,
+                  touched_files, summary, before_tokens, after_tokens, summarized_messages, retained_messages)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    input.conversation_id,
+                    input.run_id,
+                    input.reason,
+                    input.after_message_id,
+                    input.goal,
+                    input.active_plan,
+                    input.key_decisions,
+                    touched_json,
+                    input.summary,
+                    before_i64,
+                    after_i64,
+                    summarized_i64,
+                    retained_i64,
+                ],
+            )?;
+            let compaction_id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT INTO durable_run_events
+                 (run_id, conversation_id, source_key, kind, step_id, schema_version, payload)
+                 VALUES (?1, ?2, ?3, 'context_compacted', NULL, 1, ?4)",
+                params![
+                    input.run_id,
+                    input.conversation_id,
+                    source_key,
+                    event_payload_json,
+                ],
+            )?;
+            let event_id = tx.last_insert_rowid();
+            Ok((compaction_id, event_id))
+        })
+    }
+
+    /// Persist a durable `context_compacted` event for an in-run compaction
+    /// (idempotent by `source_key`), and update `conversation_compactions` if
+    /// `conversation_id` is known. Returns the committed `event_id`.
+    ///
+    /// # Errors
+    /// Returns a [`DatabaseError`] when the insert fails.
+    pub fn record_run_compaction_event(
+        &self,
+        run_id: i64,
+        source_key: &str,
+        payload_json: &str,
+    ) -> Result<i64> {
+        self.transaction(|tx| {
+            if let Some(existing) = tx
+                .query_row(
+                    "SELECT event_id FROM durable_run_events WHERE source_key=?1",
+                    [source_key],
+                    |row| row.get(0),
+                )
+                .optional()?
+            {
+                return Ok(existing);
+            }
+            let conv_id: Option<i64> = tx
+                .query_row(
+                    "SELECT conversation_id FROM agent_runs WHERE id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            tx.execute(
+                "INSERT INTO durable_run_events
+                 (run_id, conversation_id, source_key, kind, step_id, schema_version, payload)
+                 VALUES (?1, ?2, ?3, 'context_compacted', NULL, 1, ?4)",
+                params![run_id, conv_id, source_key, payload_json],
+            )?;
+            Ok(tx.last_insert_rowid())
+        })
+    }
+
+    /// Return the latest compaction checkpoint for `conversation_id`, if any.
+    ///
+    /// # Errors
+    /// Returns a [`DatabaseError`] when the query fails.
+    pub fn latest_compaction(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Option<ConversationCompaction>> {
+        let conn = self.read_conn()?;
+        conn.query_row(
+            "SELECT id, conversation_id, run_id, reason, after_message_id, goal, active_plan,
+                    key_decisions, touched_files, summary, before_tokens, after_tokens,
+                    summarized_messages, retained_messages, created_at
+             FROM conversation_compactions
+             WHERE conversation_id = ?1
+             ORDER BY id DESC
+             LIMIT 1",
+            [conversation_id],
+            |row| {
+                let touched_raw: String = row.get(8)?;
+                let touched_files: Vec<String> =
+                    serde_json::from_str(&touched_raw).unwrap_or_default();
+                let before_i64: i64 = row.get(10)?;
+                let after_i64: i64 = row.get(11)?;
+                let summarized_i64: i64 = row.get(12)?;
+                let retained_i64: i64 = row.get(13)?;
+                Ok(ConversationCompaction {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    reason: row.get(3)?,
+                    after_message_id: row.get(4)?,
+                    goal: row.get(5)?,
+                    active_plan: row.get(6)?,
+                    key_decisions: row.get(7)?,
+                    touched_files,
+                    summary: row.get(9)?,
+                    before_tokens: u64::try_from(before_i64).unwrap_or(0),
+                    after_tokens: u64::try_from(after_i64).unwrap_or(0),
+                    summarized_messages: u64::try_from(summarized_i64).unwrap_or(0),
+                    retained_messages: u64::try_from(retained_i64).unwrap_or(0),
+                    created_at: row.get(14)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Count compaction events recorded for `conversation_id`.
+    ///
+    /// # Errors
+    /// Returns a [`DatabaseError`] when the query fails.
+    pub fn compaction_count(&self, conversation_id: i64) -> Result<u64> {
+        let conn = self.read_conn()?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM conversation_compactions WHERE conversation_id = ?1",
+            [conversation_id],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 
     /// Insert a new run row at run start (DATABASE.md §7.8).
@@ -1685,7 +1917,7 @@ mod journal_tests {
         assert_eq!(repo.fail_orphaned_running_runs("interrupted").unwrap(), 0);
         let events = repo.list_conversation_run_events(c, 0, 200).unwrap();
         assert_eq!(events.events.len(), 2);
-        assert!(events.events.iter().all(|e| e.run_id == new));
+        assert!(events.events.iter().all(|e| e.run_id == Some(new)));
         assert_eq!(events.events[1].kind, "run_interrupted");
         assert!(events.events[1].terminal.as_ref().unwrap().interrupted);
         for (run, steps) in &legacy {

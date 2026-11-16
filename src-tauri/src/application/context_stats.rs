@@ -14,11 +14,14 @@
 
 use serde::Serialize;
 
-use crate::application::agent::pricing;
+use crate::application::agent::{compaction, pricing, prompts};
+use crate::application::capabilities::{self, CapabilityProvenance};
 use crate::application::conversations::{ConversationError, Result};
+use crate::application::{project_dir, settings};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::{anthropic, gemini, openai};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+use crate::infrastructure::repository::attachments::AttachmentRepository;
 use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::messages::MessageRepository;
 use crate::infrastructure::repository::providers::ProviderRepository;
@@ -114,6 +117,40 @@ fn model_context_limit(model: &str) -> Option<u64> {
     }
 }
 
+/// Per-category token breakdown surfaced to `ContextRing` (`M16` / P24, P30).
+#[allow(clippy::struct_field_names)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct ContextCategoryBreakdown {
+    /// Tokens attributed to system prompt, workspace instructions, and active skills.
+    pub system_skills_tokens: u64,
+    /// Tokens attributed to active conversation messages and compaction summary.
+    pub messages_tokens: u64,
+    /// Tokens attributed to attached files and `@` context references.
+    pub attachments_tokens: u64,
+    /// Tokens attributed to tool call arguments and tool outputs.
+    pub tool_output_tokens: u64,
+    /// Sum of all accounted categories.
+    pub total_accounted_tokens: u64,
+}
+
+/// Summary metadata of the most recent durable compaction checkpoint (`M16`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct CompactionSummaryMeta {
+    pub id: i64,
+    pub reason: String,
+    pub goal: String,
+    pub active_plan: String,
+    pub key_decisions: String,
+    pub touched_files: Vec<String>,
+    pub before_tokens: u64,
+    pub after_tokens: u64,
+    pub summarized_messages: u64,
+    pub retained_messages: u64,
+    pub created_at: i64,
+}
+
 /// Read-only per-conversation context stats (`snake_case` over IPC).
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -128,8 +165,21 @@ pub(crate) struct ConversationContextStats {
     pub provider_display: Option<String>,
     /// Model of the newest attributed assistant message.
     pub model: Option<String>,
-    /// Documented context window for the resolved provider/model.
+    /// Documented context window for the resolved provider/model (legacy non-null fallback).
     pub context_limit: u64,
+    /// Authoritative context window from `(connection_id, model_id)` capabilities;
+    /// `None` when unknown (never fabricated).
+    pub context_window: Option<u64>,
+    /// Provenance of `context_window` (`manual_override | api_metadata | built_in_catalog | unknown`).
+    pub context_window_provenance: CapabilityProvenance,
+    /// Per-category token breakdown (`System/Skills`, `Messages`, `Attachments/@Context`, `Tool Output`).
+    pub category_breakdown: ContextCategoryBreakdown,
+    /// Number of recorded compactions in this conversation.
+    pub compaction_count: u64,
+    /// Timestamp of the latest compaction checkpoint (Unix seconds).
+    pub last_compacted_at: Option<i64>,
+    /// Latest compaction checkpoint summary metadata, if compacted.
+    pub last_compaction: Option<CompactionSummaryMeta>,
     /// Total persisted usage tokens (`input + output`) across the
     /// conversation's runs (`0` when no turn reported usage).
     pub total_tokens: u64,
@@ -168,17 +218,29 @@ pub(crate) struct ConversationContextStats {
     pub updated_at: i64,
 }
 
-/// Compute read-only context stats for `conversation_id`.
-///
-/// Counts come from persisted `messages`; provider/model from the newest
-/// assistant message carrying attribution; tool/other step counts and token
-/// sums from the conversation's persisted agent runs. Token sums cover only
-/// turns whose provider reported usage (`agent_steps.input_tokens` /
-/// `output_tokens` non-NULL); usage-less turns contribute nothing and
-/// `has_token_data` is `false` when no turn reported any (never estimated
-/// silently). Cost goes through `pricing::cost_micro_for_model` for the
-/// resolved model, so per-conversation cost falls out of the persisted
-/// usage through the existing policy table.
+fn estimate_attachment_tokens(
+    file_name: &str,
+    file_size_bytes: Option<i64>,
+    mime_type: Option<&str>,
+) -> u64 {
+    let Some(bytes) = file_size_bytes.and_then(|b| u64::try_from(b).ok()) else {
+        return compaction::estimate_tokens(file_name);
+    };
+    let mime = mime_type.unwrap_or("");
+    if mime.starts_with("image/") {
+        return 258;
+    }
+    if mime == "application/pdf" || file_name.to_ascii_lowercase().ends_with(".pdf") {
+        return bytes.div_ceil(16).clamp(256, 32_768);
+    }
+    let base = bytes.div_ceil(compaction::ESTIMATE_CHARS_PER_TOKEN);
+    (base.saturating_mul(compaction::ESTIMATE_SAFETY_NUMERATOR)
+        / compaction::ESTIMATE_SAFETY_DENOMINATOR)
+        .max(1)
+}
+
+/// Compute read-only context stats for `conversation_id`, optionally resolving
+/// capabilities for an active `(connection_id, model_id)` selection.
 ///
 /// # Errors
 ///
@@ -187,6 +249,23 @@ pub(crate) struct ConversationContextStats {
 pub(crate) fn conversation_context_stats(
     db: &Database,
     conversation_id: i64,
+) -> Result<ConversationContextStats> {
+    conversation_context_stats_for_selection(db, conversation_id, None, None)
+}
+
+/// Compute read-only context stats for `conversation_id` using an optional
+/// `(connection_id, model_id)` override for capability window resolution.
+///
+/// # Errors
+///
+/// Returns [`ConversationError::NotFound`] when the conversation does not
+/// exist, or [`ConversationError::Database`] when any query fails.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn conversation_context_stats_for_selection(
+    db: &Database,
+    conversation_id: i64,
+    selected_connection_id: Option<&str>,
+    selected_model_id: Option<&str>,
 ) -> Result<ConversationContextStats> {
     let conversations = ConversationRepository::new(db);
     let conversation = conversations
@@ -230,10 +309,33 @@ pub(crate) fn conversation_context_stats(
         }
     }
 
-    let context_limit = context_limit_for(provider.as_deref(), model.as_deref());
-
     let runs = AgentRunRepository::new(db).list_runs_by_conversation(conversation_id)?;
     let steps_repo = AgentRunRepository::new(db);
+    let latest_compaction = steps_repo.latest_compaction(conversation_id)?;
+    let compaction_count = steps_repo.compaction_count(conversation_id)?;
+
+    // Resolve authoritative context window from `(connection_id, model_id)` capabilities.
+    let effective_conn = selected_connection_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(provider.as_deref());
+    let effective_model = selected_model_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(model.as_deref())
+        .or_else(|| runs.first().map(|r| r.model.as_str()));
+
+    let (context_window, context_window_provenance) = match (effective_conn, effective_model) {
+        (Some(conn), Some(mod_id)) => {
+            let caps = capabilities::resolve_model_capabilities(db, conn, mod_id);
+            (caps.context_window.map(u64::from), caps.provenance)
+        }
+        _ => (None, CapabilityProvenance::Unknown),
+    };
+
+    let context_limit =
+        context_window.unwrap_or_else(|| context_limit_for(provider.as_deref(), model.as_deref()));
+
     let mut tool_call_count: u64 = 0;
     let mut other_step_count: u64 = 0;
     // Per-turn usage summed across the conversation's runs. A step counts
@@ -243,10 +345,29 @@ pub(crate) fn conversation_context_stats(
     let mut input_tokens: u64 = 0;
     let mut output_tokens: u64 = 0;
     let mut has_token_data = false;
+    let mut tool_output_tokens: u64 = 0;
+    let compaction_run_floor = latest_compaction.as_ref().and_then(|c| c.run_id);
+    let compaction_time_floor = latest_compaction.as_ref().map(|c| c.created_at);
+
     for run in &runs {
+        let step_after_compaction = match (compaction_run_floor, compaction_time_floor) {
+            (Some(c_run), _) => run.id > c_run,
+            (None, Some(c_ts)) => run.status == "running" || run.started_at > c_ts,
+            (None, None) => true,
+        };
         for step in steps_repo.list_steps(run.id)? {
             if step.kind == "tool_call" {
                 tool_call_count = tool_call_count.saturating_add(1);
+                if step_after_compaction {
+                    if let Some(args) = step.arguments.as_deref() {
+                        tool_output_tokens =
+                            tool_output_tokens.saturating_add(compaction::estimate_tokens(args));
+                    }
+                    if let Some(obs) = step.observation.as_deref() {
+                        tool_output_tokens =
+                            tool_output_tokens.saturating_add(compaction::estimate_tokens(obs));
+                    }
+                }
             } else {
                 other_step_count = other_step_count.saturating_add(1);
             }
@@ -257,6 +378,79 @@ pub(crate) fn conversation_context_stats(
             }
         }
     }
+
+    // Category accounting (M16): System/Skills, Messages, Attachments/@Context, Tool Output.
+    let mut system_skills_tokens = compaction::estimate_tokens(prompts::AGENT_SYSTEM_PROMPT);
+    if let Some(ws) = settings::configured_workspace_root(db) {
+        if let Ok(instructions) = project_dir::discover_instructions(&ws, None) {
+            if !instructions.combined.trim().is_empty() {
+                system_skills_tokens = system_skills_tokens
+                    .saturating_add(compaction::estimate_tokens(&instructions.combined));
+            }
+        }
+    }
+
+    let watermark_id = latest_compaction.as_ref().map_or(0, |c| c.after_message_id);
+    let mut messages_tokens: u64 = 0;
+    if let Some(compaction) = &latest_compaction {
+        messages_tokens = messages_tokens
+            .saturating_add(compaction::estimate_tokens(compaction::SUMMARY_PREFIX))
+            .saturating_add(compaction::estimate_tokens(&compaction.summary));
+    }
+
+    let attachment_repo = AttachmentRepository::new(db);
+    let mut attachments_tokens: u64 = 0;
+    for draft_att in attachment_repo.list_by_conversation(conversation_id)? {
+        attachments_tokens = attachments_tokens.saturating_add(estimate_attachment_tokens(
+            &draft_att.file_name,
+            draft_att.file_size_bytes,
+            draft_att.mime_type.as_deref(),
+        ));
+    }
+
+    for message in &messages {
+        if message.id <= watermark_id {
+            continue;
+        }
+        messages_tokens =
+            messages_tokens.saturating_add(compaction::estimate_tokens(&message.content));
+        for linked_att in attachment_repo.list_by_message(message.id)? {
+            attachments_tokens = attachments_tokens.saturating_add(estimate_attachment_tokens(
+                &linked_att.file_name,
+                linked_att.file_size_bytes,
+                linked_att.mime_type.as_deref(),
+            ));
+        }
+    }
+
+    let total_accounted_tokens = system_skills_tokens
+        .saturating_add(messages_tokens)
+        .saturating_add(attachments_tokens)
+        .saturating_add(tool_output_tokens);
+
+    let category_breakdown = ContextCategoryBreakdown {
+        system_skills_tokens,
+        messages_tokens,
+        attachments_tokens,
+        tool_output_tokens,
+        total_accounted_tokens,
+    };
+
+    let last_compacted_at = latest_compaction.as_ref().map(|c| c.created_at);
+    let last_compaction = latest_compaction.map(|c| CompactionSummaryMeta {
+        id: c.id,
+        reason: c.reason,
+        goal: c.goal,
+        active_plan: c.active_plan,
+        key_decisions: c.key_decisions,
+        touched_files: c.touched_files,
+        before_tokens: c.before_tokens,
+        after_tokens: c.after_tokens,
+        summarized_messages: c.summarized_messages,
+        retained_messages: c.retained_messages,
+        created_at: c.created_at,
+    });
+
     let total_tokens = input_tokens.saturating_add(output_tokens);
     let total_cost_micro_usd =
         pricing::cost_micro_for_model(model.as_deref().unwrap_or(""), input_tokens, output_tokens);
@@ -277,6 +471,12 @@ pub(crate) fn conversation_context_stats(
         provider_display,
         model,
         context_limit,
+        context_window,
+        context_window_provenance,
+        category_breakdown,
+        compaction_count,
+        last_compacted_at,
+        last_compaction,
         total_tokens,
         input_tokens,
         output_tokens,
@@ -927,6 +1127,98 @@ mod tests {
         assert_eq!(
             context_limit_for(None, Some("unknown-model")),
             DEFAULT_CONTEXT_LIMIT
+        );
+    }
+
+    #[test]
+    fn category_breakdown_and_honest_unknown_window_from_capabilities() {
+        use crate::infrastructure::repository::attachments::AttachmentRepository;
+
+        let db = in_memory_database();
+        let id = seed_conversation(&db, "Accounting session");
+        let msg_id = MessageRepository::new(&db)
+            .create(id, "user", "Explain ContextRing accounting", None, None)
+            .expect("user message");
+        AttachmentRepository::new(&db)
+            .create(
+                id,
+                "notes.md",
+                "/tmp/notes.md",
+                Some(800),
+                Some("text/markdown"),
+            )
+            .expect("draft attachment");
+        let att_linked = AttachmentRepository::new(&db)
+            .create(
+                id,
+                "diagram.png",
+                "/tmp/diagram.png",
+                Some(2048),
+                Some("image/png"),
+            )
+            .expect("linked attachment");
+        AttachmentRepository::new(&db)
+            .update_message_id(att_linked, Some(msg_id))
+            .expect("link");
+
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs
+            .create_run(Some(id), "gpt-5.6-terra", "supervised")
+            .expect("create run");
+        runs.append_step(
+            run_id,
+            1,
+            "tool_call",
+            Some("read_file"),
+            Some(r#"{"path":"src/App.tsx"}"#),
+            Some(&"line\n".repeat(40)),
+            Some("succeeded"),
+            Some(10),
+            None,
+            None,
+            None,
+            Some(400),
+            Some(100),
+        )
+        .expect("tool step");
+
+        // Known model resolves authoritative window from capabilities catalog.
+        let known = conversation_context_stats_for_selection(
+            &db,
+            id,
+            Some("openai"),
+            Some("gpt-5.6-terra"),
+        )
+        .expect("known stats");
+        assert_eq!(known.context_window, Some(OPENAI_CONTEXT_LIMIT));
+        assert_eq!(
+            known.context_window_provenance,
+            CapabilityProvenance::BuiltInCatalog
+        );
+        assert!(known.category_breakdown.system_skills_tokens > 0);
+        assert!(known.category_breakdown.messages_tokens > 0);
+        assert!(known.category_breakdown.attachments_tokens > 258);
+        assert!(known.category_breakdown.tool_output_tokens > 0);
+        assert_eq!(
+            known.category_breakdown.total_accounted_tokens,
+            known.category_breakdown.system_skills_tokens
+                + known.category_breakdown.messages_tokens
+                + known.category_breakdown.attachments_tokens
+                + known.category_breakdown.tool_output_tokens
+        );
+
+        // Unknown model returns `context_window: None` (honest Unknown, never fabricated).
+        let unknown = conversation_context_stats_for_selection(
+            &db,
+            id,
+            Some("openai_compat"),
+            Some("my-custom-local-model"),
+        )
+        .expect("unknown stats");
+        assert_eq!(unknown.context_window, None);
+        assert_eq!(
+            unknown.context_window_provenance,
+            CapabilityProvenance::Unknown
         );
     }
 }

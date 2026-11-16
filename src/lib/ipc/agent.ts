@@ -173,6 +173,19 @@ export type GovernanceEventPayload =
     }
   | { type: "compaction_failed"; reason: string }
   | {
+      type: "context_compacted";
+      reason: string;
+      goal: string;
+      active_plan: string;
+      key_decisions: string;
+      touched_files: string[];
+      before_tokens: number;
+      after_tokens: number;
+      summarized: number;
+      retained: number;
+      event_id: number | null;
+    }
+  | {
       type: "stream_delta";
       kind: "text" | "thinking" | "tool_call";
       delta: string;
@@ -712,11 +725,17 @@ export function resumeAgentRun(runId: number): Promise<void> {
 export interface DurableRunEvent {
   event_id: number;
   conversation_id: number;
-  run_id: number;
-  kind: "run_started" | "step_recorded" | "run_finished" | "run_interrupted";
+  run_id: number | null;
+  kind:
+    | "run_started"
+    | "step_recorded"
+    | "run_finished"
+    | "run_interrupted"
+    | "context_compacted";
   step_id: number | null;
   schema_version: number;
   created_at: number;
+  payload?: string | null;
   step: AgentStep | null;
   terminal: RunFinishedPayload | null;
 }

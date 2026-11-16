@@ -41,21 +41,28 @@ use serde::Serialize;
 use super::action_memory::{self, ActionSummary, AgentStepView};
 use super::approval::{ApprovalGate, AutonomyMode};
 use super::checkpoints::{CheckpointRunContext, CheckpointStore};
-use super::control::{AgentRunEvent, RunControl};
+use super::compaction::{self, CompactionReason};
+use super::control::{AgentRunEvent, CancellationToken, RunControl};
 use super::governance::{audit, AuditEvent, AuditLog};
 use super::lifecycle::{observe_transition, RunState};
 use super::permissions::RunPreset;
 use super::persistence::{mode_to_column, terminal_outcome, RunRecorder};
 use super::question::QuestionRunContext;
 use super::runner::AgentRunner;
+#[cfg(test)]
 use crate::application::context_stats::context_limit_for;
+use crate::application::context_stats::conversation_context_stats_for_selection;
 use crate::application::conversations::ConversationService;
 use crate::application::execution::{
-    AiMessage, ModelConfig, ProviderExecutor, ReasoningEffort, RequestError,
+    AiMessage, AiRequest, AiRole, ModelConfig, ProviderExecutor, ReasoningEffort, RequestError,
 };
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::infrastructure::database::Database;
-use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
+use crate::infrastructure::repository::agent_runs::{
+    AgentRun, AgentRunRepository, AgentStep, NewConversationCompaction,
+};
+use crate::infrastructure::repository::conversations::ConversationRepository;
+use crate::infrastructure::repository::messages::MessageRepository;
 use crate::infrastructure::repository::run_plans::{RunPlan, RunPlanRepository};
 use crate::infrastructure::repository::run_questions::RunQuestionRepository;
 
@@ -1158,14 +1165,30 @@ fn spawn_run(
                 // and reports. Nothing here ever fails the run.
                 let audit_log = Arc::new(super::governance::AuditLog::new());
                 note_routing_fallback(&db, &workspace_root, &audit_log);
-                // Task T4 wiring: the run's model window enables the proactive
-                // compaction trigger (`usable_context_tokens` + `decide`);
-                // without it the trigger stays dormant (limit `0`) and only
-                // reactive overflow recovery runs.
-                let context_limit = context_limit_for(
-                    Some(run_request.provider.as_str()),
-                    Some(run_request.model.as_str()),
-                );
+                // Task T4 / M16 wiring: resolve authoritative model window from
+                // `(connection_id, model_id)` capabilities (`ManualOverride >
+                // ApiMetadata > BuiltInCatalog > Unknown(0)`). Unknown stays `0`
+                // so proactive threshold compaction stays dormant.
+                let context_limit = crate::application::capabilities::resolve_model_capabilities(
+                    &db,
+                    run_request.provider.as_str(),
+                    run_request.model.as_str(),
+                )
+                .context_window
+                .map_or(0, u64::from);
+                let active_plan_text = RunPlanRepository::new(&db)
+                    .list_for_conversation(run_request.conversation_id)
+                    .ok()
+                    .and_then(|plans| {
+                        plans.into_iter().rev().find_map(|p| {
+                            matches!(
+                                p.decision_status.as_str(),
+                                "accepted" | "custom_reply" | "pending"
+                            )
+                            .then_some(p.plan_content)
+                            .flatten()
+                        })
+                    });
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_plan(is_plan)
                     .with_control(control)
@@ -1181,6 +1204,9 @@ fn spawn_run(
                     .with_audit_log(Arc::clone(&audit_log))
                     .with_event_sender(tx_for_recorder.clone())
                     .with_stream_deltas(true);
+                if let Some(plan_text) = active_plan_text {
+                    runner = runner.with_active_plan(plan_text);
+                }
                 match crate::application::project_dir::discover_instructions(&workspace_root, None)
                 {
                     Ok(instructions) => {
@@ -1296,6 +1322,16 @@ fn spawn_run(
                         forward_conversation_id,
                         &format!("step:{seq}"),
                     );
+                } else if let AgentRunEvent::ContextCompacted {
+                    event_id: Some(event_id),
+                    ..
+                } = &event
+                {
+                    forward_host.emit(&RunFrame::Durable {
+                        run_id,
+                        conversation_id: forward_conversation_id,
+                        event_id: *event_id,
+                    });
                 }
                 forward_host.emit(&RunFrame::with_event(
                     run_id,
@@ -1459,11 +1495,12 @@ pub(crate) fn list_runs_for_conversation_summary(
 pub(crate) struct DurableRunEvent {
     pub event_id: i64,
     pub conversation_id: i64,
-    pub run_id: i64,
+    pub run_id: Option<i64>,
     pub kind: String,
     pub step_id: Option<i64>,
     pub schema_version: i64,
     pub created_at: i64,
+    pub payload: Option<String>,
     pub step: Option<AgentStepListItem>,
     pub terminal: Option<RunFinished>,
 }
@@ -1500,6 +1537,7 @@ pub(crate) fn list_conversation_run_events(
                 step_id: event.step_id,
                 schema_version: event.schema_version,
                 created_at: event.created_at,
+                payload: event.payload,
                 step: event.step.as_ref().map(AgentStepListItem::from_row),
                 terminal: event.terminal.map(|run| {
                     let final_content = run
@@ -1544,6 +1582,337 @@ fn notify_durable(
             event_id,
         });
     }
+}
+
+/// Outcome returned by manual conversation compaction (`compact_conversation_context`, M16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) struct CompactionOutcomeView {
+    /// `"compacted"` | `"scheduled"` | `"nothing_to_compact"`.
+    pub status: String,
+    pub conversation_id: i64,
+    pub run_id: Option<i64>,
+    pub event_id: Option<i64>,
+    pub reason: String,
+    pub goal: String,
+    pub active_plan: String,
+    pub key_decisions: String,
+    pub touched_files: Vec<String>,
+    pub summary: String,
+    pub before_tokens: u64,
+    pub after_tokens: u64,
+    pub summarized_messages: usize,
+    pub retained_messages: usize,
+    pub created_at: i64,
+}
+
+fn extract_step_touched_path(arguments: Option<&str>) -> Option<String> {
+    let args = arguments?;
+    let val = serde_json::from_str::<serde_json::Value>(args).ok()?;
+    for key in ["path", "file_path", "target", "file"] {
+        if let Some(s) = val.get(key).and_then(serde_json::Value::as_str) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Trigger manual context compaction (`/compact` or `ContextRing` `Compact` button).
+///
+/// - If an active run exists for `conversation_id`, schedules manual compaction
+///   at the next step boundary (`status = "scheduled"`).
+/// - Otherwise compacts the persisted uncompacted history into a structured
+///   summary preserving **Goal**, **Active Plan**, **Key Decisions**, and
+///   **Touched Files / Open Tasks**, persists `conversation_compactions` +
+///   durable `context_compacted` event, and emits `RunFrame::Durable` when
+///   `host` is provided.
+///
+/// # Errors
+///
+/// Returns [`AgentRunError::ConversationNotFound`] when `conversation_id` does
+/// not exist or [`AgentRunError::Database`] when persistence fails.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+pub(crate) fn compact_conversation_context(
+    db: &Database,
+    registry: Option<&AgentRunRegistry>,
+    host: Option<&dyn AgentRunHost>,
+    executor_target: Option<(&dyn ProviderExecutor, &str, &str, &str)>,
+    conversation_id: i64,
+    connection_id: Option<&str>,
+    model_id: Option<&str>,
+) -> Result<CompactionOutcomeView, AgentRunError> {
+    if !ConversationRepository::new(db)
+        .exists(conversation_id)
+        .map_err(AgentRunError::Database)?
+    {
+        return Err(AgentRunError::ConversationNotFound {
+            id: conversation_id,
+        });
+    }
+
+    if let Some(active_run_id) =
+        registry.and_then(|reg| reg.active_run_for_conversation(conversation_id))
+    {
+        if registry.is_some_and(|reg| reg.request_compaction(active_run_id)) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+            return Ok(CompactionOutcomeView {
+                status: "scheduled".to_string(),
+                conversation_id,
+                run_id: Some(active_run_id),
+                event_id: None,
+                reason: CompactionReason::Manual.as_str().to_string(),
+                goal: String::new(),
+                active_plan: String::new(),
+                key_decisions: String::new(),
+                touched_files: Vec::new(),
+                summary: String::new(),
+                before_tokens: 0,
+                after_tokens: 0,
+                summarized_messages: 0,
+                retained_messages: 0,
+                created_at: now,
+            });
+        }
+    }
+
+    let messages = MessageRepository::new(db)
+        .list_by_conversation(conversation_id)
+        .map_err(AgentRunError::Database)?;
+    let repo = AgentRunRepository::new(db);
+    let latest_compaction = repo
+        .latest_compaction(conversation_id)
+        .map_err(AgentRunError::Database)?;
+    let watermark_id = latest_compaction.as_ref().map_or(0, |c| c.after_message_id);
+
+    let active_plan_text = RunPlanRepository::new(db)
+        .list_for_conversation(conversation_id)
+        .ok()
+        .and_then(|plans| {
+            plans.into_iter().rev().find_map(|p| {
+                matches!(
+                    p.decision_status.as_str(),
+                    "accepted" | "custom_reply" | "pending"
+                )
+                .then_some(p.plan_content)
+                .flatten()
+            })
+        });
+
+    let runs = repo
+        .list_runs_by_conversation(conversation_id)
+        .map_err(AgentRunError::Database)?;
+    let mut touched_files: Vec<String> = Vec::new();
+    for run in runs.iter().take(5) {
+        if let Ok(steps) = repo.list_steps(run.id) {
+            for step in steps {
+                if step.kind == "tool_call" {
+                    if let Some(path) = extract_step_touched_path(step.arguments.as_deref()) {
+                        if !touched_files.contains(&path) {
+                            touched_files.push(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let post_watermark: Vec<_> = messages.iter().filter(|m| m.id > watermark_id).collect();
+    if post_watermark.is_empty() && active_plan_text.is_none() && touched_files.is_empty() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        return Ok(CompactionOutcomeView {
+            status: "nothing_to_compact".to_string(),
+            conversation_id,
+            run_id: None,
+            event_id: None,
+            reason: CompactionReason::Manual.as_str().to_string(),
+            goal: String::new(),
+            active_plan: String::new(),
+            key_decisions: String::new(),
+            touched_files: Vec::new(),
+            summary: String::new(),
+            before_tokens: 0,
+            after_tokens: 0,
+            summarized_messages: 0,
+            retained_messages: 0,
+            created_at: now,
+        });
+    }
+
+    let before_tokens =
+        conversation_context_stats_for_selection(db, conversation_id, connection_id, model_id)
+            .map_or(0, |s| s.category_breakdown.total_accounted_tokens);
+
+    // Keep the newest exchange (up to last 2 messages when >= 3 exist; otherwise fold older).
+    let retain_count = if post_watermark.len() >= 3 {
+        2
+    } else {
+        usize::from(post_watermark.len() == 2)
+    };
+    let fold_len = post_watermark.len().saturating_sub(retain_count);
+    let fold_slice = &post_watermark[..fold_len];
+    let after_message_id = fold_slice
+        .last()
+        .map(|m| m.id)
+        .or_else(|| post_watermark.last().map(|m| m.id))
+        .unwrap_or(watermark_id);
+
+    let mut fold_ai: Vec<AiMessage> = Vec::new();
+    if let Some(prev) = &latest_compaction {
+        fold_ai.push(AiMessage {
+            role: AiRole::User,
+            content: prev.summary.clone(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        });
+    }
+    for msg in fold_slice {
+        fold_ai.push(AiMessage {
+            role: if msg.role == "assistant" {
+                AiRole::Assistant
+            } else {
+                AiRole::User
+            },
+            content: msg.content.clone(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_result: None,
+        });
+    }
+    if fold_ai.is_empty() {
+        for msg in &post_watermark {
+            fold_ai.push(AiMessage {
+                role: if msg.role == "assistant" {
+                    AiRole::Assistant
+                } else {
+                    AiRole::User
+                },
+                content: msg.content.clone(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            });
+        }
+    }
+
+    let structured = compaction::extract_structured_summary(
+        &fold_ai,
+        active_plan_text.as_deref(),
+        &touched_files,
+    );
+    let llm_raw = executor_target.and_then(|(executor, provider, model, credential)| {
+        let prompt = compaction::summary_prompt_for_slice(&fold_ai);
+        let req = AiRequest {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            messages: Arc::new(vec![AiMessage {
+                role: AiRole::User,
+                content: prompt,
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            }]),
+            tools: Arc::new(Vec::new()),
+            model_config: None,
+            request_timeout: Some(std::time::Duration::from_secs(30)),
+        };
+        let token = CancellationToken::new();
+        executor
+            .execute(&req, credential, &token)
+            .ok()
+            .map(|r| r.content)
+            .filter(|s| !s.trim().is_empty())
+    });
+    let summary =
+        compaction::merge_summary_with_preserved_sections(llm_raw.as_deref(), &structured);
+
+    let retained_messages = post_watermark.len().saturating_sub(fold_len);
+    let summarized_messages = fold_len.max(usize::from(!fold_ai.is_empty()));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let next_seq = repo
+        .compaction_count(conversation_id)
+        .map_err(AgentRunError::Database)?
+        + 1;
+    let source_key = format!("conv:{conversation_id}:compaction:{next_seq}:{nonce}");
+
+    let retained_tokens: u64 = post_watermark[fold_len..]
+        .iter()
+        .map(|m| compaction::estimate_tokens(&m.content))
+        .sum();
+    let summary_tokens = compaction::estimate_tokens(compaction::SUMMARY_PREFIX)
+        .saturating_add(compaction::estimate_tokens(&summary));
+    let after_tokens = summary_tokens.saturating_add(retained_tokens);
+
+    let payload_json = serde_json::json!({
+        "reason": CompactionReason::Manual.as_str(),
+        "goal": structured.goal,
+        "active_plan": structured.active_plan,
+        "key_decisions": structured.key_decisions,
+        "touched_files": structured.touched_files,
+        "before_tokens": before_tokens,
+        "after_tokens": after_tokens,
+        "summarized": summarized_messages,
+        "retained": retained_messages,
+    })
+    .to_string();
+
+    let input = NewConversationCompaction {
+        conversation_id,
+        run_id: None,
+        reason: CompactionReason::Manual.as_str(),
+        after_message_id,
+        goal: &structured.goal,
+        active_plan: &structured.active_plan,
+        key_decisions: &structured.key_decisions,
+        touched_files: &structured.touched_files,
+        summary: &summary,
+        before_tokens,
+        after_tokens,
+        summarized_messages: u64::try_from(summarized_messages).unwrap_or(u64::MAX),
+        retained_messages: u64::try_from(retained_messages).unwrap_or(u64::MAX),
+    };
+    let (_compaction_id, event_id) = repo
+        .record_compaction(&input, &source_key, &payload_json)
+        .map_err(AgentRunError::Database)?;
+
+    if let Some(h) = host {
+        h.emit(&RunFrame::Durable {
+            run_id: 0,
+            conversation_id,
+            event_id,
+        });
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+
+    Ok(CompactionOutcomeView {
+        status: "compacted".to_string(),
+        conversation_id,
+        run_id: None,
+        event_id: Some(event_id),
+        reason: CompactionReason::Manual.as_str().to_string(),
+        goal: structured.goal,
+        active_plan: structured.active_plan,
+        key_decisions: structured.key_decisions,
+        touched_files: structured.touched_files,
+        summary,
+        before_tokens,
+        after_tokens,
+        summarized_messages,
+        retained_messages,
+        created_at: now,
+    })
 }
 
 /// List the steps of one run, `seq` ascending (gap-free per CF-01).
@@ -1804,7 +2173,7 @@ mod tests {
             events.iter().map(|e| e.event_id).collect::<Vec<_>>(),
             live_ids
         );
-        assert!(events.iter().all(|e| e.run_id == run_id));
+        assert!(events.iter().all(|e| e.run_id == Some(run_id)));
         let step = events[1].step.as_ref().unwrap();
         assert!(step.observation_truncated);
         assert!(!step
@@ -4497,6 +4866,219 @@ mod tests {
             1
         );
         drop(captured);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    fn seed_manual_compaction_fixture(db: &Database, conv_id: i64) {
+        let messages_repo = MessageRepository::new(db);
+        for (role, text) in [
+            ("user", "Build M16 context compaction"),
+            (
+                "assistant",
+                "We decided to use durable_run_events for compaction state.",
+            ),
+            ("user", "Add ContextRing popover breakdown"),
+            ("assistant", "Working on ContextPanel next."),
+        ] {
+            messages_repo
+                .create(conv_id, role, text, None, None)
+                .unwrap();
+        }
+        let runs_repo = AgentRunRepository::new(db);
+        let run_id = runs_repo
+            .create_run(Some(conv_id), "gpt-5.6-terra", "supervised")
+            .unwrap();
+        runs_repo
+            .append_step(
+                run_id,
+                1,
+                "tool_call",
+                Some("write_file"),
+                Some(r#"{"path":"src/components/ContextRing.tsx"}"#),
+                Some("wrote file"),
+                Some("succeeded"),
+                Some(4),
+                None,
+                None,
+                None,
+                Some(500),
+                Some(120),
+            )
+            .unwrap();
+        runs_repo
+            .finalize_run(run_id, "completed", Some("ok"), None, None, None)
+            .unwrap();
+        let plan_run_id = runs_repo
+            .create_run(Some(conv_id), "gpt-5.6-terra", "supervised")
+            .unwrap();
+        let plans = RunPlanRepository::new(db);
+        plans.mark_started(plan_run_id, conv_id).unwrap();
+        plans
+            .create(
+                plan_run_id,
+                conv_id,
+                "Phase 1: Backend accounting; Phase 2: Ring UI",
+            )
+            .unwrap();
+        plans
+            .decide(plan_run_id, "accepted", None, Some(run_id))
+            .unwrap();
+    }
+
+    #[test]
+    fn manual_compaction_preserves_goal_plan_decisions_files_and_persists_durable_event() {
+        let (db, workspace, _rx, host) = setup("manual-compaction");
+        let conv_svc = ConversationService::new(&db);
+        let conv_id = conv_svc.create("Compaction test").unwrap();
+        seed_manual_compaction_fixture(&db, conv_id);
+
+        let outcome = compact_conversation_context(
+            &db,
+            None,
+            Some(host.as_ref()),
+            None,
+            conv_id,
+            Some("openai"),
+            Some("gpt-5.6-terra"),
+        )
+        .expect("manual compaction succeeds");
+        assert_eq!(outcome.status, "compacted");
+        assert_eq!(outcome.reason, "manual");
+        assert!(outcome.event_id.is_some());
+        assert!(outcome.goal.contains("Build M16 context compaction"));
+        assert!(outcome.active_plan.contains("Backend accounting"));
+        assert!(outcome.key_decisions.contains("durable_run_events"));
+        assert!(outcome
+            .touched_files
+            .contains(&"src/components/ContextRing.tsx".to_string()));
+
+        // Durable journal contains `context_compacted`.
+        let page = list_conversation_run_events(&db, conv_id, 0, 100).unwrap();
+        assert!(
+            page.events
+                .iter()
+                .any(|e| e.kind == "context_compacted" && e.event_id == outcome.event_id.unwrap()),
+            "durable journal must record context_compacted"
+        );
+
+        // Stats reflect compaction count and timestamp.
+        let stats = conversation_context_stats_for_selection(
+            &db,
+            conv_id,
+            Some("openai"),
+            Some("gpt-5.6-terra"),
+        )
+        .unwrap();
+        assert_eq!(stats.compaction_count, 1);
+        assert!(stats.last_compacted_at.is_some());
+
+        // Subsequent agent_history injects the structured compaction summary.
+        let history = conv_svc.agent_history(conv_id, "openai").unwrap();
+        assert!(history[0]
+            .content
+            .contains(crate::application::agent::compaction::SUMMARY_PREFIX));
+        assert!(history[0].content.contains("Build M16 context compaction"));
+
+        drop(conv_svc);
+        drop(host);
+        drop(db);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn in_run_auto_compaction_persists_durable_context_compacted_event() {
+        let (db, workspace, rx, host) = setup("auto-compaction-durable");
+        let conv_id = ConversationService::new(&db)
+            .create("Auto compact")
+            .unwrap();
+        let messages_repo = MessageRepository::new(&db);
+        for i in 0..4 {
+            messages_repo
+                .create(
+                    conv_id,
+                    "user",
+                    &format!("Goal item {i} {}", "q".repeat(1200)),
+                    None,
+                    None,
+                )
+                .unwrap();
+            messages_repo
+                .create(
+                    conv_id,
+                    "assistant",
+                    &format!("We decided step {i} {}", "a".repeat(1200)),
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        // Set manual capability override so context_window = 30_000 (20k reserve -> 10k usable -> 80% = 8k).
+        crate::application::capabilities::set_manual_override(
+            &db,
+            "openai",
+            "gpt-5.6-terra",
+            Some(crate::application::capabilities::ModelCapabilityOverride {
+                context_window: Some(30_000),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "gpt-5.6-terra".into(),
+                tool_calls: vec![crate::application::execution::ToolCall {
+                    id: "tc-1".into(),
+                    name: "list_directory".into(),
+                    arguments: "{}".into(),
+                    thought_signature: None,
+                }],
+                usage: Some(crate::application::execution::TokenUsage {
+                    input_tokens: 9_000,
+                    output_tokens: 100,
+                }),
+            }),
+            Ok(text_response("1. Goal\nGoal item 0")),
+            Ok(text_response("final compacted answer")),
+        ]));
+        let registry = Arc::new(AgentRunRegistry::default());
+        let run_id = start_run(
+            &db,
+            Arc::clone(&registry),
+            host,
+            executor,
+            workspace.clone(),
+            AgentRunRequest {
+                conversation_id: conv_id,
+                user_request: "Finish the task".into(),
+                provider: "openai".into(),
+                model: "gpt-5.6-terra".into(),
+                credential: "test-key".into(),
+                max_iterations: None,
+                spend_limit_micro_usd: None,
+            },
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+        )
+        .unwrap();
+
+        let frames = collect_frames(&rx);
+        assert!(frames.iter().any(|f| matches!(
+            f,
+            RunFrame::Governance {
+                event: AgentRunEvent::ContextCompacted { reason, .. },
+                ..
+            } if reason == "threshold"
+        )));
+
+        let page = list_conversation_run_events(&db, conv_id, 0, 100).unwrap();
+        assert!(
+            page.events
+                .iter()
+                .any(|e| e.kind == "context_compacted" && e.run_id == Some(run_id)),
+            "in-run 80%/20k-reserve compaction must persist context_compacted in durable_run_events"
+        );
         std::fs::remove_dir_all(workspace).unwrap();
     }
 }

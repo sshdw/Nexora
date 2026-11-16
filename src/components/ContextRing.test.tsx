@@ -29,17 +29,24 @@ import type { ConversationContextStats } from "../lib/tauri";
 import { LocaleProvider } from "../lib/useLocale";
 import ContextRing, { formatCompactTokens } from "./ContextRing";
 
-const { mockStats, listAgentRuns, listAgentSteps, getAgentStepObservation } =
-  vi.hoisted(() => ({
-    mockStats: vi.fn(),
-    listAgentRuns: vi.fn(),
-    listAgentSteps: vi.fn(),
-    getAgentStepObservation: vi.fn(),
-  }));
+const {
+  mockStats,
+  mockCompact,
+  listAgentRuns,
+  listAgentSteps,
+  getAgentStepObservation,
+} = vi.hoisted(() => ({
+  mockStats: vi.fn(),
+  mockCompact: vi.fn(),
+  listAgentRuns: vi.fn(),
+  listAgentSteps: vi.fn(),
+  getAgentStepObservation: vi.fn(),
+}));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/tauri")>()),
   conversationContextStats: mockStats,
+  compactConversationContext: mockCompact,
   listAgentRuns,
   listAgentSteps,
   getAgentStepObservation,
@@ -66,12 +73,30 @@ afterAll(() => {
 
 beforeEach(() => {
   mockStats.mockReset();
+  mockCompact.mockReset();
   listAgentRuns.mockReset();
   listAgentSteps.mockReset();
   getAgentStepObservation.mockReset();
   listAgentRuns.mockResolvedValue([]);
   listAgentSteps.mockResolvedValue([]);
   getAgentStepObservation.mockResolvedValue("");
+  mockCompact.mockResolvedValue({
+    status: "compacted",
+    conversation_id: 7,
+    run_id: null,
+    event_id: 10,
+    reason: "manual",
+    goal: "Alpha goal",
+    active_plan: "none",
+    key_decisions: "none",
+    touched_files: [],
+    summary: "1. Goal\nAlpha goal",
+    before_tokens: 12_000,
+    after_tokens: 3_000,
+    summarized_messages: 3,
+    retained_messages: 1,
+    created_at: 1001,
+  });
   window.localStorage.clear();
 });
 
@@ -273,5 +298,75 @@ describe("formatCompactTokens", () => {
   it("never invents a number for a non-finite value", () => {
     expect(formatCompactTokens(Number.NaN)).toBe("n/a");
     expect(formatCompactTokens(Number.POSITIVE_INFINITY)).toBe("n/a");
+  });
+});
+
+describe("context ring — M16 Unknown limit, category breakdown & manual Compact", () => {
+  it("renders honest Unknown when context_window is null without fabricating a limit or %", async () => {
+    mockStats.mockResolvedValue(
+      stats({
+        context_window: null,
+        context_window_provenance: "unknown",
+        total_tokens: 12_000,
+        usage_percent: 0,
+        has_token_data: true,
+      })
+    );
+    const { container } = renderRing();
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: Unknown",
+    });
+    expect(trigger).toHaveAttribute("data-context", "unknown");
+    const svg = container.querySelector("svg[data-state='na']");
+    expect(svg).not.toBeNull();
+
+    fireEvent.click(trigger);
+    expect(screen.getByText("12K / Unknown")).toBeInTheDocument();
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(/200K/)).toBeNull();
+  });
+
+  it("triggers manual compaction from the popover Compact button and refreshes stats", async () => {
+    mockStats
+      .mockResolvedValueOnce(stats())
+      .mockResolvedValueOnce(
+        stats({
+          total_tokens: 3_000,
+          usage_percent: 2,
+          compaction_count: 1,
+          last_compacted_at: 1001,
+        })
+      );
+    const onCompacted = vi.fn();
+    render(
+      <LocaleProvider>
+        <ContextRing
+          conversationId={7}
+          revision="0"
+          selectedConnectionId="openai"
+          selectedModel="gpt-5"
+          onCompacted={onCompacted}
+        />
+      </LocaleProvider>
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Context window: 6% used" })
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Compact conversation context" })
+    );
+
+    await waitFor(() =>
+      expect(mockCompact).toHaveBeenCalledWith(7, {
+        connectionId: "openai",
+        modelId: "gpt-5",
+      })
+    );
+    expect(
+      await screen.findByText("Context compacted (3 folded, 1 kept).")
+    ).toBeInTheDocument();
+    expect(onCompacted).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(2));
   });
 });

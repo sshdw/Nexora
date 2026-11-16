@@ -95,18 +95,16 @@ pub(crate) const CONTINUE_TEXT: &str = "Your context was compacted; the summary 
 
 /// Structured summary contract for the summarizer call. `{history}` is
 /// replaced with the serialized folded head, `{max_tokens}` with
-/// [`SUMMARY_MAX_OUTPUT_TOKENS`]. Section names and wording are original;
-/// only the contract shape (a fixed section list) is shared with prior art.
+/// [`SUMMARY_MAX_OUTPUT_TOKENS`]. Explicitly preserves Goal, Active Plan,
+/// Key Decisions, and Touched Files / Open Tasks (M16).
 pub(crate) const SUMMARY_TEMPLATE: &str = "You are compacting an autonomous coding agent's context. \
      Summarize the earlier turns below into a handoff note of at most {max_tokens} tokens, \
      written in plain text with exactly these sections in order (write \"none\" for any section with nothing to report):\n\
      \n\
      1. Goal — the user's original request and overall objective.\n\
-     2. Key facts — decisions, constraints, and discoveries the next turn must not forget.\n\
-     3. Files — paths touched or read, with one line each on what changed or was learned.\n\
-     4. Errors — failures seen and how each was fixed or worked around.\n\
-     5. Progress — what is done and verified so far.\n\
-     6. Open work — unfinished tasks and the immediate next action.\n\
+     2. Active Plan — the active implementation plan, agreed steps, or \"none\".\n\
+     3. Key Decisions — decisions, constraints, user approvals/denials, and discoveries the next turn must not forget.\n\
+     4. Touched Files / Open Tasks — file paths read or modified with one line each, errors seen/fixed, completed progress, and remaining open tasks / immediate next action.\n\
      \n\
      Rules: preserve exact file paths, identifiers, and error text; drop tool-output noise; \
      never invent work that did not happen.\n\
@@ -570,6 +568,217 @@ pub(crate) enum ContextAction {
     Exhausted,
 }
 
+/// Structured compaction fields explicitly preserved across auto and manual
+/// compaction (M16: Goal, Active Plan, Key Decisions, Touched Files / Open Tasks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StructuredCompactionSummary {
+    pub goal: String,
+    pub active_plan: String,
+    pub key_decisions: String,
+    pub touched_files: Vec<String>,
+    pub open_tasks: String,
+    pub formatted: String,
+}
+
+fn push_unique_path(paths: &mut Vec<String>, candidate: &str) {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() || trimmed.len() > 260 {
+        return;
+    }
+    if !paths.iter().any(|existing| existing == trimmed) {
+        paths.push(trimmed.to_string());
+    }
+}
+
+fn extract_path_from_json_args(arguments: &str) -> Option<String> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(arguments) else {
+        return None;
+    };
+    for key in ["path", "file_path", "target", "dir_path", "file"] {
+        if let Some(s) = val.get(key).and_then(serde_json::Value::as_str) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn clip_summary_line(text: &str, max_chars: usize) -> String {
+    let single = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = single.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let kept: String = trimmed.chars().take(max_chars).collect();
+    format!("{kept}…")
+}
+
+fn collect_decision_lines(text: &str, decisions: &mut Vec<String>) {
+    for line in text.lines() {
+        let l = line.trim();
+        let lower = l.to_ascii_lowercase();
+        if (lower.contains("decid")
+            || lower.contains("chosen")
+            || lower.contains("approved")
+            || lower.contains("constraint")
+            || lower.contains("must ")
+            || lower.contains("will use"))
+            && decisions.len() < 6
+        {
+            decisions.push(clip_summary_line(l, 200));
+        }
+    }
+}
+
+/// Deterministically extract **Goal**, **Active Plan**, **Key Decisions**, and
+/// **Touched Files / Open Tasks** from a message slice and optional plan/files.
+#[must_use]
+pub(crate) fn extract_structured_summary(
+    head: &[AiMessage],
+    active_plan: Option<&str>,
+    extra_touched_files: &[String],
+) -> StructuredCompactionSummary {
+    let mut goal = String::new();
+    let mut decisions: Vec<String> = Vec::new();
+    let mut touched_files: Vec<String> = Vec::new();
+    let mut open_tasks: Vec<String> = Vec::new();
+
+    for path in extra_touched_files {
+        push_unique_path(&mut touched_files, path);
+    }
+
+    for msg in head {
+        match msg.role {
+            AiRole::User => {
+                let text = msg.composed_content();
+                let trimmed = text.trim();
+                if trimmed.is_empty()
+                    || trimmed == CONTINUE_TEXT
+                    || trimmed.starts_with(SUMMARY_PREFIX)
+                {
+                    continue;
+                }
+                if goal.is_empty() {
+                    goal = clip_summary_line(trimmed, 400);
+                } else {
+                    open_tasks.push(clip_summary_line(trimmed, 220));
+                }
+            }
+            AiRole::Assistant => {
+                for call in &msg.tool_calls {
+                    if let Some(path) = extract_path_from_json_args(&call.arguments) {
+                        push_unique_path(&mut touched_files, &path);
+                    }
+                }
+                if !msg.content.trim().is_empty() {
+                    collect_decision_lines(msg.content.trim(), &mut decisions);
+                }
+            }
+            AiRole::Tool => {
+                if let Some(res) = &msg.tool_result {
+                    if res.content.contains("denied") {
+                        decisions.push(format!(
+                            "Tool '{}' denied: {}",
+                            res.name,
+                            clip_summary_line(&res.content, 160)
+                        ));
+                    }
+                }
+            }
+            AiRole::System => {}
+        }
+    }
+
+    if goal.is_empty() {
+        goal = "none".to_string();
+    }
+    let active_plan_text = active_plan
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| "none".to_string(), |s| clip_summary_line(s, 600));
+    let key_decisions = if decisions.is_empty() {
+        "none".to_string()
+    } else {
+        decisions.join("; ")
+    };
+    let open_tasks_text = if open_tasks.is_empty() {
+        "none".to_string()
+    } else {
+        open_tasks
+            .into_iter()
+            .rev()
+            .take(3)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+
+    let files_part = if touched_files.is_empty() {
+        "none".to_string()
+    } else {
+        touched_files.join(", ")
+    };
+    let formatted = format!(
+        "1. Goal\n{goal}\n\n2. Active Plan\n{active_plan_text}\n\n3. Key Decisions\n{key_decisions}\n\n4. Touched Files / Open Tasks\nFiles: {files_part}\nOpen tasks: {open_tasks_text}"
+    );
+
+    StructuredCompactionSummary {
+        goal,
+        active_plan: active_plan_text,
+        key_decisions,
+        touched_files,
+        open_tasks: open_tasks_text,
+        formatted,
+    }
+}
+
+/// Combine an LLM-generated summary with deterministic preserved sections so
+/// **Goal**, **Active Plan**, **Key Decisions**, and **Touched Files / Open Tasks**
+/// are never lost even if the model omits a section.
+#[must_use]
+pub(crate) fn merge_summary_with_preserved_sections(
+    llm_summary: Option<&str>,
+    structured: &StructuredCompactionSummary,
+) -> String {
+    let Some(raw) = llm_summary.map(str::trim).filter(|s| !s.is_empty()) else {
+        return structured.formatted.clone();
+    };
+    let lower = raw.to_ascii_lowercase();
+    let mut out = raw.to_string();
+    if !lower.contains("goal") && structured.goal != "none" {
+        out.push_str("\n\n1. Goal\n");
+        out.push_str(&structured.goal);
+    }
+    if !lower.contains("active plan") && structured.active_plan != "none" {
+        out.push_str("\n\n2. Active Plan\n");
+        out.push_str(&structured.active_plan);
+    }
+    if !lower.contains("key decision") && structured.key_decisions != "none" {
+        out.push_str("\n\n3. Key Decisions\n");
+        out.push_str(&structured.key_decisions);
+    }
+    let missing_files: Vec<&str> = structured
+        .touched_files
+        .iter()
+        .map(String::as_str)
+        .filter(|path| !raw.contains(*path))
+        .collect();
+    if !missing_files.is_empty() {
+        out.push_str("\n\n4. Touched Files / Open Tasks\nFiles: ");
+        out.push_str(&missing_files.join(", "));
+    }
+    out
+}
+
 /// Why a compaction was requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompactionReason {
@@ -580,15 +789,18 @@ pub(crate) enum CompactionReason {
     },
     /// A provider reported a context-length failure.
     Overflow,
+    /// Explicit user-initiated compaction (`/compact` or `ContextRing` button).
+    Manual,
 }
 
 impl CompactionReason {
-    /// Stable event string for this reason (`"threshold"` / `"overflow"`).
+    /// Stable event string for this reason (`"threshold"` / `"overflow"` / `"manual"`).
     #[must_use]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Threshold { .. } => "threshold",
             Self::Overflow => "overflow",
+            Self::Manual => "manual",
         }
     }
 }
@@ -1112,5 +1324,65 @@ mod tests {
             .iter()
             .filter_map(|message| message.tool_result.as_ref())
             .any(|outcome| outcome.content == "old output"));
+    }
+
+    #[test]
+    fn structured_summary_preserves_goal_active_plan_decisions_and_touched_files() {
+        let (call_write, res_write) = assistant_with_tool("w1", "write_file", "ok");
+        let mut call_write = call_write;
+        call_write.tool_calls[0].arguments =
+            r#"{"path":"src/components/ContextRing.tsx","content":"..."}"#.to_string();
+        call_write.content = "We decided to use monochrome tokens only.".to_string();
+
+        let (call_denied, res_denied) = assistant_with_tool(
+            "d1",
+            "execute_command",
+            "Error: tool execution was denied by the user",
+        );
+
+        let head = vec![
+            system(),
+            user("Implement M16 context accounting and ContextRing popover"),
+            call_write,
+            res_write,
+            call_denied,
+            res_denied,
+            user("Wire /compact slash command too"),
+        ];
+
+        let structured = extract_structured_summary(
+            &head,
+            Some("Step 1: Add ContextCategoryBreakdown\nStep 2: Add /compact"),
+            &["src-tauri/src/application/context_stats.rs".to_string()],
+        );
+        assert!(structured.goal.contains("Implement M16 context accounting"));
+        assert!(structured
+            .active_plan
+            .contains("Add ContextCategoryBreakdown"));
+        assert!(structured.key_decisions.contains("monochrome tokens"));
+        assert!(structured.key_decisions.contains("denied"));
+        assert!(structured
+            .touched_files
+            .contains(&"src/components/ContextRing.tsx".to_string()));
+        assert!(structured
+            .touched_files
+            .contains(&"src-tauri/src/application/context_stats.rs".to_string()));
+        assert!(structured.open_tasks.contains("/compact"));
+
+        // Even if an LLM summary omits sections/files, merge preserves them.
+        let merged = merge_summary_with_preserved_sections(Some("Short summary."), &structured);
+        assert!(merged.contains("1. Goal"));
+        assert!(merged.contains("2. Active Plan"));
+        assert!(merged.contains("3. Key Decisions"));
+        assert!(merged.contains("src/components/ContextRing.tsx"));
+    }
+
+    #[test]
+    fn manual_compaction_reason_and_summary_template_sections() {
+        assert_eq!(CompactionReason::Manual.as_str(), "manual");
+        assert!(SUMMARY_TEMPLATE.contains("1. Goal"));
+        assert!(SUMMARY_TEMPLATE.contains("2. Active Plan"));
+        assert!(SUMMARY_TEMPLATE.contains("3. Key Decisions"));
+        assert!(SUMMARY_TEMPLATE.contains("4. Touched Files / Open Tasks"));
     }
 }
