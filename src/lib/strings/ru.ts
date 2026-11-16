@@ -189,6 +189,8 @@ export const ru: Record<StringKey, string> = {
   "conv.originTitle": "Провайдер и модель, использованные для этого сообщения",
   "conv.responding": "Ассистент отвечает",
   "conv.agentWorking": "Агент работает",
+  "conv.attachmentMissing": "Нет файла",
+  "conv.attachmentsWaitForRun": "Вложения сохранены в черновике. Дождитесь завершения запуска или удалите их перед уточнением или добавлением в очередь.",
   "conv.attachedFiles": "Прикреплённые файлы",
   "conv.removeFile": "Убрать {name}",
   "conv.messagePlaceholder": "Спросите что угодно или опишите задачу",

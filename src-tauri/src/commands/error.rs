@@ -116,6 +116,7 @@ impl From<RequestError> for CommandError {
 impl From<ConversationError> for CommandError {
     fn from(err: ConversationError) -> Self {
         match err {
+            ConversationError::AttachmentLimit => Self::new(ErrorKind::InvalidInput, "at most 10 files / 50 MiB per message"),
             ConversationError::NotFound { id } => Self::new(
                 ErrorKind::NotFound,
                 format!("conversation {id} does not exist"),
@@ -462,6 +463,10 @@ impl From<ConfirmationError> for CommandError {
 impl From<DataManagementError> for CommandError {
     fn from(err: DataManagementError) -> Self {
         match err {
+            DataManagementError::AttachmentCleanup => Self::new(
+                ErrorKind::Database,
+                "attachment cleanup failed; retry deletion",
+            ),
             DataManagementError::ConfirmationRequired => Self::new(
                 ErrorKind::ConfirmationRequired,
                 "explicit confirmation is required before destructive data-management operations",

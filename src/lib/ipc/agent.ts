@@ -229,7 +229,8 @@ export function startAgentRun(
   provider: string,
   model: string,
   effort?: string | null,
-  isPlan?: boolean | null
+  isPlan?: boolean | null,
+  attachmentIds: number[] = []
 ): Promise<{ run_id: number }> {
   return invoke<{ run_id: number }>("start_agent_run", {
     conversationId,
@@ -238,6 +239,7 @@ export function startAgentRun(
     model,
     effort: effort ?? null,
     isPlan: isPlan ?? null,
+    attachmentIds,
   });
 }
 

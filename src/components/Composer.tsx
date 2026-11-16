@@ -20,13 +20,10 @@
    composer only dispatches `onAgentModeChange`. There is no
    second default here — one owner, one truth.
 
-   NO ATTACHMENTS IN AGENT MODE (R4-02 / G-20). `start_agent_run`
-   cannot carry attachments yet, so while Agent is the mode the
-   "+" control, the attached-file chips and the "+ attach files"
-   teaching chip are ABSENT — not disabled, not greyed. A disabled
-   control promises "later"; only an absent one promises nothing.
-   The draft itself survives the switch untouched: switching modes
-   is not a send, and a send is the only thing that clears it.
+   MANAGED ATTACHMENTS IN BOTH MODES (Stage 8 / M15). The same draft
+   chips and attach action are visible in Chat and Agent. Live Queue and
+   Clarify remain text-only, so attachment-bearing live drafts stay visible
+   and wait for the current run to finish.
 
    THE PLACEHOLDER IS THE AFFORDANCE. The textarea keeps its real
    `placeholder` attribute and it is what a user SEES: the field has no
@@ -278,17 +275,10 @@ export default function Composer({
           }
         },
       },
-      ...(!agentMode
-        ? [
-            {
-              id: "attach",
-              command: "/attach",
-              description: t("conv.slashAttachDesc"),
-              disabled: busy || attachmentsBusy,
-              run: () => onPickFiles(),
-            },
-          ]
-        : []),
+      { id: "attach", command: "/attach", description: t("conv.slashAttachDesc"),
+        disabled: busy || attachmentsBusy || live,
+        run: () => onPickFiles(),
+      },
       {
         id: "clear",
         command: "/clear",
@@ -314,6 +304,7 @@ export default function Composer({
     agentMode,
     attachmentsBusy,
     busy,
+    live,
     draft.length,
     onAgentModeChange,
     onDraftChange,
@@ -470,13 +461,7 @@ export default function Composer({
       <div className="nex-composer-inner">
         <WorkspaceContextRow workspace={workspace} />
         <div className="nex-composer-shell">
-          {/* Attachments belong to the CHAT path only. An agent run
-              cannot carry them (G-20: `start_agent_run` has no
-              attachment parameter), so neither the draft chips nor
-              the attach control render in Agent mode: showing a file
-              the run would silently drop is a promise the backend
-              cannot keep. */}
-          {!agentMode && attachments.length > 0 && (
+          {attachments.length > 0 && (
             <ul
               className="nex-composer-attachments"
               aria-label={t("conv.attachedFiles")}
@@ -491,6 +476,7 @@ export default function Composer({
                     >
                       {attachment.file_name}
                     </span>
+                    {attachment.availability === "missing" && <span className="nex-attachment-missing">{t("conv.attachmentMissing")}</span>}
                     {formatBytes(attachment.file_size_bytes) !== null && (
                       <span className="nex-chip-size">
                         {formatBytes(attachment.file_size_bytes)}
@@ -644,12 +630,11 @@ export default function Composer({
                     aria-label={t("conv.plusMenuTitle")}
                     className="nex-composer-plus-list"
                   >
-                    {!agentMode && (
-                      <button
+                    <button
                         type="button"
                         role="menuitem"
                         className="nex-composer-trigger-option"
-                        disabled={busy || attachmentsBusy}
+                        disabled={busy || attachmentsBusy || live}
                         onClick={() => {
                           setPlusOpen(false);
                           onPickFiles();
@@ -662,7 +647,6 @@ export default function Composer({
                           {t("conv.plusMenuAttach")}
                         </span>
                       </button>
-                    )}
                     <button
                       type="button"
                       role="menuitem"
@@ -1017,7 +1001,7 @@ export default function Composer({
                       type="button"
                       size="xs"
                       variant="outline"
-                      disabled={liveActionBusy || draft.trim() === ""}
+                      disabled={liveActionBusy || attachments.length > 0 || draft.trim() === ""}
                       onClick={onClarifyNow}
                     >
                       {t("composer.clarifyNow")}
@@ -1028,7 +1012,7 @@ export default function Composer({
                       type="button"
                       size="xs"
                       variant="ghost"
-                      disabled={!ready || liveActionBusy || draft.trim() === ""}
+                      disabled={!ready || liveActionBusy || attachments.length > 0 || draft.trim() === ""}
                       onClick={onQueuePrompt}
                     >
                       {t("composer.queuePrompt")}
@@ -1081,6 +1065,7 @@ export default function Composer({
             to send" restated what the field already does and sat under the
             composer on every screen; the setup hint is the one case where
             the composer cannot work and says what to do about it. */}
+        {live && attachments.length > 0 && <p className="nex-composer-hint" role="status">{t("conv.attachmentsWaitForRun")}</p>}
         {!ready && (
           <p className="nex-composer-hint">
             <span className="nex-composer-shortcut">

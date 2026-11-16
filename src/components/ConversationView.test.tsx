@@ -23,7 +23,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { tr } from "../lib/strings";
-import type { Message } from "../lib/tauri";
+import type { Attachment, Message } from "../lib/tauri";
 import type { AgentRunView } from "../lib/useAgentRun";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
@@ -73,6 +73,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 // app opens on. `conversationMessages` lets the message-body describe block
 // (ADD-01) seed exactly the rows it pins without touching the others.
 let conversationMessages: Message[] = [];
+let draftAttachments: Attachment[] = [];
 vi.mock("../lib/useConversation", () => ({
   useConversation: () => ({
     messages: conversationMessages,
@@ -86,7 +87,7 @@ vi.mock("../lib/useConversation", () => ({
 
 vi.mock("../lib/useAttachments", () => ({
   useAttachments: () => ({
-    attachments: [],
+    attachments: draftAttachments,
     error: null,
     busy: false,
     pickAndAttach: vi.fn(async () => {}),
@@ -175,6 +176,7 @@ function modeGroup(): HTMLElement {
 
 beforeEach(() => {
   conversationMessages = [];
+  draftAttachments = [];
   agentRuns = [];
   startAgentRunMock.mockClear();
   decideRunPlanMock.mockClear();
@@ -357,6 +359,24 @@ describe("Stage 5 PR 5B: ConversationView Plan toggle & Thinking integration", (
   });
 });
 
+describe("managed attachments in Agent", () => {
+  it("sends the visible draft IDs through Agent IPC", async () => {
+    draftAttachments = [{ id: 8, conversation_id: 1, message_id: null, file_name: "note.rs", file_path: "backend-only", file_size_bytes: 12, mime_type: "text/plain" }];
+    render(pane("Read this file"));
+    expect(screen.getByText("note.rs")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(startAgentRunMock).toHaveBeenCalledWith(1, "Read this file", "gemini", "gemini-3.6-flash", null, false, [8]));
+  });
+
+  it("renders missing historical attachments without exposing backend paths", () => {
+    conversationMessages = [{ id: 1, conversation_id: 1, role: "user", content: "earlier", provider_id: null, model_name: null, created_at: 1, attachments: [{ id: 8, conversation_id: 1, message_id: 1, file_name: "legacy.pdf", file_path: "private-backend-path", file_size_bytes: 12, mime_type: "application/pdf", availability: "missing" }] }];
+    render(pane(""));
+    expect(screen.getByText("legacy.pdf")).toBeInTheDocument();
+    expect(screen.getByText("Missing")).toBeInTheDocument();
+    expect(screen.queryByText("private-backend-path")).not.toBeInTheDocument();
+  });
+});
+
 describe("Stage 6 PR 6B: Plan decision flow and safe Continue", () => {
   it("submits with isPlan=true when Plan toggle is active", async () => {
     render(pane("Design the migration"));
@@ -374,7 +394,8 @@ describe("Stage 6 PR 6B: Plan decision flow and safe Continue", () => {
         "gemini",
         "gemini-3.6-flash",
         null,
-        true
+        true,
+        []
       );
     });
   });

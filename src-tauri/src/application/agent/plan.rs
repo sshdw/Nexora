@@ -205,6 +205,7 @@ pub(crate) fn decide_run_plan(
                     continued_from_run_id: None,
                     extra_history: vec![approved_plan_msg],
                     persist_user_message,
+                    attachment_ids: Vec::new(),
                 },
             )?;
 

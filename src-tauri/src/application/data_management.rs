@@ -89,6 +89,7 @@ pub(crate) struct DataManagementService<'a> {
     providers: ProviderRepository<'a>,
     settings: SettingsRepository<'a>,
     checkpoints: Option<CheckpointStore>,
+    attachments: Option<super::managed_attachments::AttachmentStore>,
 }
 
 impl<'a> DataManagementService<'a> {
@@ -101,6 +102,7 @@ impl<'a> DataManagementService<'a> {
             providers: ProviderRepository::new(db),
             settings: SettingsRepository::new(db),
             checkpoints: None,
+            attachments: None,
         }
     }
 
@@ -112,6 +114,14 @@ impl<'a> DataManagementService<'a> {
             checkpoints: Some(store),
             ..Self::new(db)
         }
+    }
+
+    pub(crate) fn with_attachments(
+        mut self,
+        store: super::managed_attachments::AttachmentStore,
+    ) -> Self {
+        self.attachments = Some(store);
+        self
     }
 
     /// Require `confirmation_id` to be a live single-use id minted for the
@@ -159,6 +169,7 @@ impl<'a> DataManagementService<'a> {
             confirmation_id,
             &ConfirmationTarget::for_target(OP_DELETE_CONVERSATION, id),
         )?;
+        let _lifecycle = super::managed_attachments::lifecycle();
         let candidate_blobs = if self.checkpoints.is_some() {
             FileCheckpointRepository::new(self.db).collect_pre_blobs_for_conversation(id)?
         } else {
@@ -169,6 +180,11 @@ impl<'a> DataManagementService<'a> {
             if let Err(err) = store.gc_unreferenced_blobs(self.db, Some(&candidate_blobs)) {
                 log::warn!("checkpoint blob GC failed: {}", err.summary());
             }
+        }
+        if let Some(store) = &self.attachments {
+            store
+                .purge(Some(id))
+                .map_err(|_| DataManagementError::AttachmentCleanup)?;
         }
         Ok(())
     }
@@ -228,6 +244,7 @@ impl<'a> DataManagementService<'a> {
             confirmation_id,
             &ConfirmationTarget::new(OP_CLEAR_ALL_DATA),
         )?;
+        let _lifecycle = super::managed_attachments::lifecycle();
         let clock = crate::application::agent::access::policy_clock(self.db);
         let mut epoch = clock
             .write()
@@ -248,6 +265,11 @@ impl<'a> DataManagementService<'a> {
                 log::warn!("checkpoint clear GC failed: {}", err.summary());
             }
         }
+        if let Some(store) = &self.attachments {
+            store
+                .purge(None)
+                .map_err(|_| DataManagementError::AttachmentCleanup)?;
+        }
         Ok(())
     }
 }
@@ -259,6 +281,8 @@ impl<'a> DataManagementService<'a> {
 /// §9, §11; AC-10).
 #[derive(Debug)]
 pub(crate) enum DataManagementError {
+    /// Rows were removed, but owned file cleanup needs a retry.
+    AttachmentCleanup,
     /// A destructive operation was invoked without a live single-use
     /// confirmation id (AC-5; NEX-SEC-004).
     ConfirmationRequired,
@@ -269,6 +293,7 @@ pub(crate) enum DataManagementError {
 impl std::fmt::Display for DataManagementError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::AttachmentCleanup => f.write_str("attachment cleanup failed; retry deletion"),
             Self::ConfirmationRequired => write!(
                 f,
                 "explicit confirmation is required before this destructive action can run"
@@ -281,7 +306,7 @@ impl std::fmt::Display for DataManagementError {
 impl std::error::Error for DataManagementError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::ConfirmationRequired => None,
+            Self::ConfirmationRequired | Self::AttachmentCleanup => None,
             Self::Database(err) => Some(err),
         }
     }
@@ -885,5 +910,90 @@ mod tests {
         drop(ctx2);
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn confirmed_conversation_deletion_removes_managed_copies_and_preserves_originals() {
+        let db = test_db();
+        let root =
+            std::env::temp_dir().join(format!("nexora-attachment-delete-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("source.txt");
+        std::fs::write(&source, "original bytes").unwrap();
+        let store =
+            super::super::managed_attachments::AttachmentStore::open(root.join("attachments"))
+                .unwrap();
+        let conversation = create_conversation(&db, "managed");
+        let other = create_conversation(&db, "other");
+        let attachments =
+            super::super::attachments::AttachmentService::with_store(&db, store.clone());
+        let own = attachments
+            .attach(conversation, "source.txt", &source.to_string_lossy(), None)
+            .unwrap();
+        let kept = attachments
+            .attach(other, "source.txt", &source.to_string_lossy(), None)
+            .unwrap();
+        let message = insert_message(&db, conversation, "attached message");
+        AttachmentRepository::new(&db)
+            .update_message_id(own.id, Some(message))
+            .unwrap();
+        let service = DataManagementService::new(&db).with_attachments(store);
+        let confirmations = ConfirmationRegistry::new();
+        assert!(service
+            .delete_conversation(conversation, "unconfirmed", &confirmations)
+            .is_err());
+        assert!(std::path::Path::new(&own.file_path).exists());
+        service
+            .delete_conversation(
+                conversation,
+                &mint_delete_conversation(&confirmations, conversation),
+                &confirmations,
+            )
+            .unwrap();
+        assert!(!std::path::Path::new(&own.file_path).exists());
+        assert!(std::path::Path::new(&kept.file_path).exists());
+        assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
+        service
+            .clear(&mint_clear(&confirmations), &confirmations)
+            .unwrap();
+        assert!(!std::path::Path::new(&kept.file_path).exists());
+        assert_eq!(std::fs::read(&source).unwrap(), b"original bytes");
+        drop(service);
+        drop(attachments);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn concurrent_attachment_admission_and_deletion_leave_no_managed_orphans() {
+        let db = test_db();
+        let conversation = create_conversation(&db, "delete race");
+        let root =
+            std::env::temp_dir().join(format!("nexora-delete-race-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("note.txt");
+        std::fs::write(&source, "original").unwrap();
+        let store =
+            super::super::managed_attachments::AttachmentStore::open(root.join("attachments"))
+                .unwrap();
+        let drafts = super::super::attachments::AttachmentService::with_store(&db, store.clone());
+        let service = DataManagementService::new(&db).with_attachments(store);
+        let confirmations = ConfirmationRegistry::new();
+        let confirmation = mint_delete_conversation(&confirmations, conversation);
+        std::thread::scope(|scope| {
+            let attach = scope
+                .spawn(|| drafts.attach(conversation, "note.txt", &source.to_string_lossy(), None));
+            let delete = scope
+                .spawn(|| service.delete_conversation(conversation, &confirmation, &confirmations));
+            let _ = attach.join().unwrap();
+            delete.join().unwrap().unwrap();
+        });
+        assert_eq!(count(&db, "conversations"), 0);
+        assert_eq!(count(&db, "attachments"), 0);
+        assert!(!root
+            .join("attachments")
+            .join(conversation.to_string())
+            .exists());
+        assert_eq!(std::fs::read(source).unwrap(), b"original");
+        drop(service);
+        drop(drafts);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

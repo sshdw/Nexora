@@ -64,6 +64,58 @@ impl Repository for AttachmentRepository<'_> {
 }
 
 impl AttachmentRepository<'_> {
+    /// Insert after checking the draft budget on the same write transaction.
+    /// This also defends admission across independent database connections.
+    pub(crate) fn create_admitted(
+        &self,
+        conversation: i64,
+        name: &str,
+        path: &str,
+        size: i64,
+        mime: &str,
+        budget: (i64, i64),
+    ) -> Result<i64> {
+        self.transaction(|tx| {
+            let (count, bytes): (i64, i64) = tx.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(COALESCE(file_size_bytes, ?2)), 0) FROM attachments WHERE conversation_id = ?1 AND message_id IS NULL",
+                params![conversation, budget.1], |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if count >= budget.0 || bytes.saturating_add(size) > budget.1 {
+                return Err(DatabaseError::Sqlite(SqliteError::QueryReturnedNoRows));
+            }
+            tx.execute("INSERT INTO attachments (conversation_id, file_name, file_path, file_size_bytes, mime_type) VALUES (?1, ?2, ?3, ?4, ?5)", params![conversation, name, path, size, mime])?;
+            Ok(tx.last_insert_rowid())
+        })
+    }
+    /// Compare-and-link in the message transaction; stale, foreign or already
+    /// linked drafts fail the entire message commit.
+    pub(crate) fn link_draft(
+        tx: &rusqlite::Transaction<'_>,
+        attachment: &Attachment,
+        message: i64,
+    ) -> Result<()> {
+        let changed = tx.execute(
+            "UPDATE attachments SET message_id = ?1 WHERE id = ?2 AND conversation_id = ?3 AND message_id IS NULL AND file_path = ?4 AND file_size_bytes IS ?5 AND mime_type IS ?6 AND file_name = ?7 AND EXISTS (SELECT 1 FROM messages WHERE id = ?1 AND conversation_id = ?3)",
+            params![message, attachment.id, attachment.conversation_id, attachment.file_path, attachment.file_size_bytes, attachment.mime_type, attachment.file_name],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::Sqlite(SqliteError::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn delete_draft(&self, id: i64) -> Result<()> {
+        let conn = self.conn()?;
+        if conn.execute(
+            "DELETE FROM attachments WHERE id = ?1 AND message_id IS NULL",
+            [id],
+        )? != 1
+        {
+            return Err(DatabaseError::Sqlite(SqliteError::QueryReturnedNoRows));
+        }
+        Ok(())
+    }
+
     /// Insert a new draft attachment (DATABASE.md §7.4).
     ///
     /// Persists the caller-supplied `conversation_id`, `file_name`, `file_path`,

@@ -38,8 +38,10 @@ pub(crate) fn delete_conversation_permanently(
     db: State<'_, Database>,
     confirmations: State<'_, ManagedConfirmations>,
     checkpoints: State<'_, CheckpointStore>,
+    attachments: State<'_, crate::application::managed_attachments::AttachmentStore>,
 ) -> Result<(), CommandError> {
     DataManagementService::with_checkpoints(db.inner(), checkpoints.inner().clone())
+        .with_attachments(attachments.inner().clone())
         .delete_conversation(id, &confirmation_id, &confirmations)
         .map_err(Into::into)
 }
@@ -67,8 +69,10 @@ pub(crate) fn clear_application_data(
     db: State<'_, Database>,
     confirmations: State<'_, ManagedConfirmations>,
     checkpoints: State<'_, CheckpointStore>,
+    attachments: State<'_, crate::application::managed_attachments::AttachmentStore>,
 ) -> Result<(), CommandError> {
     DataManagementService::with_checkpoints(db.inner(), checkpoints.inner().clone())
+        .with_attachments(attachments.inner().clone())
         .clear(&confirmation_id, &confirmations)
         .map_err(Into::into)
 }

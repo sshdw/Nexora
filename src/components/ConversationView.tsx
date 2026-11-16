@@ -499,7 +499,8 @@ export default function ConversationView({
           selectedProvider,
           selectedModel,
           effectiveEffort,
-          agentMode && planMode
+          agentMode && planMode,
+          attachmentIds
         );
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
@@ -548,7 +549,7 @@ export default function ConversationView({
 
   const handleClarifyNow = useCallback(async () => {
     const content = draft.trim();
-    if (!content || liveRunId === null || liveActionBusy) return;
+    if (!content || liveRunId === null || liveActionBusy || attachments.length > 0) return;
     setAgentError(null);
     setLiveActionBusy(true);
     try {
@@ -565,11 +566,11 @@ export default function ConversationView({
     } finally {
       setLiveActionBusy(false);
     }
-  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft]);
+  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft, attachments.length]);
 
   const handleQueuePrompt = useCallback(async () => {
     const content = draft.trim();
-    if (!content || !selectedProvider || !selectedModel || liveActionBusy) return;
+    if (!content || !selectedProvider || !selectedModel || liveActionBusy || attachments.length > 0) return;
     setAgentError(null);
     setLiveActionBusy(true);
     try {
@@ -597,6 +598,7 @@ export default function ConversationView({
     selectedModel,
     effectiveEffort,
     liveActionBusy,
+    attachments.length,
     enqueueQueueItem,
     setDraft,
   ]);
@@ -790,6 +792,16 @@ export default function ConversationView({
                   {/* ADD-01: only model-authored bodies are markdown-
                       interpreted (05-ADD §3.1); user text is data, not
                       formatting, and stays plain escaped text. */}
+                  {(item.message.attachments?.length ?? 0) > 0 && (
+                    <ul className="nex-message-attachments" aria-label={t("conv.attachedFiles")}>
+                      {item.message.attachments?.map((attachment) => (
+                        <li key={attachment.id} className="nex-chip">
+                          <span className="nex-chip-name">{attachment.file_name}</span>
+                          {attachment.availability === "missing" && <span className="nex-attachment-missing">{t("conv.attachmentMissing")}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   {item.message.role === "assistant" ? (
                     <MessageMarkdown
                       messageId={item.message.id}

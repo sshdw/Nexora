@@ -2430,6 +2430,7 @@ dependencies = [
  "tree-sitter-bash",
  "tree-sitter-powershell",
  "url",
+ "uuid",
 ]
 
 [[package]]

@@ -7,32 +7,12 @@
 //! and no database access of its own: all persistence is delegated to the
 //! existing repositories.
 //!
-//! # Local-file semantics
-//!
-//! FR-008 requires a *local-file reference*: the `file_name`, `file_path`, and
-//! `mime_type` metadata are persisted in a draft row (`message_id` is `NULL`)
-//! so attachments are visible before submission and removable before sending
-//! (DATABASE.md §7.4). `file_size_bytes` is derived server-side from the
-//! file's own metadata (SEC-01) — the renderer never supplies it. No file is
-//! copied, parsed, or uploaded at attach time, no content is extracted, and
-//! no cloud path, remote URL, upload mechanism, or provider-specific
-//! attachment representation is introduced here.
-//!
-//! # Provider independence (ARCHITECTURE.md §7)
-//!
-//! This module contains no `OpenAI`, `Anthropic`, or `Gemini`-specific
-//! behavior. Attachments are recorded as conversation-owned draft rows and are
-//! never sent to a provider from this layer.
-//!
-//! # Scope
-//!
-//! Document processing — `OCR`, parsing, indexing, embeddings, retrieval,
-//! `RAG`, `AST` analysis, and full-text search — is out of Phase 6 scope and is
-//! not implemented here.
+//! Files are admitted through bounded, no-follow reads and copied to the app-owned
+//! store before the draft row is committed. User originals are never mutated.
 
 use std::path::{Path, PathBuf};
 
-use super::conversations::MAX_ATTACHMENT_BYTES;
+use super::managed_attachments::{self, AttachmentStore, MAX_FILES, MAX_TOTAL_BYTES};
 use super::workspace::{
     is_drive_root, is_system_file_path, is_unc_path, strip_verbatim, WORKSPACE_ROOT_MAX_LEN,
 };
@@ -45,6 +25,28 @@ use rusqlite::Error as SqliteError;
 /// validation and persistence failures.
 pub(crate) type Result<T> = std::result::Result<T, AttachmentError>;
 
+/// IPC projection: missing legacy references remain visible and removable.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct AttachmentView {
+    #[serde(flatten)]
+    pub attachment: Attachment,
+    pub availability: &'static str,
+}
+
+impl From<Attachment> for AttachmentView {
+    fn from(attachment: Attachment) -> Self {
+        let availability = if resolve_attachment_file_path(&attachment.file_path).is_ok() {
+            "available"
+        } else {
+            "missing"
+        };
+        Self {
+            attachment,
+            availability,
+        }
+    }
+}
+
 /// Application-layer service orchestrating local document attachments.
 ///
 /// Wraps [`AttachmentRepository`] for persistence and [`ConversationRepository`]
@@ -54,6 +56,7 @@ pub(crate) type Result<T> = std::result::Result<T, AttachmentError>;
 pub(crate) struct AttachmentService<'a> {
     attachments: AttachmentRepository<'a>,
     conversations: ConversationRepository<'a>,
+    store: Option<AttachmentStore>,
 }
 
 impl<'a> AttachmentService<'a> {
@@ -62,41 +65,18 @@ impl<'a> AttachmentService<'a> {
         Self {
             attachments: AttachmentRepository::new(db),
             conversations: ConversationRepository::new(db),
+            store: None,
         }
     }
 
-    /// Attach a local file to a conversation as a draft attachment (FR-008;
-    /// DATABASE.md §7.4).
-    ///
-    /// The flow is:
-    ///   1. Validate `file_name`, `file_path`, and `mime_type` against the
-    ///      documented `attachments` constraints.
-    ///   2. Require the conversation to exist.
-    ///   3. Resolve and validate the file path (canonicalization, system /
-    ///      sensitive-location guards) and derive `file_size_bytes` from the
-    ///      file's own metadata — the size is **server-derived**, never a
-    ///      caller-supplied value (SEC-01/SEC-02).
-    ///   4. Persist a draft attachment row (`message_id` is `NULL`) through the
-    ///      existing repository.
-    ///   5. Return the persisted attachment, including the schema-assigned
-    ///      `id`.
-    ///
-    /// No file content is opened, copied, parsed, or uploaded here: this is a
-    /// local-file reference only.
-    ///
-    /// The MVP applies no supported-file-type allowlist (Product Owner
-    /// confirmation): any local file type may be attached, subject to the
-    /// documented schema constraints, the conversation ownership rule, and
-    /// the sensitive-location blocklist in
-    /// [`resolve_attachment_file_path`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AttachmentError::InvalidInput`] when a value violates a
-    /// documented `attachments` constraint or the file is oversized;
-    /// [`AttachmentError::ConversationNotFound`] when no conversation with
-    /// `conversation_id` exists; or [`AttachmentError::Database`] when a
-    /// persistence step fails.
+    pub(crate) fn with_store(db: &'a Database, store: AttachmentStore) -> Self {
+        Self {
+            store: Some(store),
+            ..Self::new(db)
+        }
+    }
+
+    /// Admit one supported file and persist its verified managed copy as a draft.
     pub(crate) fn attach(
         &self,
         conversation_id: i64,
@@ -104,42 +84,58 @@ impl<'a> AttachmentService<'a> {
         file_path: &str,
         mime_type: Option<&str>,
     ) -> Result<Attachment> {
+        let _lifecycle = managed_attachments::lifecycle();
         validate_attachment_input(file_name, file_path, mime_type)?;
-
         if !self.conversations.exists(conversation_id)? {
             return Err(AttachmentError::ConversationNotFound {
                 id: conversation_id,
             });
         }
-
         let canonical = resolve_attachment_file_path(file_path)?;
-        // Server-derived size (SEC-01): the renderer no longer supplies a
-        // declared size, so the WS-C.2 gate checks the only size that exists —
-        // the file's own metadata. A metadata failure after a successful
-        // canonicalization means the file vanished mid-check: fail closed.
-        let actual_size = std::fs::metadata(&canonical)
-            .map(|meta| meta.len())
-            .ok()
-            .and_then(|len| i64::try_from(len).ok())
-            .unwrap_or(i64::MAX);
-        if actual_size > MAX_ATTACHMENT_BYTES {
+        if std::fs::metadata(&canonical).map_err(|_| io_error())?.len()
+            > managed_attachments::MAX_FILE_BYTES
+        {
             return Err(AttachmentError::InvalidInput {
                 field: "file_size_bytes",
                 reason: "exceeds the 20 MiB limit",
             });
         }
-        let canonical_text = canonical.to_string_lossy().into_owned();
-
-        let id = self.attachments.create(
+        let bytes = managed_attachments::read(&canonical).map_err(|_| io_error())?;
+        let mime = supported_mime(file_name, &bytes)?;
+        let drafts = self.attachments.list_by_conversation(conversation_id)?;
+        let total: u64 = drafts
+            .iter()
+            .map(|a| {
+                a.file_size_bytes
+                    .and_then(|s| u64::try_from(s).ok())
+                    .unwrap_or(MAX_TOTAL_BYTES)
+            })
+            .fold(0_u64, u64::saturating_add);
+        if drafts.len() >= MAX_FILES || total.saturating_add(bytes.len() as u64) > MAX_TOTAL_BYTES {
+            return Err(AttachmentError::InvalidInput {
+                field: "attachments",
+                reason: "at most 10 files / 50 MiB per message",
+            });
+        }
+        let store = self.store.as_ref().ok_or_else(io_error)?;
+        let copy = store
+            .copy(conversation_id, file_name, &bytes)
+            .map_err(|_| io_error())?;
+        let result = self.attachments.create_admitted(
             conversation_id,
             file_name,
-            &canonical_text,
-            Some(actual_size),
-            mime_type,
-        )?;
-
-        // The row was just inserted on the same shared connection, so it is
-        // guaranteed readable; `None` here is an internal inconsistency.
+            &copy.to_string_lossy(),
+            i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            mime,
+            (10, 50 * 1024 * 1024),
+        );
+        let id = match result {
+            Ok(id) => id,
+            Err(err) => {
+                let _ = store.remove(conversation_id, &copy);
+                return Err(err.into());
+            }
+        };
         self.attachments.read(id)?.ok_or_else(|| {
             AttachmentError::Database(DatabaseError::Sqlite(SqliteError::QueryReturnedNoRows))
         })
@@ -173,6 +169,14 @@ impl<'a> AttachmentService<'a> {
         Ok(self.attachments.list_by_conversation(conversation_id)?)
     }
 
+    pub(crate) fn list_views(&self, conversation_id: i64) -> Result<Vec<AttachmentView>> {
+        Ok(self
+            .list(conversation_id)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
     /// Remove an attachment by `id` (FR-008; DATABASE.md §7.4).
     ///
     /// Hard delete through the repository, before the attachment is linked to
@@ -185,12 +189,116 @@ impl<'a> AttachmentService<'a> {
     /// Returns [`AttachmentError::AttachmentNotFound`] when no attachment with
     /// `id` exists, or [`AttachmentError::Database`] if the delete fails.
     pub(crate) fn remove(&self, id: i64) -> Result<()> {
-        if !self.attachments.exists(id)? {
-            return Err(AttachmentError::AttachmentNotFound { id });
+        let _lifecycle = managed_attachments::lifecycle();
+        let attachment = self
+            .attachments
+            .read(id)?
+            .ok_or(AttachmentError::AttachmentNotFound { id })?;
+        if attachment.message_id.is_some() {
+            return Err(AttachmentError::InvalidInput {
+                field: "id",
+                reason: "only draft attachments can be removed",
+            });
         }
-        self.attachments.delete(id)?;
+        self.attachments.delete_draft(id)?;
+        if let Some(store) = &self.store {
+            store
+                .remove(attachment.conversation_id, Path::new(&attachment.file_path))
+                .map_err(|_| io_error())?;
+        }
         Ok(())
     }
+}
+
+fn io_error() -> AttachmentError {
+    AttachmentError::InvalidInput {
+        field: "file_path",
+        reason: "file unavailable, changed, or exceeds the 20 MiB limit",
+    }
+}
+
+/// Derive the representation from bytes and a supported text/code suffix;
+/// caller-provided MIME hints never authorize binary content.
+fn supported_mime(name: &str, bytes: &[u8]) -> Result<&'static str> {
+    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        "image/jpeg"
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "image/gif"
+    } else if bytes.starts_with(b"%PDF-") {
+        "application/pdf"
+    } else {
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(
+            extension.as_str(),
+            "" | "txt"
+                | "md"
+                | "mdx"
+                | "markdown"
+                | "csv"
+                | "tsv"
+                | "log"
+                | "json"
+                | "jsonl"
+                | "xml"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "rs"
+                | "py"
+                | "js"
+                | "jsx"
+                | "ts"
+                | "tsx"
+                | "html"
+                | "css"
+                | "scss"
+                | "less"
+                | "sql"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "ps1"
+                | "bat"
+                | "cmd"
+                | "c"
+                | "h"
+                | "cpp"
+                | "hpp"
+                | "cs"
+                | "java"
+                | "kt"
+                | "go"
+                | "rb"
+                | "php"
+                | "swift"
+                | "vue"
+                | "svelte"
+                | "r"
+                | "lua"
+                | "dockerfile"
+                | "makefile"
+        ) || bytes.contains(&0)
+            || std::str::from_utf8(bytes).is_err()
+        {
+            return Err(AttachmentError::InvalidInput {
+                field: "file_type",
+                reason: "supported images, PDF, or UTF-8 text/code required",
+            });
+        }
+        "text/plain"
+    };
+    Ok(mime)
 }
 
 /// Classified errors raised by attachment orchestration.
@@ -271,6 +379,12 @@ fn validate_attachment_input(
     file_path: &str,
     mime_type: Option<&str>,
 ) -> Result<()> {
+    if file_name.contains(['/', '\\', ':', '\0']) || file_name == "." || file_name == ".." {
+        return Err(AttachmentError::InvalidInput {
+            field: "file_name",
+            reason: "must be a file name",
+        });
+    }
     if file_name.chars().count() == 0 {
         return Err(AttachmentError::InvalidInput {
             field: "file_name",
@@ -308,7 +422,7 @@ fn validate_attachment_input(
 /// Kubernetes cluster configs) and is refused. The system blocklist
 /// (`is_system_file_path`) deliberately admits the `Users` tree, so this
 /// subpath rule is what keeps profile-level credential files unattachable.
-const SENSITIVE_DOT_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube"];
+const SENSITIVE_DOT_COMPONENTS: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", ".azure", ".gcloud"];
 
 /// User-profile-relative browser user-data directories (SEC-02), matched
 /// case-insensitively against the home-relative remainder of a canonical
@@ -399,9 +513,7 @@ fn is_sensitive_profile_path(home: Option<&Path>, canonical: &Path) -> bool {
 ///
 /// Every failure is the existing [`AttachmentError::InvalidInput`] with
 /// `field: "file_path"` and a static reason that never contains the path or
-/// file content. No extension/MIME allowlist is applied (the Product Owner
-/// no-allowlist rule); the user-profile sub-path blocklist is the one
-/// deliberate addition (SEC-02).
+/// file content. Supported content validation runs separately after this path guard.
 pub(crate) fn resolve_attachment_file_path(raw: &str) -> Result<PathBuf> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -472,7 +584,10 @@ pub(crate) fn resolve_attachment_file_path(raw: &str) -> Result<PathBuf> {
     // SEC-02: credential stores and browser profile databases are never
     // valid attachments — the send path would ship their bytes to the
     // configured AI provider.
-    if is_sensitive_profile_path(current_user_home().as_deref(), &canonical) {
+    if is_sensitive_profile_path(current_user_home().as_deref(), &canonical)
+        || super::agent::tools::path_safety::check_private(&canonical).is_err()
+        || super::agent::tools::path_safety::sensitive_write(&canonical)
+    {
         return Err(AttachmentError::InvalidInput {
             field: "file_path",
             reason: "a sensitive user-profile location is not allowed",
@@ -488,6 +603,7 @@ pub(crate) fn resolve_attachment_file_path(raw: &str) -> Result<PathBuf> {
 }
 #[cfg(test)]
 mod tests {
+    use super::super::conversations::MAX_ATTACHMENT_BYTES;
     use super::*;
     use rusqlite::Connection;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -574,6 +690,158 @@ mod tests {
         Database::new(conn)
     }
 
+    fn test_service(db: &Database) -> AttachmentService<'_> {
+        let root = std::env::temp_dir()
+            .join(format!("nexora-managed-test-{}", uuid::Uuid::new_v4()))
+            .join("attachments");
+        AttachmentService::with_store(db, AttachmentStore::open(root).expect("test store"))
+    }
+
+    #[test]
+    fn concurrent_admission_never_exceeds_ten_drafts() {
+        let db = test_db();
+        let conversation = create_conversation(&db);
+        let service = test_service(&db);
+        let source = temp_file(b"ordinary text");
+        let admitted = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..12)
+                .map(|_| {
+                    scope.spawn(|| {
+                        service
+                            .attach(conversation, "note.txt", &source.to_string_lossy(), None)
+                            .is_ok()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| usize::from(h.join().unwrap()))
+                .sum::<usize>()
+        });
+        assert_eq!(admitted, 10);
+        assert_eq!(service.list(conversation).unwrap().len(), 10);
+        assert_eq!(std::fs::read(&source).unwrap(), b"ordinary text");
+        service
+            .store
+            .as_ref()
+            .unwrap()
+            .purge(Some(conversation))
+            .unwrap();
+        std::fs::remove_file(source).unwrap();
+    }
+
+    #[test]
+    fn aggregate_budget_and_sensitive_env_are_rejected_without_new_rows() {
+        let db = test_db();
+        let conversation = create_conversation(&db);
+        let service = test_service(&db);
+        let source = temp_file(b"text");
+        service
+            .attachments
+            .create(
+                conversation,
+                "large.txt",
+                &source.to_string_lossy(),
+                Some(50 * 1024 * 1024),
+                Some("text/plain"),
+            )
+            .unwrap();
+        assert!(matches!(
+            service.attach(conversation, "note.txt", &source.to_string_lossy(), None),
+            Err(AttachmentError::InvalidInput {
+                field: "attachments",
+                ..
+            })
+        ));
+        assert_eq!(service.list(conversation).unwrap().len(), 1);
+        let private = source.with_file_name(format!(".env.nexora-test-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&private, "SYNTHETIC_TOKEN=test").unwrap();
+        assert!(resolve_attachment_file_path(&private.to_string_lossy()).is_err());
+        std::fs::remove_file(private).unwrap();
+        std::fs::remove_file(source).unwrap();
+    }
+
+    #[test]
+    fn managed_removal_preserves_original_and_refuses_historical_rows() {
+        let db = test_db();
+        let conversation = create_conversation(&db);
+        let service = test_service(&db);
+        let source = temp_file(b"text");
+        let draft = service
+            .attach(conversation, "note.txt", &source.to_string_lossy(), None)
+            .unwrap();
+        assert_eq!(
+            managed_attachments::read(Path::new(&draft.file_path)).unwrap(),
+            b"text"
+        );
+        service.remove(draft.id).unwrap();
+        assert!(!Path::new(&draft.file_path).exists());
+        assert_eq!(std::fs::read(&source).unwrap(), b"text");
+        let draft = service
+            .attach(conversation, "note.txt", &source.to_string_lossy(), None)
+            .unwrap();
+        let message = crate::infrastructure::repository::messages::MessageRepository::new(&db)
+            .create(conversation, "user", "hello", None, None)
+            .unwrap();
+        service
+            .attachments
+            .update_message_id(draft.id, Some(message))
+            .unwrap();
+        assert!(service.remove(draft.id).is_err());
+        assert!(Path::new(&draft.file_path).exists());
+        std::fs::remove_file(source).unwrap();
+        service
+            .store
+            .as_ref()
+            .unwrap()
+            .purge(Some(conversation))
+            .unwrap();
+    }
+
+    #[test]
+    fn supported_formats_are_derived_from_content_and_bad_binary_is_refused() {
+        for (name, bytes, mime) in [
+            ("a.png", b"\x89PNG\r\n\x1a\n".as_slice(), "image/png"),
+            ("a.jpg", &[0xff, 0xd8, 0xff], "image/jpeg"),
+            ("a.webp", b"RIFF1234WEBP".as_slice(), "image/webp"),
+            ("a.gif", b"GIF89a".as_slice(), "image/gif"),
+            ("a.pdf", b"%PDF-1.7".as_slice(), "application/pdf"),
+            ("a.rs", b"fn main() {}".as_slice(), "text/plain"),
+        ] {
+            assert_eq!(supported_mime(name, bytes).unwrap(), mime);
+        }
+        assert!(supported_mime("fake.png", b"not an image").is_err());
+        assert!(supported_mime("a.rs", &[0, 0xff]).is_err());
+    }
+
+    #[test]
+    fn copy_is_removed_when_draft_insert_fails() {
+        let db = test_db();
+        let conversation = create_conversation(&db);
+        let root =
+            std::env::temp_dir().join(format!("nexora-copy-rollback-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let source = root.join("note.txt");
+        std::fs::write(&source, "original").unwrap();
+        let store = AttachmentStore::open(root.join("attachments")).unwrap();
+        let service = AttachmentService::with_store(&db, store);
+        db.lock().unwrap().execute_batch("CREATE TRIGGER reject_draft BEFORE INSERT ON attachments BEGIN SELECT RAISE(ABORT, 'synthetic insert failure'); END;").unwrap();
+        assert!(matches!(
+            service.attach(conversation, "note.txt", &source.to_string_lossy(), None),
+            Err(AttachmentError::Database(_))
+        ));
+        assert_eq!(
+            std::fs::read_dir(root.join("attachments").join(conversation.to_string()))
+                .unwrap()
+                .count(),
+            0
+        );
+        assert!(service.list(conversation).unwrap().is_empty());
+        assert_eq!(std::fs::read(&source).unwrap(), b"original");
+        drop(service);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     /// Create a conversation directly through its repository.
     fn create_conversation(db: &Database) -> i64 {
         ConversationRepository::new(db)
@@ -592,7 +860,7 @@ mod tests {
     #[test]
     fn attach_creates_a_draft_attachment_for_the_conversation() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let path = temp_file(b"notes body");
 
@@ -611,7 +879,8 @@ mod tests {
         assert_eq!(attachment.message_id, None);
         assert_eq!(attachment.file_name, "notes.txt");
         // The stored path is the canonical form, not the raw input.
-        assert_eq!(attachment.file_path, canonical_str(&path));
+        assert_ne!(attachment.file_path, canonical_str(&path));
+        assert!(Path::new(&attachment.file_path).is_file());
         // The size is derived server-side from the file's own metadata
         // (SEC-01): `notes body` is 10 bytes, whatever the caller claims.
         assert_eq!(attachment.file_size_bytes, Some(10));
@@ -625,7 +894,7 @@ mod tests {
     #[test]
     fn attached_files_belong_only_to_their_conversation() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let first = create_conversation(&db);
         let second = create_conversation(&db);
         let first_path = temp_file(b"a");
@@ -659,7 +928,7 @@ mod tests {
     #[test]
     fn list_returns_draft_attachments_in_insertion_order() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let first_path = temp_file(b"a");
         let second_path = temp_file(b"b");
@@ -693,7 +962,7 @@ mod tests {
     #[test]
     fn read_returns_attachment_by_id_and_none_for_unknown() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let path = temp_file(b"note");
         let id = service
@@ -719,7 +988,7 @@ mod tests {
     #[test]
     fn remove_deletes_the_attachment() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let path = temp_file(b"note");
         let id = service
@@ -741,7 +1010,7 @@ mod tests {
     #[test]
     fn remove_deletes_only_the_targeted_draft() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let keep_path = temp_file(b"keep");
         let gone_path = temp_file(b"gone");
@@ -776,7 +1045,7 @@ mod tests {
     #[test]
     fn remove_of_unknown_attachment_is_attachment_not_found() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
 
         let err = service.remove(42).expect_err("unknown attachment");
 
@@ -789,7 +1058,7 @@ mod tests {
     #[test]
     fn attach_with_unknown_conversation_is_conversation_not_found() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
 
         let err = service
             .attach(42, "note.txt", "/tmp/note.txt", None)
@@ -809,7 +1078,7 @@ mod tests {
     #[test]
     fn attach_with_invalid_file_name_is_invalid_input() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
 
         // Empty `file_name` violates length(file_name) > 0.
@@ -841,7 +1110,7 @@ mod tests {
     #[test]
     fn attach_with_invalid_file_path_is_invalid_input() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
 
         // Empty `file_path` violates length(file_path) > 0.
@@ -860,7 +1129,7 @@ mod tests {
     #[test]
     fn attach_with_overlong_mime_type_is_invalid_input() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
 
         // 128 characters violate length(mime_type) <= 127.
@@ -881,7 +1150,7 @@ mod tests {
     #[test]
     fn attach_accepts_schema_boundary_lengths() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
 
         // 255-char `file_name`, 127-char `mime_type`, and a zero-byte file
@@ -900,37 +1169,30 @@ mod tests {
 
         assert_eq!(attachment.file_name, name);
         assert_eq!(attachment.file_size_bytes, Some(0));
-        assert_eq!(attachment.mime_type.as_deref(), Some(mime.as_str()));
+        assert_eq!(attachment.mime_type.as_deref(), Some("text/plain"));
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn attach_accepts_any_file_type() {
-        // The confirmed MVP rule imposes no supported-file-type allowlist: an
-        // arbitrary extension and MIME type are accepted as long as the
-        // documented schema constraints hold.
+    fn attach_rejects_unsupported_file_type_without_creating_a_draft() {
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let path = temp_file(b"xyz");
-
-        let attachment = service
-            .attach(
+        assert!(matches!(
+            service.attach(
                 conversation_id,
                 "archive.xyz",
-                path.to_string_lossy().as_ref(),
-                Some("application/x-unknown"),
-            )
-            .expect("arbitrary file type accepted");
-
-        assert_eq!(attachment.file_name, "archive.xyz");
-        assert_eq!(attachment.file_path, canonical_str(&path));
-        assert_eq!(
-            attachment.mime_type.as_deref(),
-            Some("application/x-unknown")
-        );
-        assert!(attachment.id > 0);
-        let _ = std::fs::remove_file(&path);
+                &path.to_string_lossy(),
+                Some("text/plain")
+            ),
+            Err(AttachmentError::InvalidInput {
+                field: "file_type",
+                ..
+            })
+        ));
+        assert!(service.list(conversation_id).unwrap().is_empty());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -958,7 +1220,7 @@ mod tests {
         let conversation_id = ConversationRepository::new(&db)
             .create("Chat", "active")
             .expect("conversation created");
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let path = temp_file(b"note");
 
         let err = service
@@ -1070,7 +1332,7 @@ mod tests {
         // so this also proves the C:\Users tree is NOT blocked for
         // attachments (unlike the workspace-root guard).
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let path = temp_file(b"hello");
         let attachment = service
@@ -1081,9 +1343,10 @@ mod tests {
                 None,
             )
             .expect("temp file accepted");
-        assert_eq!(attachment.file_path, canonical_str(&path));
+        assert_ne!(attachment.file_path, canonical_str(&path));
+        assert!(Path::new(&attachment.file_path).is_file());
         assert!(
-            attachment.file_path.contains("nexora-attach-test-"),
+            attachment.file_path.contains("nexora-managed-test-"),
             "stored canonical path keeps the temp file name"
         );
         let _ = std::fs::remove_file(&path);
@@ -1095,7 +1358,7 @@ mod tests {
         // With the size now derived server-side (SEC-01), this is the only
         // size gate — there is no separate caller-declared size to reject.
         let db = test_db();
-        let service = AttachmentService::new(&db);
+        let service = test_service(&db);
         let conversation_id = create_conversation(&db);
         let id = FILE_COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(

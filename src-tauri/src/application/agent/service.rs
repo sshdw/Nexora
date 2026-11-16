@@ -348,6 +348,8 @@ pub(crate) struct RunLaunchOptions {
     /// Whether `request.user_request` should be persisted to `messages` (`false`
     /// for `Yes` plan confirmation and explicit `continue_run`).
     pub persist_user_message: bool,
+    /// Draft attachment IDs admitted and linked with this run's user turn.
+    pub attachment_ids: Vec<i64>,
 }
 
 impl Default for RunLaunchOptions {
@@ -357,6 +359,7 @@ impl Default for RunLaunchOptions {
             continued_from_run_id: None,
             extra_history: Vec::new(),
             persist_user_message: true,
+            attachment_ids: Vec::new(),
         }
     }
 }
@@ -403,6 +406,8 @@ pub(crate) enum AgentRunError {
     },
     /// Provider/credential resolution failed (FR-014 classifications).
     Request(RequestError),
+    /// Shared attachment admission failed before any run was spawned.
+    Attachment(crate::application::conversations::ConversationError),
     /// The `agent_runs` row could not be created before spawning.
     RunNotPersisted,
     /// A run/forwarder thread could not be spawned.
@@ -798,6 +803,7 @@ pub(crate) fn continue_run(
             continued_from_run_id: Some(run_id),
             extra_history: plan.extra_messages,
             persist_user_message: false,
+            attachment_ids: Vec::new(),
         },
     )
 }
@@ -970,28 +976,30 @@ fn start_run_claimed(
     // going with an empty trace.
     let action_summary = load_action_summary(db, request.conversation_id);
 
-    // Persist the user message BEFORE spawning (design §3.2) when requested:
-    // omitted for `Yes` plan confirmation and explicit `continue_run`.
-    if options.persist_user_message {
-        match ConversationService::new(db)
-            .persist_user_message(request.conversation_id, &request.user_request)
-        {
-            Ok(_) => {}
-            Err(crate::application::conversations::ConversationError::NotFound { id }) => {
-                return Err(AgentRunError::ConversationNotFound { id });
-            }
-            Err(crate::application::conversations::ConversationError::Database(err)) => {
-                return Err(AgentRunError::Database(err));
-            }
-            Err(other) => {
-                log::error!("agent run setup: unexpected user-message error: {other}");
-                return Err(AgentRunError::Request(RequestError::Execution {
-                    name: request.provider.clone(),
-                    message: other.to_string(),
-                }));
-            }
-        }
-    }
+    // Prepare and link current attachments synchronously before spawning.
+    // Current bytes are appended by the runner exactly once, after history.
+    let current_attachments = if options.persist_user_message {
+        ConversationService::new(db)
+            .persist_user_message_with_attachments(
+                request.conversation_id,
+                &request.user_request,
+                &request.provider,
+                &request.model,
+                &options.attachment_ids,
+            )
+            .map(|(_, attachments)| attachments)
+            .map_err(|err| match err {
+                crate::application::conversations::ConversationError::NotFound { id } => {
+                    AgentRunError::ConversationNotFound { id }
+                }
+                crate::application::conversations::ConversationError::Database(err) => {
+                    AgentRunError::Database(err)
+                }
+                other => AgentRunError::Attachment(other),
+            })?
+    } else {
+        Vec::new()
+    };
 
     // Create the linked run row (D50) through the recorder so the run id is
     // known synchronously; the spawned run adopts it (no second insert).
@@ -1057,6 +1065,7 @@ fn start_run_claimed(
         action_summary,
         checkpoint_store,
         options.is_plan,
+        current_attachments,
     )?;
     Ok(run_id)
 }
@@ -1088,6 +1097,7 @@ fn spawn_run(
     action_summary: ActionSummary,
     checkpoint_store: Option<CheckpointStore>,
     is_plan: bool,
+    current_attachments: Vec<crate::application::execution::AiAttachment>,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -1158,6 +1168,7 @@ fn spawn_run(
                     .with_preset(preset)
                     .with_permission_store(permission_store)
                     .with_history(history)
+                    .with_attachments(current_attachments)
                     .with_action_summary(action_summary)
                     .with_context_limit(context_limit)
                     .with_run_flags(resolved_flags.run_flags())
@@ -4178,5 +4189,217 @@ mod tests {
         assert!(matches!(err, AgentRunError::RunNotInterrupted { .. }));
 
         let _ = std::fs::remove_dir_all(workspace);
+    }
+    #[test]
+    fn agent_admits_and_links_current_attachments_and_replays_them_in_later_runs() {
+        let (db, workspace, rx, host) = setup("managed-attachments");
+        let service = ConversationService::new(&db);
+        let conversation = service.create("attached agent").unwrap();
+        let source = workspace.join("note.rs");
+        std::fs::write(&source, "fn main() { /* context */ }").unwrap();
+        let store = crate::application::managed_attachments::AttachmentStore::open(
+            workspace.join("app-data/attachments"),
+        )
+        .unwrap();
+        let attachment =
+            crate::application::attachments::AttachmentService::with_store(&db, store.clone())
+                .attach(conversation, "note.rs", &source.to_string_lossy(), None)
+                .unwrap();
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(text_response("first answer")),
+            Ok(text_response("second answer")),
+        ]));
+        let registry = Arc::new(AgentRunRegistry::default());
+        let mut first = request(conversation, "inspect attached code");
+        first.model = crate::infrastructure::providers::catalog::openai::SUPPORTED_MODELS[0].into();
+        start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host.clone(),
+            executor.clone(),
+            workspace.clone(),
+            first,
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                is_plan: true,
+                attachment_ids: vec![attachment.id],
+                ..RunLaunchOptions::default()
+            },
+        )
+        .unwrap();
+        collect_frames(&rx);
+        assert!(
+            crate::infrastructure::repository::attachments::AttachmentRepository::new(&db)
+                .read(attachment.id)
+                .unwrap()
+                .unwrap()
+                .message_id
+                .is_some()
+        );
+        std::fs::remove_file(&source).unwrap();
+        let mut second = request(conversation, "remember that file");
+        second.model =
+            crate::infrastructure::providers::catalog::openai::SUPPORTED_MODELS[0].into();
+        start_run(
+            &db,
+            registry,
+            host,
+            executor.clone(),
+            workspace.clone(),
+            second,
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+        )
+        .unwrap();
+        collect_frames(&rx);
+        let captured = executor.captured.lock().unwrap();
+        let first_user = captured[0]
+            .messages
+            .iter()
+            .find(|m| m.content == "inspect attached code")
+            .unwrap();
+        assert_eq!(first_user.attachments.len(), 1);
+        assert_eq!(
+            first_user.attachments[0].payload,
+            crate::application::execution::AiAttachmentPayload::Text(
+                "fn main() { /* context */ }".into()
+            )
+        );
+        let replayed = captured[1]
+            .messages
+            .iter()
+            .find(|m| m.content == "inspect attached code")
+            .unwrap();
+        assert_eq!(replayed.attachments, first_user.attachments);
+        assert!(captured[1].messages.last().unwrap().attachments.is_empty());
+        drop(captured);
+        drop(store);
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn rejected_agent_attachment_preserves_draft_and_never_spawns_a_run() {
+        let (db, workspace, _rx, host) = setup("attachment-capability-rejection");
+        let conversation = ConversationService::new(&db)
+            .create("attachment guard")
+            .unwrap();
+        let source = workspace.join("note.txt");
+        std::fs::write(&source, "source").unwrap();
+        let store = crate::application::managed_attachments::AttachmentStore::open(
+            workspace.join("app-data/attachments"),
+        )
+        .unwrap();
+        let attachment = crate::application::attachments::AttachmentService::with_store(&db, store)
+            .attach(conversation, "note.txt", &source.to_string_lossy(), None)
+            .unwrap();
+        let executor = Arc::new(CapturingScriptedExecutor::new(Vec::new()));
+        let registry = Arc::new(AgentRunRegistry::default());
+        let result = start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host,
+            executor.clone(),
+            workspace.clone(),
+            request(conversation, "inspect"),
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                attachment_ids: vec![attachment.id],
+                ..RunLaunchOptions::default()
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(AgentRunError::Attachment(
+                crate::application::conversations::ConversationError::AttachmentUnsupported { .. }
+            ))
+        ));
+        assert!(executor.captured.lock().unwrap().is_empty());
+        assert!(ConversationService::new(&db)
+            .history(conversation)
+            .unwrap()
+            .is_empty());
+        assert!(list_runs_for_conversation(&db, conversation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            crate::infrastructure::repository::attachments::AttachmentRepository::new(&db)
+                .read(attachment.id)
+                .unwrap()
+                .unwrap()
+                .message_id,
+            None
+        );
+        assert!(registry.claim_conversation(conversation));
+        assert_eq!(std::fs::read(source).unwrap(), b"source");
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn continue_replays_managed_attachment_history_without_a_second_user_commit() {
+        let (db, workspace, rx, host) = setup("continue-attachments");
+        let service = ConversationService::new(&db);
+        let conversation = service.create("continue attachment").unwrap();
+        let source = workspace.join("note.txt");
+        std::fs::write(&source, "preserved context").unwrap();
+        let store = crate::application::managed_attachments::AttachmentStore::open(
+            workspace.join("app-data/attachments"),
+        )
+        .unwrap();
+        let attachment = crate::application::attachments::AttachmentService::with_store(&db, store)
+            .attach(conversation, "note.txt", &source.to_string_lossy(), None)
+            .unwrap();
+        let model = crate::infrastructure::providers::catalog::openai::SUPPORTED_MODELS[0];
+        service
+            .persist_user_message_with_attachments(
+                conversation,
+                "original request",
+                "openai",
+                model,
+                &[attachment.id],
+            )
+            .unwrap();
+        let parent = seed_interrupted_parent_run(&db, conversation);
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+            "resumed",
+        ))]));
+        continue_run(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host,
+            executor.clone(),
+            workspace.clone(),
+            parent,
+            "openai".into(),
+            model.into(),
+            "test-key".into(),
+            AutonomyMode::Supervised,
+            RunPreset::Coding,
+        )
+        .unwrap();
+        collect_frames(&rx);
+        let captured = executor.captured.lock().unwrap();
+        let prior = captured[0]
+            .messages
+            .iter()
+            .find(|m| m.content == "original request")
+            .unwrap();
+        assert_eq!(prior.attachments.len(), 1);
+        assert_eq!(
+            prior.attachments[0].payload,
+            crate::application::execution::AiAttachmentPayload::Text("preserved context".into())
+        );
+        assert_eq!(
+            service
+                .history(conversation)
+                .unwrap()
+                .iter()
+                .filter(|m| m.role == "user")
+                .count(),
+            1
+        );
+        drop(captured);
+        std::fs::remove_dir_all(workspace).unwrap();
     }
 }
