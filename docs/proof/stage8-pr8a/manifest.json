@@ -7,7 +7,8 @@
       1536,
       816
     ],
-    "shown": "Pre-change supplied production binary; empty synthetic database."
+    "shown": "Pre-change supplied production binary; empty synthetic database.",
+    "source": "supplied pre-change binary"
   },
   {
     "file": "02-baseline-agent.jpg",
@@ -17,7 +18,8 @@
       1536,
       816
     ],
-    "shown": "Pre-change Agent composer; no selected model or provider."
+    "shown": "Pre-change Agent composer; no selected model or provider.",
+    "source": "supplied pre-change binary"
   },
   {
     "file": "03-final-legacy-missing.jpg",
@@ -27,7 +29,8 @@
       1536,
       816
     ],
-    "shown": "Final build: seeded legacy history and draft show Missing; original existing legacy file remains available."
+    "shown": "Final build: seeded legacy history and draft show Missing; original existing legacy file remains available.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "04-final-agent-attach-menu.jpg",
@@ -37,7 +40,8 @@
       1536,
       816
     ],
-    "shown": "Final Agent mode: Attach files action is available."
+    "shown": "Final Agent mode: Attach files action is available.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "05-final-agent-files.jpg",
@@ -47,7 +51,8 @@
       1536,
       816
     ],
-    "shown": "TXT and PNG selected through the real native file picker; both managed draft copies appear in Agent."
+    "shown": "TXT and PNG selected through the real native file picker; both managed draft copies appear in Agent.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "06-final-chat-files.jpg",
@@ -57,7 +62,8 @@
       1536,
       816
     ],
-    "shown": "Switching to Chat retains both draft attachments."
+    "shown": "Switching to Chat retains both draft attachments.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "07-final-oversize-draft-retained.jpg",
@@ -67,7 +73,8 @@
       1536,
       816
     ],
-    "shown": "20 MiB + 1 byte rejected; existing files and typed synthetic Russian text remain."
+    "shown": "20 MiB + 1 byte rejected; existing files and typed synthetic Russian text remain.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "08-final-sensitive-path-draft-retained.jpg",
@@ -77,7 +84,8 @@
       1536,
       816
     ],
-    "shown": "Synthetic .env path rejected; existing files and typed text remain."
+    "shown": "Synthetic .env path rejected; existing files and typed text remain.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "09-final-managed-copy-removed.jpg",
@@ -87,7 +95,8 @@
       1536,
       816
     ],
-    "shown": "After removing PNG, TXT and typed text remain; disk/DB receipts confirm only the PNG managed copy was removed."
+    "shown": "After removing PNG, TXT and typed text remain; disk/DB receipts confirm only the PNG managed copy was removed.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "10-final-ru-agent-draft.jpg",
@@ -97,7 +106,8 @@
       1536,
       816
     ],
-    "shown": "Russian interface after Settings round-trip; TXT and typed draft retained."
+    "shown": "Russian interface after Settings round-trip; TXT and typed draft retained.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "11-final-ru-legacy-missing.jpg",
@@ -107,7 +117,8 @@
       1536,
       816
     ],
-    "shown": "Russian historical and draft \u041d\u0435\u0442 \u0444\u0430\u0439\u043b\u0430 indicators."
+    "shown": "Russian historical and draft \u041d\u0435\u0442 \u0444\u0430\u0439\u043b\u0430 indicators.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "12-final-ru-narrow-missing.jpg",
@@ -117,7 +128,8 @@
       1026,
       824
     ],
-    "shown": "Russian Missing state at1026x824 window geometry."
+    "shown": "Russian Missing state at1026x824 window geometry.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
   },
   {
     "file": "13-final-keyboard-remove-focus.jpg",
@@ -127,6 +139,51 @@
       1026,
       824
     ],
-    "shown": "Shift+Tab reaches the attachment removal button with visible focus ring and Russian tooltip."
+    "shown": "Shift+Tab reaches the attachment removal button with visible focus ring and Russian tooltip.",
+    "source": "bea3c98d163374fb6b57defdee462e66681226d7"
+  },
+  {
+    "file": "14-current-ru-missing.jpg",
+    "md5": "3040f8a37d3b2bd84c4f1d73404fe2b6",
+    "colors": 19649,
+    "size": [
+      1026,
+      824
+    ],
+    "shown": "Current backend build: Russian Missing state in a1026x824 window.",
+    "source": "0ce0afdebc3a2fbe314101a888178ca76f4ac419"
+  },
+  {
+    "file": "15-current-agent-code-photo.jpg",
+    "md5": "1cac27c15fc6638d674fcf4291f88204",
+    "colors": 15230,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Current backend build: existing TXT plus newly admitted Rust code and PNG in Agent; managed SHA256 verified.",
+    "source": "0ce0afdebc3a2fbe314101a888178ca76f4ac419"
+  },
+  {
+    "file": "16-current-chat-files.jpg",
+    "md5": "cd17bc058ffe9a91ded8db7fafaa27aa",
+    "colors": 14354,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Current backend build: all three files retained when switching to Chat.",
+    "source": "0ce0afdebc3a2fbe314101a888178ca76f4ac419"
+  },
+  {
+    "file": "17-current-copy-removed.jpg",
+    "md5": "fda57947792e33f4fab9ee3b746c32f0",
+    "colors": 13567,
+    "size": [
+      1536,
+      816
+    ],
+    "shown": "Current backend build: after PNG removal,TXT and Rust copies/rows survive; original SHA unchanged and stable lock retained.",
+    "source": "0ce0afdebc3a2fbe314101a888178ca76f4ac419"
   }
 ]
