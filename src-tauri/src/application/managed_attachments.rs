@@ -264,6 +264,8 @@ mod tests {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("nexora-copy-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&root).unwrap();
+            // Match the store's canonical path spelling for ownership assertions.
+            let root = super::super::workspace::strip_verbatim(root.canonicalize().unwrap());
             Self(root)
         }
         fn store(&self) -> AttachmentStore {

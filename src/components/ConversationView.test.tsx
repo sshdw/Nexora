@@ -13,6 +13,7 @@
 //! state, which is what decides the mode the user is in.
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -21,9 +22,11 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 
 import { tr } from "../lib/strings";
-import type { Attachment, Message } from "../lib/tauri";
+import type { Attachment, CommandError, Message } from "../lib/tauri";
+import type { ConversationStore } from "../lib/useConversation";
 import type { AgentRunView } from "../lib/useAgentRun";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { WorkspaceStore } from "../lib/useWorkspace";
@@ -37,6 +40,7 @@ const {
   extendAgentRunMock,
   reloadAgentMock,
   applyPlanDecisionMock,
+  sendChatMock,
 } = vi.hoisted(() => ({
   startAgentRunMock: vi.fn(async () => ({ run_id: 99 })),
   decideRunPlanMock: vi.fn(async () => ({
@@ -57,6 +61,7 @@ const {
   extendAgentRunMock: vi.fn(async () => {}),
   reloadAgentMock: vi.fn(async () => {}),
   applyPlanDecisionMock: vi.fn(),
+  sendChatMock: vi.fn<ConversationStore["send"]>(async () => null),
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => ({
@@ -75,14 +80,25 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
 let conversationMessages: Message[] = [];
 let draftAttachments: Attachment[] = [];
 vi.mock("../lib/useConversation", () => ({
-  useConversation: () => ({
-    messages: conversationMessages,
-    loading: false,
-    error: null,
-    sending: false,
-    reload: vi.fn(async () => {}),
-    send: vi.fn(async () => null),
-  }),
+  useConversation: () => {
+    const [error, setError] = useState<CommandError | null>(null);
+    const [sending, setSending] = useState(false);
+    return {
+      messages: conversationMessages,
+      loading: false,
+      error,
+      sending,
+      reload: vi.fn(async () => {}),
+      send: async (...args: Parameters<ConversationStore["send"]>) => {
+        setError(null);
+        setSending(true);
+        const failure = await sendChatMock(...args);
+        setError(failure);
+        setSending(false);
+        return failure;
+      },
+    };
+  },
 }));
 
 vi.mock("../lib/useAttachments", () => ({
@@ -184,6 +200,8 @@ beforeEach(() => {
   extendAgentRunMock.mockClear();
   reloadAgentMock.mockClear();
   applyPlanDecisionMock.mockClear();
+  sendChatMock.mockReset();
+  sendChatMock.mockResolvedValue(null);
   window.localStorage.setItem(LOCALE_KEY, "en");
 });
 
@@ -357,6 +375,209 @@ describe("Stage 5 PR 5B: ConversationView Plan toggle & Thinking integration", (
     );
     expect(screen.queryByRole("button", { name: "Plan mode" })).toBeNull();
   });
+});
+
+describe("managed attachments in Chat", () => {
+  let stageDraft: (value: string) => void;
+
+  function DraftPane({
+    conversationId = 1,
+    keyed = false,
+  }: {
+    conversationId?: number;
+    keyed?: boolean;
+  }) {
+    const [draft, setDraft] = useState("Read this file");
+    stageDraft = setDraft;
+    return (
+      <LocaleProvider>
+        <ConversationView
+          key={keyed ? conversationId : undefined}
+          conversationId={conversationId}
+          selectedProvider="gemini"
+          selectedModel="gemini-3.6-flash"
+          models={["gemini-3.6-flash"]}
+          onSelectModel={() => {}}
+          modelError={null}
+          autonomy={autonomyStub()}
+          onOpenSettings={() => {}}
+          draft={draft}
+          setDraft={setDraft}
+          workspace={workspaceStub()}
+        />
+      </LocaleProvider>
+    );
+  }
+
+  function selectChat() {
+    fireEvent.click(
+      within(modeGroup()).getByRole("radio", {
+        name: "Chat mode — one answer per message",
+      })
+    );
+  }
+
+  beforeEach(() => {
+    draftAttachments = [
+      {
+        id: 8,
+        conversation_id: 1,
+        message_id: null,
+        file_name: "note.txt",
+        file_path: "backend-only",
+        file_size_bytes: 12,
+        mime_type: "text/plain",
+      },
+    ];
+  });
+
+  it("retains text and the draft attachment after admission rejection, then retries", async () => {
+    sendChatMock.mockResolvedValueOnce({
+      kind: "invalid_input",
+      message: "This model does not support attachments.",
+    });
+    const { container } = render(<DraftPane />);
+    selectChat();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "This model does not support attachments."
+      )
+    );
+
+    expect(screen.getByLabelText("Message")).toHaveValue("Read this file");
+    expect(screen.getByText("note.txt")).toBeInTheDocument();
+    expect(container.querySelectorAll(".nex-message")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Message")).toHaveValue("")
+    );
+    expect(sendChatMock).toHaveBeenNthCalledWith(
+      1,
+      "Read this file",
+      "gemini",
+      "gemini-3.6-flash",
+      [8],
+      null
+    );
+    expect(sendChatMock).toHaveBeenNthCalledWith(
+      2,
+      "Read this file",
+      "gemini",
+      "gemini-3.6-flash",
+      [8],
+      null
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".nex-message")).toHaveLength(0);
+  });
+
+  it("keeps request failures retryable while rendering only persisted history", async () => {
+    sendChatMock.mockImplementationOnce(async () => {
+      conversationMessages = [
+        {
+          id: 1,
+          conversation_id: 1,
+          role: "user",
+          content: "Read this file",
+          provider_id: null,
+          model_name: null,
+          created_at: 1,
+        },
+      ];
+      return { kind: "request", message: "Provider is offline." };
+    });
+    const { container } = render(<DraftPane />);
+    selectChat();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Provider is offline."
+      )
+    );
+    expect(screen.getByLabelText("Message")).toHaveValue("Read this file");
+    expect(container.querySelectorAll(".nex-message-user")).toHaveLength(1);
+    expect(container.querySelectorAll(".nex-message-assistant")).toHaveLength(
+      0
+    );
+    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+  });
+
+  for (const failure of [
+    null,
+    { kind: "invalid_input", message: "Attachments are unsupported." },
+  ]) {
+    it(`preserves a newer staged draft when the pending send ${failure ? "fails" : "succeeds"}`, async () => {
+      let finish!: (result: CommandError | null) => void;
+      sendChatMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          })
+      );
+      render(<DraftPane />);
+      selectChat();
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+      // App can stage a Prompt Library entry while the composer is busy.
+      act(() => stageDraft("A newer staged prompt"));
+      await act(async () => {
+        finish(failure);
+      });
+
+      expect(screen.getByLabelText("Message")).toHaveValue(
+        "A newer staged prompt"
+      );
+      expect(screen.getByText("note.txt")).toBeInTheDocument();
+    });
+  }
+
+  it("does not clear a draft edited back to its submitted text", async () => {
+    let finish!: (result: CommandError | null) => void;
+    sendChatMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    render(<DraftPane />);
+    selectChat();
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    act(() => stageDraft("A different staged prompt"));
+    act(() => stageDraft("Read this file"));
+    await act(async () => {
+      finish(null);
+    });
+
+    expect(screen.getByLabelText("Message")).toHaveValue("Read this file");
+  });
+
+  for (const keyed of [false, true]) {
+    it(`does not clear another conversation's draft after a pending send succeeds (${keyed ? "remounted" : "reused"} pane)`, async () => {
+      let finish!: (result: CommandError | null) => void;
+      sendChatMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          })
+      );
+      const { rerender } = render(<DraftPane keyed={keyed} />);
+      selectChat();
+      fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+      rerender(<DraftPane conversationId={2} keyed={keyed} />);
+      await act(async () => {
+        finish(null);
+      });
+
+      expect(screen.getByLabelText("Message")).toHaveValue("Read this file");
+    });
+  }
 });
 
 describe("managed attachments in Agent", () => {
