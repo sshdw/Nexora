@@ -212,6 +212,7 @@ export const ru: Record<StringKey, string> = {
   "conv.contextWindow": "Контекстное окно",
   "conv.contextAria": "Контекстное окно: использовано {percent}%",
   "conv.contextAriaNa": "Контекстное окно: н/д",
+  "conv.contextAriaUnknown": "Контекстное окно: Неизвестно",
   "conv.hintSend": "Enter — отправить · Shift+Enter — новая строка",
   "conv.hintSetup":
     "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
@@ -269,6 +270,7 @@ export const ru: Record<StringKey, string> = {
   "conv.slashChatDesc": "Переключить ввод в режим чата",
   "conv.slashAgentDesc": "Переключить ввод в режим агента",
   "conv.slashPlanDesc": "Переключить режим плана агента",
+  "conv.slashCompactDesc": "Сжать ранний контекст разговора",
   "conv.slashAttachDesc": "Прикрепить файлы в режиме чата",
   "conv.slashClearDesc": "Очистить текущий черновик",
   "conv.slashSettingsDesc": "Открыть настройки",
@@ -434,6 +436,27 @@ export const ru: Record<StringKey, string> = {
   "ctx.budgetSaveFailed": "Не удалось сохранить бюджет контекста.",
   "ctx.budgetMeterAria": "использовано {used} из {budget} токенов бюджета",
   "ctx.totalCostTitle": "Итоговая стоимость {cost}",
+  "ctx.windowUnknown": "Неизвестно",
+  "ctx.catSystemSkills": "Система/Навыки",
+  "ctx.catMessages": "Сообщения",
+  "ctx.catAttachments": "Вложения/@Контекст",
+  "ctx.catToolOutput": "Вывод инструментов",
+  "ctx.categoryBreakdownAria":
+    "Система/Навыки {sys}%, Сообщения {msg}%, Вложения/@Контекст {att}%, Вывод инструментов {tool}%",
+  "ctx.compactAction": "Сжать",
+  "ctx.compactAria": "Сжать контекст разговора",
+  "ctx.compacting": "Сжатие…",
+  "ctx.compactedNotice":
+    "Контекст сжат (свёрнуто: {summarized}, сохранено: {retained}).",
+  "ctx.compactedScheduled":
+    "Сжатие запланировано перед следующим шагом.",
+  "ctx.compactedNothing": "Пока нет более раннего контекста для сжатия.",
+  "ctx.compactFailed": "Не удалось сжать контекст.",
+  "ctx.compactedAt": "Сжатий: {count}",
+  "ctx.preservedLabel": "Сохранены цель, план, решения и файлы",
+  "agent.compacting": "Сжатие контекста…",
+  "agent.compacted": "Контекст сжат (свёрнуто: {summarized}, сохранено: {retained})",
+  "agent.compactionFailed": "Сжатие пропущено",
 
   "settings.title": "Настройки",
   "settings.subtitle": "Настройки этого устройства. Всё хранится локально.",

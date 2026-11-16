@@ -136,7 +136,50 @@ export async function deleteConversationPermanently(id: number): Promise<void> {
   });
 }
 
-// ---- Context panel (read-only stats + diff render) ----------------------
+// ---- Context panel (accounting, breakdown & compaction) ------------------
+
+/** Per-category token breakdown (`M16` / P24, P30). */
+export interface ContextCategoryBreakdown {
+  system_skills_tokens: number;
+  messages_tokens: number;
+  attachments_tokens: number;
+  tool_output_tokens: number;
+  total_accounted_tokens: number;
+}
+
+/** Latest compaction checkpoint metadata (`M16`). */
+export interface CompactionSummaryMeta {
+  id: number;
+  reason: string;
+  goal: string;
+  active_plan: string;
+  key_decisions: string;
+  touched_files: string[];
+  before_tokens: number;
+  after_tokens: number;
+  summarized_messages: number;
+  retained_messages: number;
+  created_at: number;
+}
+
+/** Outcome returned by manual `compact_conversation_context` (`M16`). */
+export interface CompactionResult {
+  status: "compacted" | "scheduled" | "nothing_to_compact" | string;
+  conversation_id: number;
+  run_id: number | null;
+  event_id: number | null;
+  reason: string;
+  goal: string;
+  active_plan: string;
+  key_decisions: string;
+  touched_files: string[];
+  summary: string;
+  before_tokens: number;
+  after_tokens: number;
+  summarized_messages: number;
+  retained_messages: number;
+  created_at: number;
+}
 
 /** Read-only per-conversation context stats (`conversation_context_stats`).
  * Token sums are `0` with `has_token_data: false` ("n/a") where no persisted
@@ -149,6 +192,16 @@ export interface ConversationContextStats {
   provider_display: string | null;
   model: string | null;
   context_limit: number;
+  context_window?: number | null;
+  context_window_provenance?:
+    | "manual_override"
+    | "api_metadata"
+    | "built_in_catalog"
+    | "unknown";
+  category_breakdown?: ContextCategoryBreakdown;
+  compaction_count?: number;
+  last_compacted_at?: number | null;
+  last_compaction?: CompactionSummaryMeta | null;
   total_tokens: number;
   input_tokens: number;
   output_tokens: number;
@@ -170,9 +223,22 @@ export interface ConversationContextStats {
 /** Load one conversation's read-only context stats via
  * `conversation_context_stats`. */
 export function conversationContextStats(
-  conversationId: number
+  conversationId: number,
+  options?: { connectionId?: string | null; modelId?: string | null }
 ): Promise<ConversationContextStats> {
-  return invoke<ConversationContextStats>("conversation_context_stats", {
-    conversationId,
-  });
+  const args: Record<string, unknown> = { conversationId };
+  if (options?.connectionId) args.connectionId = options.connectionId;
+  if (options?.modelId) args.modelId = options.modelId;
+  return invoke<ConversationContextStats>("conversation_context_stats", args);
+}
+
+/** Manually compact conversation context (`/compact` or `ContextRing` action). */
+export function compactConversationContext(
+  conversationId: number,
+  options?: { connectionId?: string | null; modelId?: string | null }
+): Promise<CompactionResult> {
+  const args: Record<string, unknown> = { conversationId };
+  if (options?.connectionId) args.connectionId = options.connectionId;
+  if (options?.modelId) args.modelId = options.modelId;
+  return invoke<CompactionResult>("compact_conversation_context", args);
 }

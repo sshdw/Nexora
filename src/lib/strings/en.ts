@@ -232,6 +232,7 @@ export const en = {
   "conv.contextWindow": "Context window",
   "conv.contextAria": "Context window: {percent}% used",
   "conv.contextAriaNa": "Context window: n/a",
+  "conv.contextAriaUnknown": "Context window: Unknown",
   "conv.hintSend": "Enter to send · Shift+Enter for a new line",
   "conv.hintSetup": "Choose a provider and model in Settings to send messages.",
   "conv.openSettings": "Open Settings",
@@ -291,6 +292,7 @@ export const en = {
   "conv.slashChatDesc": "Switch composer to Chat mode",
   "conv.slashAgentDesc": "Switch composer to Agent mode",
   "conv.slashPlanDesc": "Toggle Agent Plan mode",
+  "conv.slashCompactDesc": "Compact older conversation context",
   "conv.slashAttachDesc": "Attach files in Chat mode",
   "conv.slashClearDesc": "Clear the current draft",
   "conv.slashSettingsDesc": "Open Settings",
@@ -485,6 +487,27 @@ export const en = {
   // Both numbers, always spelled out — the proportion is never visual-only.
   "ctx.budgetMeterAria": "{used} of {budget} budgeted tokens used",
   "ctx.totalCostTitle": "Total cost {cost}",
+  "ctx.windowUnknown": "Unknown",
+  "ctx.catSystemSkills": "System/Skills",
+  "ctx.catMessages": "Messages",
+  "ctx.catAttachments": "Attachments/@Context",
+  "ctx.catToolOutput": "Tool Output",
+  "ctx.categoryBreakdownAria":
+    "System/Skills {sys}%, Messages {msg}%, Attachments/@Context {att}%, Tool Output {tool}%",
+  "ctx.compactAction": "Compact",
+  "ctx.compactAria": "Compact conversation context",
+  "ctx.compacting": "Compacting…",
+  "ctx.compactedNotice":
+    "Context compacted ({summarized} folded, {retained} kept).",
+  "ctx.compactedScheduled":
+    "Compaction scheduled for the next step boundary.",
+  "ctx.compactedNothing": "Nothing older to compact yet.",
+  "ctx.compactFailed": "Could not compact context.",
+  "ctx.compactedAt": "Compacted ({count})",
+  "ctx.preservedLabel": "Preserved Goal, Plan, Decisions & Files",
+  "agent.compacting": "Compacting context…",
+  "agent.compacted": "Context compacted ({summarized} folded, {retained} kept)",
+  "agent.compactionFailed": "Compaction skipped",
 
   // ---- settings ----------------------------------------------------------------------
   "settings.title": "Settings",

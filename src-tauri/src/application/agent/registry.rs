@@ -275,6 +275,36 @@ impl AgentRunRegistry {
             .sum()
     }
 
+    /// Return the active run id for `conversation_id`, if any.
+    #[must_use]
+    pub(crate) fn active_run_for_conversation(&self, conversation_id: i64) -> Option<i64> {
+        self.runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find_map(|(run_id, entry)| {
+                (entry.conversation_id == conversation_id).then_some(*run_id)
+            })
+    }
+
+    /// Schedule manual context compaction on an active run at its next step boundary.
+    #[must_use]
+    pub(crate) fn request_compaction(&self, run_id: i64) -> bool {
+        let entry = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
+        match entry {
+            Some(entry) => {
+                entry.control.request_compaction();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Resolve a parked approval. See [`ResolveOutcome`] for the outcomes.
     #[must_use]
     pub(crate) fn resolve(&self, run_id: i64, call_id: &str, approved: bool) -> ResolveOutcome {

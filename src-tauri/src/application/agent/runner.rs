@@ -193,17 +193,26 @@ pub(crate) struct AgentRunner<'a> {
     question_ctx: Option<QuestionRunContext>,
     /// Whether this run is a user-initiated read-only Plan run (`M09` / `P04`).
     is_plan: bool,
+    /// Active approved plan text (if any) preserved across compaction (`M16`).
+    active_plan: Option<String>,
 }
 
-/// Outcome of one in-place compaction attempt (Task T4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Outcome of one in-place compaction attempt (Task T4 / M16).
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CompactionOutcome {
-    /// The head was folded; carries folded/retained message counts.
+    /// The head was folded; carries folded/retained message counts and preserved sections.
     Compacted {
         /// Messages folded into the summary.
         summarized: usize,
         /// Messages retained verbatim after the summary.
         retained: usize,
+        goal: String,
+        active_plan: String,
+        key_decisions: String,
+        touched_files: Vec<String>,
+        summary: String,
+        before_tokens: u64,
+        after_tokens: u64,
     },
     /// The plan had nothing worth folding; the history is untouched.
     NothingToFold,
@@ -254,7 +263,18 @@ impl<'a> AgentRunner<'a> {
             project_instructions: None,
             question_ctx: None,
             is_plan: false,
+            active_plan: None,
         }
+    }
+
+    /// Attach an active plan summary so compaction explicitly preserves it (`M16`).
+    #[must_use]
+    pub(crate) fn with_active_plan(mut self, plan: impl Into<String>) -> Self {
+        let text = plan.into();
+        if !text.trim().is_empty() {
+            self.active_plan = Some(text);
+        }
+        self
     }
 
     pub(crate) fn with_attachments(
@@ -611,10 +631,10 @@ impl<'a> AgentRunner<'a> {
         Err(last_error)
     }
 
-    /// Fold the older turns of `messages` into a summary in place (Task T4):
+    /// Fold the older turns of `messages` into a summary in place (Task T4 / M16):
     /// plan the tail, prune stale tool outputs outside it, summarize the
-    /// head, and rebuild the history. In-run history only — nothing here is
-    /// persisted, and no step is recorded, so the `seq` contract is untouched.
+    /// head while preserving Goal/Active Plan/Key Decisions/Touched Files,
+    /// and rebuild the history.
     fn compact_in_place(
         &self,
         messages: &mut Vec<AiMessage>,
@@ -628,22 +648,126 @@ impl<'a> AgentRunner<'a> {
         if plan.summarize.is_empty() {
             return CompactionOutcome::NothingToFold;
         }
+        let before_tokens = assembly::messages_size_tokens(messages);
         let _freed = compaction::prune_tool_outputs(messages, &plan.retain);
         let head: Vec<AiMessage> = messages[plan.summarize.clone()].to_vec();
+        let structured =
+            compaction::extract_structured_summary(&head, self.active_plan.as_deref(), &[]);
         match self.summarize(scope, &head) {
-            Ok(summary) => {
+            Ok(raw_summary) => {
+                let summary = compaction::merge_summary_with_preserved_sections(
+                    Some(&raw_summary),
+                    &structured,
+                );
                 let summarized = plan.summarize.len();
                 let retained = plan.retain.len();
                 compaction::apply_compaction(messages, &summary, &plan);
+                let after_tokens = assembly::messages_size_tokens(messages);
                 governor.note_compaction(reason);
                 CompactionOutcome::Compacted {
                     summarized,
                     retained,
+                    goal: structured.goal,
+                    active_plan: structured.active_plan,
+                    key_decisions: structured.key_decisions,
+                    touched_files: structured.touched_files,
+                    summary,
+                    before_tokens,
+                    after_tokens,
                 }
             }
             Err(ExecutorError::Cancelled) => CompactionOutcome::Cancelled,
             Err(_) if scope.token.is_cancelled() => CompactionOutcome::Cancelled,
             Err(_) => CompactionOutcome::Failed,
+        }
+    }
+
+    /// Execute one compaction cycle (started -> in-place -> persist durable
+    /// `context_compacted` event -> emit finished/failed/cancelled).
+    fn execute_compaction_cycle(
+        &self,
+        messages: &mut Vec<AiMessage>,
+        governor: &mut ContextGovernor,
+        reason: CompactionReason,
+        scope: &CompactionScope<'_>,
+        record: &mut Option<&mut ActiveRunRecord<'_>>,
+    ) -> Result<(), AgentError> {
+        let reason_text = reason.as_str().to_string();
+        observe_transition(RunState::Running, RunState::Compacting);
+        dispatch::emit(
+            self.event_sender.as_ref(),
+            AgentRunEvent::CompactionStarted {
+                reason: reason_text.clone(),
+                messages: messages.len(),
+            },
+        );
+        match self.compact_in_place(messages, governor, reason, scope) {
+            CompactionOutcome::Compacted {
+                summarized,
+                retained,
+                goal,
+                active_plan,
+                key_decisions,
+                touched_files,
+                summary,
+                before_tokens,
+                after_tokens,
+            } => {
+                let event_id = record.as_mut().and_then(|rec| {
+                    rec.record_context_compacted(
+                        &reason_text,
+                        &goal,
+                        &active_plan,
+                        &key_decisions,
+                        &touched_files,
+                        &summary,
+                        before_tokens,
+                        after_tokens,
+                        summarized,
+                        retained,
+                    )
+                });
+                observe_transition(RunState::Compacting, RunState::Running);
+                dispatch::emit(
+                    self.event_sender.as_ref(),
+                    AgentRunEvent::CompactionFinished {
+                        reason: reason_text.clone(),
+                        summarized,
+                        retained,
+                    },
+                );
+                dispatch::emit(
+                    self.event_sender.as_ref(),
+                    AgentRunEvent::ContextCompacted {
+                        reason: reason_text,
+                        goal,
+                        active_plan,
+                        key_decisions,
+                        touched_files,
+                        before_tokens,
+                        after_tokens,
+                        summarized,
+                        retained,
+                        event_id,
+                    },
+                );
+                Ok(())
+            }
+            CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
+                observe_transition(RunState::Compacting, RunState::Running);
+                dispatch::emit(
+                    self.event_sender.as_ref(),
+                    AgentRunEvent::CompactionFailed {
+                        reason: reason_text,
+                    },
+                );
+                Ok(())
+            }
+            CompactionOutcome::Cancelled => {
+                observe_transition(RunState::Compacting, RunState::Cancelled);
+                dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
+                Err(AgentError::Cancelled)
+            }
         }
     }
 
@@ -778,9 +902,26 @@ impl<'a> AgentRunner<'a> {
                     );
                 }
             }
-            // Proactive context compaction (Task T4) runs after the
-            // governance gates — the cancel → pause → allowance order is
-            // load-bearing — and before the next request is built.
+            // Manual compaction (/compact or ContextRing) OR proactive context
+            // compaction (Task T4 / M16) runs after the governance gates — the
+            // cancel -> pause -> allowance order is load-bearing — and before
+            // the next request is built.
+            if control.is_some_and(RunControl::take_compaction_request) {
+                let scope = CompactionScope {
+                    provider,
+                    model,
+                    credential,
+                    token: control.map_or(&idle_token, RunControl::token),
+                    context_limit,
+                };
+                self.execute_compaction_cycle(
+                    &mut messages,
+                    &mut governor,
+                    CompactionReason::Manual,
+                    &scope,
+                    &mut record,
+                )?;
+            }
             match governor.decide(&messages, context_limit) {
                 ContextAction::Proceed => {}
                 ContextAction::Exhausted => {
@@ -795,45 +936,13 @@ impl<'a> AgentRunner<'a> {
                         token: control.map_or(&idle_token, RunControl::token),
                         context_limit,
                     };
-                    let reason_text = reason.as_str().to_string();
-                    observe_transition(RunState::Running, RunState::Compacting);
-                    dispatch::emit(
-                        self.event_sender.as_ref(),
-                        AgentRunEvent::CompactionStarted {
-                            reason: reason_text.clone(),
-                            messages: messages.len(),
-                        },
-                    );
-                    match self.compact_in_place(&mut messages, &mut governor, reason, &scope) {
-                        CompactionOutcome::Compacted {
-                            summarized,
-                            retained,
-                        } => {
-                            observe_transition(RunState::Compacting, RunState::Running);
-                            dispatch::emit(
-                                self.event_sender.as_ref(),
-                                AgentRunEvent::CompactionFinished {
-                                    reason: reason_text,
-                                    summarized,
-                                    retained,
-                                },
-                            );
-                        }
-                        CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
-                            observe_transition(RunState::Compacting, RunState::Running);
-                            dispatch::emit(
-                                self.event_sender.as_ref(),
-                                AgentRunEvent::CompactionFailed {
-                                    reason: reason_text,
-                                },
-                            );
-                        }
-                        CompactionOutcome::Cancelled => {
-                            observe_transition(RunState::Compacting, RunState::Cancelled);
-                            dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
-                            return Err(AgentError::Cancelled);
-                        }
-                    }
+                    self.execute_compaction_cycle(
+                        &mut messages,
+                        &mut governor,
+                        reason,
+                        &scope,
+                        &mut record,
+                    )?;
                 }
             }
 
@@ -909,18 +1018,8 @@ impl<'a> AgentRunner<'a> {
                 Err(error @ ExecutorError::ContextLengthExceeded)
                     if governor.note_provider_error(&error) =>
                 {
-                    // Reactive overflow recovery (Task T4): fold the history
-                    // in place, then re-send the same turn once, now
-                    // compacted. Past the per-run cap the guard above refuses
-                    // and the error below terminates the run.
-                    observe_transition(RunState::Running, RunState::Compacting);
-                    dispatch::emit(
-                        self.event_sender.as_ref(),
-                        AgentRunEvent::CompactionStarted {
-                            reason: CompactionReason::Overflow.as_str().to_string(),
-                            messages: messages.len(),
-                        },
-                    );
+                    // Reactive overflow recovery (Task T4 / M16): fold the history
+                    // in place, persist `context_compacted`, then re-send the same turn once.
                     let scope = CompactionScope {
                         provider,
                         model,
@@ -928,43 +1027,13 @@ impl<'a> AgentRunner<'a> {
                         token,
                         context_limit,
                     };
-                    match self.compact_in_place(
+                    self.execute_compaction_cycle(
                         &mut messages,
                         &mut governor,
                         CompactionReason::Overflow,
                         &scope,
-                    ) {
-                        CompactionOutcome::Compacted {
-                            summarized,
-                            retained,
-                        } => {
-                            observe_transition(RunState::Compacting, RunState::Running);
-                            dispatch::emit(
-                                self.event_sender.as_ref(),
-                                AgentRunEvent::CompactionFinished {
-                                    reason: CompactionReason::Overflow.as_str().to_string(),
-                                    summarized,
-                                    retained,
-                                },
-                            );
-                        }
-                        CompactionOutcome::NothingToFold | CompactionOutcome::Failed => {
-                            // A failed summarizer never fails the run: continue
-                            // uncompacted and let the cap bound the retries.
-                            observe_transition(RunState::Compacting, RunState::Running);
-                            dispatch::emit(
-                                self.event_sender.as_ref(),
-                                AgentRunEvent::CompactionFailed {
-                                    reason: CompactionReason::Overflow.as_str().to_string(),
-                                },
-                            );
-                        }
-                        CompactionOutcome::Cancelled => {
-                            observe_transition(RunState::Compacting, RunState::Cancelled);
-                            dispatch::emit(self.event_sender.as_ref(), AgentRunEvent::Cancelled);
-                            return Err(AgentError::Cancelled);
-                        }
-                    }
+                        &mut record,
+                    )?;
                     continue;
                 }
                 Err(ExecutorError::ContextLengthExceeded) => {

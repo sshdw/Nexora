@@ -230,12 +230,23 @@ export default function ContextPanel({
     );
   }
 
-  const user = stats.user_message_count;
-  const assistant = stats.assistant_message_count;
-  const tools = stats.tool_call_count;
-  const other = stats.other_step_count;
-  const total = user + assistant + tools + other;
-  const pct = (v: number): number => (total === 0 ? 0 : (v / total) * 100);
+  const resolvedWindow =
+    stats.context_window !== undefined
+      ? stats.context_window
+      : stats.context_limit > 0
+        ? stats.context_limit
+        : null;
+  const windowUnknown = resolvedWindow === null;
+
+  const bd = stats.category_breakdown;
+  const sysTokens = bd?.system_skills_tokens ?? 0;
+  const msgTokens = bd?.messages_tokens ?? 0;
+  const attTokens = bd?.attachments_tokens ?? 0;
+  const toolTokens = bd?.tool_output_tokens ?? 0;
+  const accountedTotal = sysTokens + msgTokens + attTokens + toolTokens;
+  const showBreakdown = accountedTotal > 0 || stats.has_token_data;
+  const pct = (v: number): number =>
+    accountedTotal === 0 ? 0 : (v / accountedTotal) * 100;
 
   // Budget reading (#220): what the user budgeted against what the
   // conversation has actually used. Distinct from the `usage_percent`
@@ -298,13 +309,18 @@ export default function ContextPanel({
     { label: t("ctx.labelModel"), value: stats.model ?? t("common.na") },
     {
       label: t("ctx.labelContextLimit"),
-      value: formatCount(stats.context_limit),
+      value:
+        resolvedWindow === null
+          ? t("ctx.windowUnknown")
+          : formatCount(resolvedWindow),
     },
     {
       label: t("ctx.labelUsage"),
-      value: stats.has_token_data
-        ? `${stats.usage_percent.toFixed(0)}%`
-        : t("common.na"),
+      value: windowUnknown
+        ? t("ctx.windowUnknown")
+        : stats.has_token_data
+          ? `${stats.usage_percent.toFixed(0)}%`
+          : t("common.na"),
     },
     ...tokenRows,
     {
@@ -348,7 +364,7 @@ export default function ContextPanel({
           the breakdown is absent rather than fabricated. The budget block
           below still explains the absence in words, and the changed-files
           list is independent of token accounting. */}
-      {stats.has_token_data && (
+      {showBreakdown && (
         <section
           className="nex-context-breakdown"
           aria-label={t("ctx.breakdown")}
@@ -357,28 +373,28 @@ export default function ContextPanel({
           <div
             className="nex-context-bar"
             role="img"
-            aria-label={t("ctx.breakdownAria", {
-              u: pct(user).toFixed(1),
-              a: pct(assistant).toFixed(1),
-              t: pct(tools).toFixed(1),
-              o: pct(other).toFixed(1),
+            aria-label={t("ctx.categoryBreakdownAria", {
+              sys: pct(sysTokens).toFixed(1),
+              msg: pct(msgTokens).toFixed(1),
+              att: pct(attTokens).toFixed(1),
+              tool: pct(toolTokens).toFixed(1),
             })}
           >
             <span
               className="nex-context-seg nex-context-seg-user"
-              style={{ width: `${pct(user)}%` }}
+              style={{ width: `${pct(sysTokens)}%` }}
             />
             <span
               className="nex-context-seg nex-context-seg-assistant"
-              style={{ width: `${pct(assistant)}%` }}
+              style={{ width: `${pct(msgTokens)}%` }}
             />
             <span
               className="nex-context-seg nex-context-seg-tools"
-              style={{ width: `${pct(tools)}%` }}
+              style={{ width: `${pct(attTokens)}%` }}
             />
             <span
               className="nex-context-seg nex-context-seg-other"
-              style={{ width: `${pct(other)}%` }}
+              style={{ width: `${pct(toolTokens)}%` }}
             />
           </div>
           <ul className="nex-context-legend">
@@ -387,30 +403,46 @@ export default function ContextPanel({
                 className="nex-context-dot nex-context-seg-user"
                 aria-hidden="true"
               />
-              {t("ctx.legendUser")} {pct(user).toFixed(1)}%
+              {t("ctx.catSystemSkills")} · {formatCount(sysTokens)} ({pct(sysTokens).toFixed(1)}%)
             </li>
             <li>
               <span
                 className="nex-context-dot nex-context-seg-assistant"
                 aria-hidden="true"
               />
-              {t("ctx.legendAssistant")} {pct(assistant).toFixed(1)}%
+              {t("ctx.catMessages")} · {formatCount(msgTokens)} ({pct(msgTokens).toFixed(1)}%)
             </li>
             <li>
               <span
                 className="nex-context-dot nex-context-seg-tools"
                 aria-hidden="true"
               />
-              {t("ctx.legendTools")} {pct(tools).toFixed(1)}%
+              {t("ctx.catAttachments")} · {formatCount(attTokens)} ({pct(attTokens).toFixed(1)}%)
             </li>
             <li>
               <span
                 className="nex-context-dot nex-context-seg-other"
                 aria-hidden="true"
               />
-              {t("ctx.legendOther")} {pct(other).toFixed(1)}%
+              {t("ctx.catToolOutput")} · {formatCount(toolTokens)} ({pct(toolTokens).toFixed(1)}%)
             </li>
           </ul>
+        </section>
+      )}
+
+      {(stats.compaction_count ?? 0) > 0 && (
+        <section className="nex-context-compaction" aria-label={t("ctx.preservedLabel")}>
+          <div className="nex-context-cell">
+            <span className="nex-context-label">
+              {t("ctx.compactedAt", { count: stats.compaction_count ?? 0 })}
+            </span>
+            {stats.last_compacted_at && (
+              <span className="nex-context-value">
+                {formatDateTime(stats.last_compacted_at)}
+              </span>
+            )}
+          </div>
+          <p className="nex-context-budget-hint">{t("ctx.preservedLabel")}</p>
         </section>
       )}
 

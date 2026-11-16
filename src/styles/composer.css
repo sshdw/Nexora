@@ -1204,6 +1204,20 @@
   border-radius: var(--radius-md);
   text-align: left;
 }
+
+.nex-composer-strip-status {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--type-size-body-small);
+  color: var(--foreground);
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
 /* ============================================================
    Autonomy as a compact popover (D-03 / O-12)
 

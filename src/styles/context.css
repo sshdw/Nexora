@@ -311,8 +311,45 @@
    branch drops the declaration outright rather than leaving an
    interpolation that gets scheduled and then cut to 0.01ms. One fewer
    thing to run at all. */
+.nex-context-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.nex-context-compact-btn {
+  flex: 0 0 auto;
+  transition:
+    background-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-fast)
+      var(--nex-sys-motion-easing-standard);
+}
+
+.nex-context-compact-feedback {
+  margin: 0 0 var(--space-xs);
+  padding: var(--space-xxs) var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-container-high);
+  color: var(--color-on-surface);
+  font-size: var(--type-size-label-medium);
+}
+
+.nex-context-compaction {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding-top: var(--space-xxs);
+  border-top: 1px solid var(--border);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .nex-context-meter-fill {
+    transition: none;
+  }
+  .nex-context-compact-btn {
     transition: none;
   }
 }

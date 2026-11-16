@@ -37,6 +37,7 @@ const SNAPSHOT: readonly string[] = [
   "clarifyAgentRun",
   "clearApplicationData",
   "clearModelCapabilityOverride",
+  "compactConversationContext",
   "compatStatus",
   "continueAgentRun",
   "conversationContextStats",

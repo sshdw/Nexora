@@ -29,14 +29,19 @@ import type { WorkspaceStore } from "../lib/useWorkspace";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import ConversationView from "./ConversationView";
 
-const { store, mockStats } = vi.hoisted(() => ({
+const { store, mockStats, mockCompact } = vi.hoisted(() => ({
   store: { messages: [] as Message[], runs: [] as AgentRunView[] },
   mockStats: vi.fn(),
+  mockCompact: vi.fn(),
 }));
 
 vi.mock("../lib/tauri", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/tauri")>();
-  return { ...actual, conversationContextStats: mockStats };
+  return {
+    ...actual,
+    conversationContextStats: mockStats,
+    compactConversationContext: mockCompact,
+  };
 });
 
 vi.mock("../lib/useConversation", () => ({
@@ -206,7 +211,25 @@ beforeEach(() => {
   store.messages = [];
   store.runs = [];
   mockStats.mockReset();
+  mockCompact.mockReset();
   mockStats.mockImplementation(async () => stats(store.messages.length > 0));
+  mockCompact.mockResolvedValue({
+    status: "compacted",
+    conversation_id: 1,
+    run_id: null,
+    event_id: 42,
+    reason: "manual",
+    goal: "Alpha",
+    active_plan: "none",
+    key_decisions: "none",
+    touched_files: [],
+    summary: "1. Goal\nAlpha",
+    before_tokens: 12_000,
+    after_tokens: 2_000,
+    summarized_messages: 2,
+    retained_messages: 1,
+    created_at: 1002,
+  });
 });
 
 afterEach(() => {
@@ -271,5 +294,42 @@ describe("context ring — Chat-mode revision", () => {
       view.rerender(pane());
     });
     await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(3));
+  });
+
+  it("triggers manual compaction via /compact slash command and refreshes ContextRing", async () => {
+    const setDraft = vi.fn();
+    render(
+      <LocaleProvider>
+        <ConversationView
+          conversationId={1}
+          selectedProvider="gemini"
+          selectedModel="gemini-3.6-flash"
+          models={["gemini-3.6-flash"]}
+          onSelectModel={() => {}}
+          modelError={null}
+          autonomy={autonomyStub()}
+          onOpenSettings={() => {}}
+          draft="/compact"
+          setDraft={setDraft}
+          workspace={workspaceStub()}
+        />
+      </LocaleProvider>
+    );
+    await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(1));
+
+    const field = screen.getByLabelText("Message");
+    fireEvent.keyDown(field, { key: "Enter", shiftKey: false });
+
+    await waitFor(() =>
+      expect(mockCompact).toHaveBeenCalledWith(1, {
+        connectionId: "gemini",
+        modelId: "gemini-3.6-flash",
+      })
+    );
+    expect(setDraft).toHaveBeenCalledWith("");
+    expect(
+      await screen.findByText("Context compacted (2 folded, 1 kept).")
+    ).toBeInTheDocument();
+    await waitFor(() => expect(mockStats).toHaveBeenCalledTimes(2));
   });
 });

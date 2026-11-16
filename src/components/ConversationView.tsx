@@ -32,6 +32,7 @@ import { formatRelativeTime } from "../lib/format";
 import {
   agentSetMode,
   cancelAgentRun,
+  compactConversationContext,
   continueAgentRun,
   decideRunPlan,
   extendAgentRun,
@@ -40,6 +41,7 @@ import {
   resumeAgentRun,
   startAgentRun,
   type AutonomyMode,
+  type CompactionResult,
   type ConnectionModelCapabilities,
   type PlanDecisionKind,
 } from "../lib/tauri";
@@ -140,6 +142,7 @@ export default function ConversationView({
   } = useAttachments(conversationId);
   const {
     runs,
+    compactionVersion = 0,
     reload: reloadAgent,
     loadRunSteps,
     expandStep,
@@ -166,6 +169,9 @@ export default function ConversationView({
   const [agentBusy, setAgentBusy] = useState<boolean>(false);
   const [liveActionBusy, setLiveActionBusy] = useState<boolean>(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [compactBusy, setCompactBusy] = useState<boolean>(false);
+  const [manualCompactVersion, setManualCompactVersion] = useState<number>(0);
+  const [compactNotice, setCompactNotice] = useState<string | null>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const chatDraftRef = useRef<{ conversationId: number; draft: string } | null>(
     null
@@ -272,14 +278,65 @@ export default function ConversationView({
     const runSignature = runs
       .map(
         (run) =>
-          `${run.run_id}:${run.status}:${run.finished_at ?? ""}:${run.steps
+          `${run.run_id}:${run.status}:${run.finished_at ?? ""}:${run.compaction_status ?? ""}:${run.steps
             .map((step) => `${step.seq}:${step.status ?? ""}`)
             .join(",")}`
       )
       .join("|");
     const newest = messages[messages.length - 1];
-    return `${messages.length}:${newest?.id ?? ""}::${runSignature}`;
-  }, [messages, runs]);
+    return `${messages.length}:${newest?.id ?? ""}::${compactionVersion}:${manualCompactVersion}::${runSignature}`;
+  }, [messages, runs, compactionVersion, manualCompactVersion]);
+
+  useEffect(() => {
+    setCompactNotice(null);
+  }, [conversationId]);
+
+  const handleCompacted = useCallback(
+    (result: CompactionResult) => {
+      setManualCompactVersion((v) => v + 1);
+      if (result.status === "scheduled") {
+        setCompactNotice(t("ctx.compactedScheduled"));
+      } else if (result.status === "nothing_to_compact") {
+        setCompactNotice(t("ctx.compactedNothing"));
+      } else {
+        setCompactNotice(
+          t("ctx.compactedNotice", {
+            summarized: result.summarized_messages,
+            retained: result.retained_messages,
+          })
+        );
+      }
+    },
+    [t]
+  );
+
+  const handleCompactContext = useCallback(async () => {
+    if (compactBusy) return;
+    setAgentError(null);
+    setCompactNotice(null);
+    setCompactBusy(true);
+    try {
+      const hasSelection = Boolean(selectedProvider && selectedModel);
+      const result = hasSelection
+        ? await compactConversationContext(conversationId, {
+            connectionId: selectedProvider,
+            modelId: selectedModel,
+          })
+        : await compactConversationContext(conversationId);
+      handleCompacted(result);
+    } catch (e) {
+      setAgentError(e instanceof Error ? e.message : t("ctx.compactFailed"));
+    } finally {
+      setCompactBusy(false);
+    }
+  }, [
+    compactBusy,
+    conversationId,
+    handleCompacted,
+    selectedModel,
+    selectedProvider,
+    t,
+  ]);
 
   // Keep the newest message in view as history loads and responses arrive.
   useEffect(() => {
@@ -496,6 +553,11 @@ export default function ConversationView({
 
   const handleSubmit = async () => {
     const content = draft.trim();
+    if (content === "/compact") {
+      setDraft("");
+      await handleCompactContext();
+      return;
+    }
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
     const attachmentIds = attachments.map((attachment) => attachment.id);
     // Agent path: opt-in streaming via start_agent_run (DP-3, DP-4).
@@ -892,6 +954,12 @@ export default function ConversationView({
         </div>
       )}
 
+      {compactNotice && (
+        <div className="nex-composer-strip-status nex-fade-in" role="status">
+          {compactNotice}
+        </div>
+      )}
+
       {(pendingQuestion || pendingPlanRun || queueItems.length > 0) && (
         <div className="nex-composer-adjacent">
           {pendingQuestion && (
@@ -962,6 +1030,9 @@ export default function ConversationView({
         liveActionBusy={liveActionBusy}
         workspace={workspace}
         autoFocusField={emptyStage}
+        onCompactContext={() => void handleCompactContext()}
+        compactBusy={compactBusy}
+        onCompacted={handleCompacted}
       />
     </div>
   );

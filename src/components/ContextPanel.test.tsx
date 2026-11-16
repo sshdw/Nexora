@@ -475,3 +475,36 @@ describe("context popover — changed files", () => {
     );
   });
 });
+
+describe("context popover — M16 category breakdown & reduced motion", () => {
+  it("displays System/Skills, Messages, Attachments/@Context, and Tool Output breakdown", async () => {
+    await renderPanel({
+      category_breakdown: {
+        system_skills_tokens: 1_000,
+        messages_tokens: 4_000,
+        attachments_tokens: 2_000,
+        tool_output_tokens: 3_000,
+        total_accounted_tokens: 10_000,
+      },
+      compaction_count: 1,
+      last_compacted_at: 1_700_003_600,
+    });
+
+    expect(
+      screen.getByRole("region", { name: "Context breakdown" })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/System\/Skills · 1 000 \(10\.0%\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Messages · 4 000 \(40\.0%\)/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Attachments\/@Context · 2 000 \(20\.0%\)/)
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Tool Output · 3 000 \(30\.0%\)/)).toBeInTheDocument();
+    expect(screen.getByText("Compacted (1)")).toBeInTheDocument();
+  });
+
+  it("drops transition under prefers-reduced-motion in context.css", () => {
+    const sheet = readRepoFile("src/styles/context.css");
+    expect(sheet).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+    expect(sheet).toMatch(/\.nex-context-compact-btn\s*\{\s*transition:\s*none;/);
+  });
+});

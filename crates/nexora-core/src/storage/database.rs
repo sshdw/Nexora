@@ -1088,6 +1088,116 @@ CREATE TABLE run_continuations (
 );
 CREATE INDEX idx_run_continuations_parent ON run_continuations(parent_run_id);",
     ),
+    // v20 (M16): durable `context_compacted` journal events (run-scoped or
+    // conversation-scoped) + persisted structured compaction checkpoints.
+    (
+        20,
+        r"
+DROP TRIGGER IF EXISTS journal_run_start;
+DROP TRIGGER IF EXISTS journal_step;
+DROP TRIGGER IF EXISTS journal_step_immutable;
+DROP TRIGGER IF EXISTS journal_terminal;
+DROP TRIGGER IF EXISTS journal_terminal_immutable;
+CREATE TABLE durable_run_events_new (
+ event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+ run_id INTEGER NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+ conversation_id INTEGER NULL REFERENCES conversations(id) ON DELETE CASCADE,
+ source_key TEXT NOT NULL UNIQUE,
+ kind TEXT NOT NULL CHECK(kind IN ('run_started','step_recorded','run_finished','run_interrupted','context_compacted')),
+ step_id INTEGER REFERENCES agent_steps(id) ON DELETE CASCADE,
+ schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+ created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+ payload TEXT NULL,
+ CHECK(
+  (kind = 'step_recorded' AND step_id IS NOT NULL AND run_id IS NOT NULL)
+  OR (kind IN ('run_started','run_finished','run_interrupted') AND step_id IS NULL AND run_id IS NOT NULL)
+  OR (kind = 'context_compacted' AND step_id IS NULL AND (run_id IS NOT NULL OR conversation_id IS NOT NULL))
+ )
+);
+INSERT INTO durable_run_events_new(event_id,run_id,conversation_id,source_key,kind,step_id,schema_version,created_at,payload)
+SELECT e.event_id,e.run_id,r.conversation_id,e.source_key,e.kind,e.step_id,e.schema_version,e.created_at,NULL
+FROM durable_run_events e LEFT JOIN agent_runs r ON r.id=e.run_id;
+DROP TABLE durable_run_events;
+ALTER TABLE durable_run_events_new RENAME TO durable_run_events;
+CREATE INDEX idx_durable_run_events_run ON durable_run_events(run_id,event_id);
+CREATE INDEX idx_durable_run_events_conv ON durable_run_events(conversation_id,event_id);
+CREATE UNIQUE INDEX idx_durable_run_start ON durable_run_events(run_id) WHERE kind='run_started';
+CREATE UNIQUE INDEX idx_durable_run_terminal ON durable_run_events(run_id) WHERE kind IN ('run_finished','run_interrupted');
+CREATE TRIGGER durable_event_immutable BEFORE UPDATE ON durable_run_events BEGIN
+ SELECT RAISE(ABORT,'journal event immutable');
+END;
+CREATE TRIGGER durable_event_ownership BEFORE INSERT ON durable_run_events BEGIN
+ SELECT CASE
+  WHEN NEW.run_id IS NOT NULL AND (
+   NOT EXISTS(SELECT 1 FROM agent_runs WHERE id=NEW.run_id AND conversation_id IS NOT NULL)
+   OR (NEW.conversation_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agent_runs WHERE id=NEW.run_id AND conversation_id=NEW.conversation_id))
+  ) THEN RAISE(ABORT,'invalid journal ownership')
+  WHEN NEW.run_id IS NULL AND (NEW.conversation_id IS NULL OR NOT EXISTS(SELECT 1 FROM conversations WHERE id=NEW.conversation_id))
+   THEN RAISE(ABORT,'invalid journal ownership')
+  WHEN NEW.step_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM agent_steps WHERE id=NEW.step_id AND run_id=NEW.run_id)
+   THEN RAISE(ABORT,'invalid journal ownership')
+ END;
+END;
+CREATE TRIGGER journal_step_immutable BEFORE UPDATE ON agent_steps
+ WHEN EXISTS(SELECT 1 FROM durable_run_events WHERE step_id=OLD.id)
+ AND NOT (OLD.rule_id IS NOT NULL AND NEW.rule_id IS NULL
+ AND NEW.id IS OLD.id AND NEW.run_id IS OLD.run_id AND NEW.seq IS OLD.seq
+ AND NEW.kind IS OLD.kind AND NEW.tool_name IS OLD.tool_name
+ AND NEW.arguments IS OLD.arguments AND NEW.observation IS OLD.observation
+ AND NEW.status IS OLD.status AND NEW.started_at IS OLD.started_at
+ AND NEW.duration_ms IS OLD.duration_ms AND NEW.group_key IS OLD.group_key
+ AND NEW.decided_by IS OLD.decided_by AND NEW.input_tokens IS OLD.input_tokens
+ AND NEW.output_tokens IS OLD.output_tokens) BEGIN
+ SELECT RAISE(ABORT,'journal step immutable');
+END;
+CREATE TRIGGER journal_run_start AFTER INSERT ON agent_runs WHEN NEW.conversation_id IS NOT NULL BEGIN
+ INSERT INTO durable_run_events(run_id,conversation_id,source_key,kind,schema_version)
+ VALUES(NEW.id,NEW.conversation_id,'run:'||NEW.id||':start','run_started',1);
+END;
+CREATE TRIGGER journal_step AFTER INSERT ON agent_steps
+ WHEN EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=NEW.run_id AND kind='run_started') BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM agent_runs WHERE id=NEW.run_id AND status='running')
+ THEN RAISE(ABORT,'journal run already terminal') END;
+ INSERT INTO durable_run_events(run_id,conversation_id,source_key,kind,step_id,schema_version)
+ VALUES(NEW.run_id,(SELECT conversation_id FROM agent_runs WHERE id=NEW.run_id),'run:'||NEW.run_id||':step:'||NEW.seq,'step_recorded',NEW.id,1);
+END;
+CREATE TRIGGER journal_terminal AFTER UPDATE ON agent_runs
+ WHEN OLD.status='running' AND NEW.status<>'running'
+ AND EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=NEW.id AND kind='run_started') BEGIN
+ INSERT INTO durable_run_events(run_id,conversation_id,source_key,kind,schema_version)
+ VALUES(NEW.id,NEW.conversation_id,'run:'||NEW.id||':terminal',CASE WHEN NEW.interrupted=1 THEN 'run_interrupted' ELSE 'run_finished' END,1);
+END;
+CREATE TRIGGER journal_terminal_immutable BEFORE UPDATE ON agent_runs
+ WHEN OLD.status<>'running' AND EXISTS(SELECT 1 FROM durable_run_events WHERE run_id=OLD.id AND kind='run_started')
+ AND (NEW.status IS NOT OLD.status OR NEW.finished_at IS NOT OLD.finished_at
+ OR NEW.total_steps IS NOT OLD.total_steps OR NEW.final_content IS NOT OLD.final_content
+ OR NEW.error IS NOT OLD.error OR NEW.spent_micro_usd IS NOT OLD.spent_micro_usd
+ OR NEW.limit_micro_usd IS NOT OLD.limit_micro_usd OR NEW.interrupted IS NOT OLD.interrupted
+ OR NEW.conversation_id IS NOT OLD.conversation_id OR NEW.model IS NOT OLD.model
+ OR NEW.mode IS NOT OLD.mode OR NEW.started_at IS NOT OLD.started_at) BEGIN
+ SELECT RAISE(ABORT,'journal terminal conflict');
+END;
+
+CREATE TABLE conversation_compactions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+ run_id INTEGER NULL REFERENCES agent_runs(id) ON DELETE SET NULL,
+ reason TEXT NOT NULL CHECK(reason IN ('threshold','overflow','manual')),
+ after_message_id INTEGER NOT NULL DEFAULT 0,
+ goal TEXT NOT NULL DEFAULT '',
+ active_plan TEXT NOT NULL DEFAULT '',
+ key_decisions TEXT NOT NULL DEFAULT '',
+ touched_files TEXT NOT NULL DEFAULT '[]',
+ summary TEXT NOT NULL,
+ before_tokens INTEGER NOT NULL DEFAULT 0,
+ after_tokens INTEGER NOT NULL DEFAULT 0,
+ summarized_messages INTEGER NOT NULL DEFAULT 0,
+ retained_messages INTEGER NOT NULL DEFAULT 0,
+ created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX idx_conversation_compactions_conv ON conversation_compactions(conversation_id,id DESC);
+",
+    ),
 ];
 
 /// Open the `SQLite` database at `path`, apply connection pragmas, and run any
@@ -1246,13 +1356,14 @@ pub fn migrate(conn: &mut Connection) -> Result<(), DatabaseError> {
         if version <= current {
             continue;
         }
-        if version == 5 || version == 7 || version == 13 {
+        if version == 5 || version == 7 || version == 13 || version == 20 {
             // v5 rebuilds agent_runs, a parent of agent_steps; v7 rebuilds
             // agent_steps itself (adding provenance columns with a new FK to
             // permission_rules); v13 rebuilds messages (parent of the
             // attachment FKs), attachments, agent_tasks (parent of
             // agent_task_steps and task_locks), and agent_runs (parent of
-            // agent_steps and the task run links). SQLite cannot hold the FK
+            // agent_steps and the task run links); v20 rebuilds
+            // durable_run_events (adding context_compacted support). SQLite cannot hold the FK
             // graph while dropping/recreating, and PRAGMA foreign_keys cannot
             // be toggled inside the transaction that apply_migration opens.
             // The toggle is therefore applied here, outside the tx.

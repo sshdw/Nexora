@@ -2421,6 +2421,26 @@ async function invoke(
             ?.display_name ?? null,
         model: lastAssistant?.model_name ?? MOCK_DEFAULT_MODEL,
         context_limit: 128000,
+        context_window: 128000,
+        context_window_provenance: "built_in_catalog",
+        category_breakdown: {
+          system_skills_tokens: 180,
+          messages_tokens: convMessages.reduce(
+            (sum, m) => sum + Math.ceil(m.content.length / 4),
+            0
+          ),
+          attachments_tokens: 0,
+          tool_output_tokens: 0,
+          total_accounted_tokens:
+            180 +
+            convMessages.reduce(
+              (sum, m) => sum + Math.ceil(m.content.length / 4),
+              0
+            ),
+        },
+        compaction_count: 0,
+        last_compacted_at: null,
+        last_compaction: null,
         total_tokens: 0,
         input_tokens: 0,
         output_tokens: 0,
@@ -2437,6 +2457,49 @@ async function invoke(
         other_step_count: otherStepCount,
         created_at: conv.created_at,
         updated_at: conv.updated_at,
+      };
+    }
+    case "compact_conversation_context": {
+      const convId = Number(
+        requireArg(args, "compact_conversation_context", "conversationId")
+      );
+      const convMessages = messages.filter((m) => m.conversation_id === convId);
+      const now = Math.floor(Date.now() / 1000);
+      if (convMessages.length === 0) {
+        return {
+          status: "nothing_to_compact",
+          conversation_id: convId,
+          run_id: null,
+          event_id: null,
+          reason: "manual",
+          goal: "",
+          active_plan: "",
+          key_decisions: "",
+          touched_files: [],
+          summary: "",
+          before_tokens: 0,
+          after_tokens: 0,
+          summarized_messages: 0,
+          retained_messages: 0,
+          created_at: now,
+        };
+      }
+      return {
+        status: "compacted",
+        conversation_id: convId,
+        run_id: null,
+        event_id: 1,
+        reason: "manual",
+        goal: convMessages[0]?.content.slice(0, 120) ?? "none",
+        active_plan: "none",
+        key_decisions: "none",
+        touched_files: [],
+        summary: "1. Goal\n" + (convMessages[0]?.content ?? "none"),
+        before_tokens: 500,
+        after_tokens: 120,
+        summarized_messages: Math.max(1, convMessages.length - 1),
+        retained_messages: convMessages.length > 1 ? 1 : 0,
+        created_at: now,
       };
     }
     case "inspect_run_live": {
