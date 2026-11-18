@@ -115,7 +115,7 @@ export function sendMessage(
     model,
     attachmentIds,
     effort: effort ?? null,
-    ...(promptReferences ? { promptReferences } : {}),
+    promptReferences: promptReferences ?? null,
   });
 }
 

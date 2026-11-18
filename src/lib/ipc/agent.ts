@@ -255,7 +255,7 @@ export function startAgentRun(
     effort: effort ?? null,
     isPlan: isPlan ?? null,
     attachmentIds,
-    ...(promptReferences ? { promptReferences } : {}),
+    promptReferences: promptReferences ?? null,
   });
 }
 

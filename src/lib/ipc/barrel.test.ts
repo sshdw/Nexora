@@ -209,15 +209,23 @@ it("reads authoritative sandbox status without arguments", async () => {
 });
 
 
-it("routes Agent attachment IDs with the same Plan and effort selection", async () => {
-  await barrel.startAgentRun(7, "read these files", "openai", "gpt-4o", "high", true, [12, 13]);
+const promptReferences = {
+  skills: [{ source_id: "skill-source", revision: "skill-revision" }],
+  contexts: [{ selector: { kind: "file", path: "README.md" }, revision: "file-revision" }],
+  review: true,
+} satisfies barrel.PromptReferences;
+
+it("routes Agent attachments and prompt references with the same Plan and effort selection", async () => {
+  await barrel.startAgentRun(
+    7, "read these files", "openai", "gpt-4o", "high", true, [12, 13], promptReferences
+  );
   expect(invoke).toHaveBeenLastCalledWith("start_agent_run", {
     conversationId: 7, content: "read these files", provider: "openai", model: "gpt-4o",
-    effort: "high", isPlan: true, attachmentIds: [12, 13],
+    effort: "high", isPlan: true, attachmentIds: [12, 13], promptReferences,
   });
 });
 
-it("sends an explicit empty Agent attachment selection when callers omit it", async () => {
+it("sends empty Agent attachments and null prompt references when callers omit them", async () => {
   await barrel.startAgentRun(7, "plain request", "openai", "gpt-4o");
   expect(invoke).toHaveBeenLastCalledWith("start_agent_run", {
     conversationId: 7,
@@ -227,5 +235,22 @@ it("sends an explicit empty Agent attachment selection when callers omit it", as
     effort: null,
     isPlan: null,
     attachmentIds: [],
+    promptReferences: null,
+  });
+});
+
+it.each([
+  { state: "provided", references: promptReferences, expected: promptReferences },
+  { state: "omitted", references: undefined, expected: null },
+])("routes $state Chat prompt references", async ({ references, expected }) => {
+  await barrel.sendMessage(7, "read these files", "openai", "gpt-4o", [12], "high", references);
+  expect(invoke).toHaveBeenLastCalledWith("send_message", {
+    conversationId: 7,
+    content: "read these files",
+    provider: "openai",
+    model: "gpt-4o",
+    attachmentIds: [12],
+    effort: "high",
+    promptReferences: expected,
   });
 });

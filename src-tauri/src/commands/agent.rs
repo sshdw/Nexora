@@ -1733,6 +1733,7 @@ mod tests {
                     "effort",
                     "isPlan",
                     "attachmentIds",
+                    "promptReferences",
                 ],
             ),
             (
