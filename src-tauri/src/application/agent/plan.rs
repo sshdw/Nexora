@@ -206,6 +206,8 @@ pub(crate) fn decide_run_plan(
                     extra_history: vec![approved_plan_msg],
                     persist_user_message,
                     attachment_ids: Vec::new(),
+                    inherited_no_shell: super::super::prompt_context::run_no_shell(db, run_id)?,
+                    prompt_context: None,
                 },
             )?;
 

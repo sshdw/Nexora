@@ -136,6 +136,7 @@ struct ShellLaunchParams {
     effort: Option<String>,
     is_plan: bool,
     attachment_ids: Vec<i64>,
+    prompt_references: Option<crate::application::prompt_context::TurnReferences>,
 }
 
 struct ResolvedShellTarget {
@@ -200,6 +201,7 @@ fn launch_run_from_shell(
         effort,
         is_plan,
         attachment_ids,
+        prompt_references,
     } = params;
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -214,6 +216,14 @@ fn launch_run_from_shell(
         ));
     }
     let target = resolve_shell_target(app, db_ref, &provider, effort.as_deref())?;
+    let prompt_context = super::prompt_context::admit(
+        app,
+        db_ref,
+        conversation_id,
+        &target.root,
+        prompt_references.as_ref(),
+        false,
+    )?;
     let request = AgentRunRequest {
         conversation_id,
         user_request: content,
@@ -236,6 +246,7 @@ fn launch_run_from_shell(
         RunLaunchOptions {
             is_plan,
             attachment_ids,
+            prompt_context,
             ..RunLaunchOptions::default()
         },
     )
@@ -263,6 +274,7 @@ fn advance_work_queue_on_completion(
             effort: item.effort,
             is_plan: false,
             attachment_ids: Vec::new(),
+            prompt_references: None,
         },
     ) {
         Ok(_) => {
@@ -340,6 +352,7 @@ pub(crate) async fn start_agent_run(
     effort: Option<String>,
     is_plan: Option<bool>,
     attachment_ids: Option<Vec<i64>>,
+    prompt_references: Option<crate::application::prompt_context::TurnReferences>,
 ) -> Result<StartAgentRunResponse, CommandError> {
     if content.trim().is_empty() {
         return Err(CommandError::new(
@@ -374,6 +387,7 @@ pub(crate) async fn start_agent_run(
                 effort,
                 is_plan: is_plan.unwrap_or(false),
                 attachment_ids: attachment_ids.unwrap_or_default(),
+                prompt_references,
             },
         )?;
         Ok::<StartAgentRunResponse, CommandError>(StartAgentRunResponse { run_id })
@@ -1245,6 +1259,7 @@ pub(crate) async fn run_next_work_item(
                 effort: item.effort,
                 is_plan: false,
                 attachment_ids: Vec::new(),
+                prompt_references: None,
             },
         ) {
             Ok(run_id) => {

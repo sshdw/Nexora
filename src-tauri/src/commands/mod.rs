@@ -28,6 +28,7 @@ pub mod flags;
 pub mod github;
 pub mod import_export;
 pub mod privacy;
+pub mod prompt_context;
 pub mod prompts;
 pub mod providers;
 pub mod release;

@@ -6,6 +6,7 @@ import ConversationView from "./ConversationView";
 import ErrorBoundary from "./ErrorBoundary";
 import type { ConnectionModelCapabilities, Conversation } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
+import type { ComposerPromptDraftStore } from "../lib/useComposerContext";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
 import type { ModelConnectionGroup } from "./ModelPicker";
@@ -32,6 +33,7 @@ export interface ConversationPaneProps {
   autonomy: AutonomyStore;
   draft: string;
   setDraft: (value: string) => void;
+  promptDraft?: ComposerPromptDraftStore;
   onOpenSettings: () => void;
   onMessageSent: () => void;
   /** Workspace store for the composer's control row (R6-03). */
@@ -82,6 +84,7 @@ export default function ConversationPane({
   autonomy,
   draft,
   setDraft,
+  promptDraft,
   onOpenSettings,
   onMessageSent,
   workspace,
@@ -138,6 +141,7 @@ export default function ConversationPane({
             onMessageSent={onMessageSent}
             draft={draft}
             setDraft={setDraft}
+            promptDraft={promptDraft}
             workspace={workspace}
           />
         </ErrorBoundary>

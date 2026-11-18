@@ -1,3 +1,4 @@
+import type { PromptReferences } from "./promptContext";
 //! Conversation IPC area (AC-205): conversation CRUD, history, the chat
 //! `send_message` execution path (commands/conversations.rs), the permanent
 //! delete (commands/data_management.rs), and per-conversation context stats
@@ -104,7 +105,8 @@ export function sendMessage(
   provider: string,
   model: string,
   attachmentIds: number[],
-  effort?: string | null
+  effort?: string | null,
+  promptReferences?: PromptReferences
 ): Promise<AiResponse> {
   return invoke<AiResponse>("send_message", {
     conversationId,
@@ -113,6 +115,7 @@ export function sendMessage(
     model,
     attachmentIds,
     effort: effort ?? null,
+    ...(promptReferences ? { promptReferences } : {}),
   });
 }
 

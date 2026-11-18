@@ -1796,3 +1796,108 @@
 .nex-plan-decision-reply-actions {
   justify-content: flex-end;
 }
+
+.nex-composer-context {
+  min-width: 0;
+}
+
+.nex-prompt-chip-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: start;
+}
+
+.nex-prompt-inline-note {
+  margin: 0 var(--space-md) var(--space-xs);
+  color: var(--muted-foreground);
+  font-size: var(--type-size-label-small);
+}
+
+.nex-prompt-sheet {
+  display: grid;
+  align-content: start;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-md);
+  overflow-wrap: anywhere;
+}
+
+.nex-prompt-sheet p,
+.nex-prompt-sheet dd,
+.nex-prompt-sheet ul {
+  margin: 0;
+}
+
+.nex-prompt-preview {
+  max-block-size: 48vh;
+  margin: 0;
+  overflow: auto;
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.nex-prompt-pin {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-xs) var(--space-md);
+  margin: 0;
+}
+
+.nex-prompt-pin dt,
+.nex-prompt-skills span {
+  color: var(--muted-foreground);
+}
+
+.nex-prompt-form,
+.nex-prompt-form label {
+  display: grid;
+  gap: var(--space-xs);
+}
+
+.nex-prompt-form {
+  align-items: start;
+  gap: var(--space-md);
+}
+
+.nex-prompt-form button {
+  justify-self: start;
+}
+
+.nex-prompt-field {
+  min-width: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.nex-prompt-skills {
+  display: grid;
+  list-style: none;
+  padding: 0;
+}
+
+.nex-prompt-skills li,
+.nex-prompt-actions,
+.nex-prompt-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.nex-prompt-skills li {
+  justify-content: space-between;
+}
+
+.nex-prompt-toggle input {
+  accent-color: var(--foreground);
+}

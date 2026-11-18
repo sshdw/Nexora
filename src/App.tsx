@@ -61,6 +61,7 @@ import {
   type ProviderStatus,
 } from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
+import type { ComposerPromptDraft, ComposerPromptDraftStore } from "./lib/useComposerContext";
 import { useWorkspace } from "./lib/useWorkspace";
 
 export { mergeConnectionModels };
@@ -126,6 +127,7 @@ function AppShell() {
   // conversation switch). The Prompt Library stages into the active pane's
   // draft (FR-007).
   const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [promptDrafts, setPromptDrafts] = useState<Record<number, ComposerPromptDraft>>({});
   // Import/Export (FR-010, FR-011): the conversation being exported (opens the
   // export modal when set) and whether the import modal is shown.
   const io = useImportExport();
@@ -180,6 +182,11 @@ function AppShell() {
       ),
     []
   );
+
+  const promptDraftFor = (id: number): ComposerPromptDraftStore => ({
+    value: promptDrafts[id],
+    update: (edit) => setPromptDrafts((current) => ({ ...current, [id]: edit(current[id]) })),
+  });
 
   // Model list + selection dispatch for the composer's model picker
   // (#220). Both come out of the ONE provider store above — the
@@ -248,6 +255,10 @@ function AppShell() {
   // tab close, Alt+W, prune, and backend delete uniformly.
   useEffect(() => {
     const open = new Set(tabs.openIds);
+    setPromptDrafts((previous) => {
+      if (Object.keys(previous).every((key) => open.has(Number(key)))) return previous;
+      return Object.fromEntries(Object.entries(previous).filter(([key]) => open.has(Number(key))));
+    });
     setDrafts((prev) => {
       const keys = Object.keys(prev);
       if (keys.every((key) => open.has(Number(key)))) return prev;
@@ -759,6 +770,7 @@ function AppShell() {
           conversation={activeConversation}
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
+          promptDraft={promptDraftFor(activeConversation.id)}
           secondary={false}
           split
         />
@@ -767,6 +779,7 @@ function AppShell() {
           conversation={splitConversation}
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
+          promptDraft={promptDraftFor(splitConversation.id)}
           secondary
           split
         />
@@ -777,6 +790,7 @@ function AppShell() {
         conversation={activeConversation}
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
+        promptDraft={promptDraftFor(activeConversation.id)}
         secondary={false}
       />
     );

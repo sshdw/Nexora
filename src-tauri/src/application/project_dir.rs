@@ -586,7 +586,7 @@ fn pattern_matches(pattern: &IgnorePattern, candidate: &str, is_dir: bool) -> bo
 /// pattern wins overall. Unlike git there is no parent-exclusion stickiness:
 /// a later negation can re-include below an excluded directory.
 #[must_use]
-fn rules_verdict(rules: &IgnoreRules, rel: &str, is_dir: bool) -> bool {
+pub(crate) fn rules_verdict(rules: &IgnoreRules, rel: &str, is_dir: bool) -> bool {
     let mut prefixes: Vec<String> = Vec::new();
     let mut prefix = String::new();
     for part in rel.split('/') {

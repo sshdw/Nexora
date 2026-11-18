@@ -119,6 +119,8 @@ struct ChatStreamEventFrame {
 }
 
 #[tauri::command]
+// Independently named arguments preserve the existing IPC contract.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_message(
     app: AppHandle,
     conversation_id: i64,
@@ -127,12 +129,42 @@ pub(crate) async fn send_message(
     model: String,
     attachment_ids: Vec<i64>,
     effort: Option<String>,
+    prompt_references: Option<crate::application::prompt_context::TurnReferences>,
 ) -> Result<AiResponse, CommandError> {
     // Owned handle so the managed state can be reached from the blocking
     // thread (borrowed `State<'_, _>` cannot cross into `'static` work).
-    let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let db = handle.state::<Database>();
+        let db = app.state::<Database>();
+        let prompt_data = if prompt_references
+            .as_ref()
+            .is_some_and(|refs| !refs.is_empty())
+        {
+            let root = super::agent::workspace_root(&app, db.inner())?;
+            super::prompt_context::admit(
+                &app,
+                db.inner(),
+                conversation_id,
+                &root,
+                prompt_references.as_ref(),
+                true,
+            )?
+        } else {
+            None
+        };
+        let review = prompt_references
+            .as_ref()
+            .is_some_and(crate::application::prompt_context::TurnReferences::review);
+        if review && (!attachment_ids.is_empty() || content.trim() != "/review") {
+            return Err(crate::application::prompt_context::ContextError::Invalid.into());
+        }
+        let prompt_data = prompt_data.as_deref().map(|selection| {
+            use crate::application::conversations::ChatPromptData;
+            if review {
+                ChatPromptData::GitReview(selection)
+            } else {
+                ChatPromptData::Selection(selection)
+            }
+        });
         let effective_effort = effort
             .as_deref()
             .and_then(ReasoningEffort::parse)
@@ -145,15 +177,16 @@ pub(crate) async fn send_message(
                     .then(|| candidate.to_string())
             })
             .or_else(|| resolve_effective_effort(db.inner(), &provider, &model));
-        let emit_handle = handle.clone();
+        let emit_handle = app.clone();
         let result: Result<AiResponse, CommandError> = ConversationService::new(db.inner())
-            .send_message_with_effort_stream(
+            .send_message_with_context(
                 conversation_id,
                 &content,
                 &provider,
                 &model,
                 &attachment_ids,
                 effective_effort.as_deref(),
+                prompt_data,
                 &|ev| {
                     let frame = match ev {
                         StreamEvent::TextDelta(delta) => Some(ChatStreamEventFrame {
@@ -174,7 +207,7 @@ pub(crate) async fn send_message(
                 },
             )
             .map_err(Into::into);
-        let _ = handle.emit(
+        let _ = app.emit(
             "chat-stream-event",
             ChatStreamEventFrame {
                 conversation_id,

@@ -1,3 +1,6 @@
+import type { PromptContextView } from "../lib/tauri";
+import type { ComposerContextState } from "../lib/useComposerContext";
+import ComposerPromptSheet from "./ComposerPromptSheet";
 /* ============================================================
    COMPOSER — the conversation's single dominant control (#220)
 
@@ -174,6 +177,9 @@ export interface ComposerProps {
   compactBusy?: boolean;
   /** Notified when `ContextRing` completes a manual compaction. */
   onCompacted?: (result: CompactionResult) => void;
+  promptContext?: ComposerContextState;
+  onReview?: (view: PromptContextView) => Promise<boolean>;
+  onUndo?: () => void;
 }
 
 export default function Composer({
@@ -218,6 +224,9 @@ export default function Composer({
   onCompactContext,
   compactBusy = false,
   onCompacted,
+  promptContext,
+  onReview,
+  onUndo,
 }: ComposerProps) {
   const { t } = useStrings();
   const busy = sending || agentBusy;
@@ -250,7 +259,8 @@ export default function Composer({
   );
 
   // Active slash/mention query extracted from the current draft.
-  const slashMatch = /^\/([^\s]*)$/.exec(draft);
+  const slashMatch = /^\/([^\s]*)(?:[ \t]+[\s\S]*)?$/.exec(draft);
+  const slashHasArguments = /^\/\S+[ \t]+/.test(draft);
   const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : "";
   const mentionMatch = /(?:^|\s)@([^\s]*)$/.exec(draft);
   const mentionQuery = mentionMatch ? mentionMatch[1].toLowerCase() : "";
@@ -311,6 +321,48 @@ export default function Composer({
         run: () => onOpenSettings(),
       },
     ];
+    if (promptContext && onReview) {
+      items.push({
+        id: "review",
+        command: "/review",
+        description: t("prompt.reviewAction"),
+        disabled: !ready || busy || live,
+        run: () => promptContext.setSheet({ kind: "review" }),
+      });
+    }
+    if (onUndo) {
+      items.push({
+        id: "undo",
+        command: "/undo",
+        description: t("prompt.undoAction"),
+        disabled: busy || live,
+        run: onUndo,
+      });
+    }
+    if (promptContext) {
+      items.push({
+        id: "skill-catalog",
+        command: "/skills",
+        description: t("prompt.manageSkills"),
+        disabled: busy || live,
+        run: () => {
+          void promptContext.refresh();
+          promptContext.setSheet({ kind: "skills" });
+        },
+      });
+      for (const skill of promptContext.skills) {
+        items.push({
+          id: `skill:${skill.reference.source_id}`,
+          command: `/${skill.name}`,
+          description: `${skill.description} · ${t(skill.scope === "personal" ? "prompt.personal" : "prompt.project")} / ${skill.path}`,
+          disabled: busy || live,
+          run: () => promptContext.setSheet({ kind: "skill", skill }),
+        });
+      }
+    }
+    if (slashHasArguments) {
+      return items.filter((item) => item.id.startsWith("skill:") && item.command === `/${slashQuery}`);
+    }
     if (!slashQuery) return items;
     return items.filter(
       (item) =>
@@ -328,9 +380,14 @@ export default function Composer({
     onDraftChange,
     onOpenSettings,
     onPickFiles,
+    onReview,
+    onUndo,
+    promptContext,
+    ready,
     compactBusy,
     setPlanEnabled,
     slashQuery,
+    slashHasArguments,
     t,
     togglePlanMode,
   ]);
@@ -349,7 +406,19 @@ export default function Composer({
       token?: string;
       run?: () => void;
     }> = [];
-    if (workspace.root) {
+    if (promptContext && !live) {
+      const supported = ["file", "folder", "diff", "symbol"] as const;
+      for (const selector of supported) {
+        items.push({
+          id: `context:${selector}`,
+          label: `@${selector}`,
+          detail: t(`prompt.kind.${selector}`),
+          kind: "workspace",
+          run: () => promptContext.setSheet({ kind: "context", selector }),
+        });
+      }
+    }
+    if (!promptContext && workspace.root) {
       const name = baseName(workspace.root);
       items.push({
         id: `ws:${workspace.root}`,
@@ -359,7 +428,7 @@ export default function Composer({
         token: `@${name}`,
       });
     }
-    for (const recent of workspace.recent) {
+    for (const recent of promptContext ? [] : workspace.recent) {
       if (recent === workspace.root) continue;
       const name = baseName(recent);
       items.push({
@@ -396,12 +465,13 @@ export default function Composer({
         item.label.toLowerCase().includes(mentionQuery) ||
         item.detail.toLowerCase().includes(mentionQuery)
     );
-  }, [agentMode, attachments, mentionQuery, t, workspace]);
+  }, [agentMode, attachments, live, mentionQuery, promptContext, t, workspace]);
 
   const runSlashItem = useCallback(
     (item: (typeof slashItems)[number]) => {
       if (item.disabled) return;
-      if (item.id !== "clear" && /^\/[^\s]*$/.test(draft)) {
+      if (item.id !== "clear" && item.id !== "review" && item.id !== "undo"
+          && !item.id.startsWith("skill:") && /^\/[^\s]*$/.test(draft)) {
         onDraftChange("");
       }
       item.run();
@@ -438,7 +508,9 @@ export default function Composer({
   const handleDraftInput = useCallback(
     (value: string) => {
       onDraftChange(value);
-      if (/^\/[^\s]*$/.test(value)) {
+      const skillCommand = /^\/([^\s]+)[ \t]+/.exec(value)?.[1].toLowerCase();
+      if (/^\/[^\s]*$/.test(value) || promptContext?.skills.some((item) => item.name === skillCommand)) {
+        if (!slashOpen && promptContext) void promptContext.refresh();
         setPlusOpen(false);
         setSlashOpen(true);
         setSlashHighlight(0);
@@ -454,7 +526,7 @@ export default function Composer({
         }
       }
     },
-    [mentionOpen, onDraftChange, slashOpen]
+    [mentionOpen, onDraftChange, promptContext, slashOpen]
   );
 
   // D1: an empty conversation is the composer, so the caret belongs in the
@@ -475,8 +547,51 @@ export default function Composer({
     autoFocusedRef.current = true;
   }, [autoFocusField]);
 
+  const sheet = promptContext?.sheet;
+  const submitDraft = () => {
+    if (promptContext && slashQuery) {
+      const matching = slashItems.filter((item) => item.command === `/${slashQuery}`);
+      const builtIn = matching.find((item) => !item.id.startsWith("skill:"));
+      if (builtIn && !builtIn.disabled) {
+        runSlashItem(builtIn);
+        return;
+      }
+      const matchingSkills = matching.filter((item) => item.id.startsWith("skill:") && !item.disabled);
+      if (matchingSkills.length === 1) {
+        runSlashItem(matchingSkills[0]);
+        return;
+      }
+      if (matchingSkills.length > 1) {
+        setSlashOpen(true);
+        fieldRef.current?.focus();
+        return;
+      }
+    }
+    onSubmit();
+  };
+  const fieldFocus = () => fieldRef.current?.focus();
+  const finishMention = () => {
+    onDraftChange(draft.replace(/(^|\s)@(?:file|folder|diff|symbol)?$/i, "$1"));
+    fieldFocus();
+  };
+
   return (
     <div className="nex-composer">
+      {promptContext && sheet && onReview && (
+        <ComposerPromptSheet
+          key={sheet.kind === "skill" ? sheet.skill.reference.revision : sheet.kind}
+          conversationId={conversationId}
+          state={promptContext}
+          sheet={sheet}
+          onReview={onReview}
+          onUseSkill={(name) => {
+            const invocation = /^\/([^\s]+)(?:[ \t]+([\s\S]*))?$/.exec(draft);
+            if (invocation?.[1].toLowerCase() === name) onDraftChange(invocation[2] ?? "");
+            fieldFocus();
+          }}
+          onIncludeContext={finishMention}
+        />
+      )}
       <div className="nex-composer-inner">
         <WorkspaceContextRow workspace={workspace} />
         <div className="nex-composer-shell">
@@ -514,6 +629,35 @@ export default function Composer({
                 </li>
               ))}
             </ul>
+          )}
+
+          {promptContext?.active && (
+            <div className="nex-composer-context">
+              <ul className="nex-composer-attachments" aria-label={t("prompt.included")}>
+                {promptContext.selected.map((skill) => (
+                  <li className="nex-chip" key={skill.reference.source_id}>
+                    <button type="button" className="nex-prompt-chip-name" disabled={busy}
+                      onClick={() => promptContext.setSheet({ kind: "skill", skill })}>
+                      <code>/{skill.name}</code>
+                    </button>
+                    <M3IconButton size="sm" className="nex-chip-remove" disabled={busy}
+                      label={t("prompt.remove", { name: skill.name })}
+                      onClick={() => promptContext.removeSkill(skill)}><CloseIcon /></M3IconButton>
+                  </li>
+                ))}
+                {promptContext.contexts.map((context) => (
+                  <li className="nex-chip" key={context.reference.revision}>
+                    <span className="nex-chip-name" title={context.label}>
+                      <code>@{context.reference.selector.kind} {context.label}</code>
+                    </span>
+                    <M3IconButton size="sm" className="nex-chip-remove" disabled={busy}
+                      label={t("prompt.remove", { name: context.label })}
+                      onClick={() => promptContext.removeContext(context)}><CloseIcon /></M3IconButton>
+                  </li>
+                ))}
+              </ul>
+              {agentMode && <p className="nex-prompt-inline-note">{t("prompt.noShell")}</p>}
+            </div>
           )}
 
           <div className="nex-composer-field">
@@ -589,7 +733,7 @@ export default function Composer({
                 // not a send.
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  if (!live) onSubmit();
+                  if (!live) submitDraft();
                 }
               }}
             />
@@ -1023,7 +1167,7 @@ export default function Composer({
                       type="button"
                       size="xs"
                       variant="outline"
-                      disabled={liveActionBusy || attachments.length > 0 || draft.trim() === ""}
+                      disabled={liveActionBusy || attachments.length > 0 || Boolean(promptContext?.active) || draft.trim() === ""}
                       onClick={onClarifyNow}
                     >
                       {t("composer.clarifyNow")}
@@ -1034,7 +1178,7 @@ export default function Composer({
                       type="button"
                       size="xs"
                       variant="ghost"
-                      disabled={!ready || liveActionBusy || attachments.length > 0 || draft.trim() === ""}
+                      disabled={!ready || liveActionBusy || attachments.length > 0 || Boolean(promptContext?.active) || draft.trim() === ""}
                       onClick={onQueuePrompt}
                     >
                       {t("composer.queuePrompt")}
@@ -1071,7 +1215,7 @@ export default function Composer({
                 aria-label={live ? t("conv.stopAria") : t("conv.sendAria")}
                 title={live ? t("conv.stopAria") : t("conv.sendAria")}
                 data-state={live ? "stop" : canSend ? "armed" : "idle"}
-                onClick={live ? onStop : onSubmit}
+                onClick={live ? onStop : submitDraft}
               >
                 {live ? (
                   <StopIcon size={16} />

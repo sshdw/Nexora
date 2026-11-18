@@ -40,6 +40,7 @@ pub mod managed_attachments;
 pub mod model_catalog;
 pub mod privacy;
 pub mod project_dir;
+pub mod prompt_context;
 pub mod prompts;
 pub mod providers;
 pub mod refactor_apply;
