@@ -1040,30 +1040,40 @@ fn start_run_claimed(
     let control = RunControl::new();
     let mode_column = mode_to_column(mode);
     let prompt_no_shell = options.inherited_no_shell || options.prompt_context.is_some();
-    let (run_id, preset) = if prompt_no_shell {
-        // An orphan must never become visible without its durable authority ceiling.
-        let run_id = AgentRunRepository::new(db)
+    let run_id = if options.is_plan || prompt_no_shell {
+        // Continue relies on these markers to restore the original tool restrictions.
+        AgentRunRepository::new(db)
             .create_run_with(
                 Some(request.conversation_id),
                 &request.model,
                 mode_column,
-                super::super::prompt_context::mark_run_no_shell,
+                |tx, run_id| {
+                    if prompt_no_shell {
+                        super::super::prompt_context::mark_run_no_shell(tx, run_id)?;
+                    }
+                    if options.is_plan {
+                        RunPlanRepository::mark_started_in_transaction(
+                            tx,
+                            run_id,
+                            request.conversation_id,
+                        )?;
+                    }
+                    Ok(())
+                },
             )
-            .map_err(AgentRunError::Database)?;
-        (run_id, RunPreset::Document)
+            .map_err(AgentRunError::Database)?
     } else {
-        let run_id = RunRecorder::new(db)
+        RunRecorder::new(db)
             .with_conversation(request.conversation_id)
             .create_run_row(&request.model, mode_column)
-            .ok_or(AgentRunError::RunNotPersisted)?;
-        (run_id, preset)
+            .ok_or(AgentRunError::RunNotPersisted)?
+    };
+    let preset = if prompt_no_shell {
+        RunPreset::Document
+    } else {
+        preset
     };
 
-    if options.is_plan {
-        if let Err(err) = RunPlanRepository::new(db).mark_started(run_id, request.conversation_id) {
-            log::warn!("agent run plan row start failed (run {run_id}): {err}");
-        }
-    }
     if let Some(parent_run_id) = options.continued_from_run_id {
         if let Err(err) = AgentRunRepository::new(db).record_continuation(
             run_id,
@@ -4285,6 +4295,184 @@ mod tests {
                 .unwrap(),
             0
         );
+        drop(db);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn plan_start_marker_failure_rolls_back_run_and_prompt_policy() {
+        let (db, workspace, rx, host) = setup("plan-marker-rollback");
+        let conversation = ConversationService::new(&db)
+            .create("Plan rollback")
+            .unwrap();
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_plan_start BEFORE INSERT ON run_plans
+                 BEGIN SELECT RAISE(ABORT, 'synthetic Plan marker failure'); END;",
+            )
+            .unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+        let executor = Arc::new(CapturingScriptedExecutor::new(Vec::new()));
+        for prompt_context in [None, Some("[]".into())] {
+            let result = start_run_with_options(
+                &db,
+                Arc::clone(&registry),
+                host.clone(),
+                executor.clone(),
+                workspace.clone(),
+                request(conversation, "Plan a change"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+                RunLaunchOptions {
+                    is_plan: true,
+                    prompt_context,
+                    ..RunLaunchOptions::default()
+                },
+            );
+            assert!(matches!(result, Err(AgentRunError::Database(_))));
+            assert!(executor.captured.lock().unwrap().is_empty());
+            assert!(rx.try_recv().is_err());
+            assert!(list_runs_for_conversation(&db, conversation)
+                .unwrap()
+                .is_empty());
+            assert!(list_conversation_run_events(&db, conversation, 0, 100)
+                .unwrap()
+                .events
+                .is_empty());
+            assert!(registry.claim_conversation(conversation));
+            registry.unclaim_conversation(conversation);
+        }
+        let no_shell_markers: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM app_settings WHERE key GLOB 'composer.no_shell.*'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(no_shell_markers, 0);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    fn start_plans_without_terminal_checkpoint(path: &Path, workspace: &Path) -> [(i64, bool); 2] {
+        use crate::infrastructure::database::open;
+
+        let db = Database::new(open(path).unwrap());
+        // Leave the committed run in its pre-terminal state for the startup sweep.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_plan_finish BEFORE INSERT ON durable_run_events
+                 WHEN NEW.kind = 'run_finished'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic interruption'); END;",
+            )
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        [false, true].map(|selected_context| {
+            let conversation = ConversationService::new(&db)
+                .create("Plan restart")
+                .unwrap();
+            let run_id = start_run_with_options(
+                &db,
+                Arc::new(AgentRunRegistry::default()),
+                host.clone(),
+                Arc::new(ScriptedExecutor::new(vec![Err(ExecutorError::Failure)])),
+                workspace.to_path_buf(),
+                request(conversation, "Plan a change"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+                RunLaunchOptions {
+                    is_plan: true,
+                    prompt_context: selected_context.then(|| "[]".into()),
+                    ..RunLaunchOptions::default()
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                collect_frames(&rx).last(),
+                Some(RunFrame::Finished { .. })
+            ));
+            (run_id, selected_context)
+        })
+    }
+
+    #[test]
+    fn interrupted_plan_remains_read_only_after_restart_and_continue() {
+        use super::super::super::prompt_context::run_no_shell;
+        use crate::infrastructure::database::open;
+        use crate::infrastructure::repository::run_plans::PLAN_STATUS_NONE;
+
+        let workspace = temp_workspace("plan-restart");
+        let path = workspace.join("run-test.db");
+        let parent_runs = start_plans_without_terminal_checkpoint(&path, &workspace);
+
+        let db = Database::new(open(&path).unwrap());
+        let runs = AgentRunRepository::new(&db);
+        assert_eq!(
+            runs.fail_orphaned_running_runs("interrupted test").unwrap(),
+            2
+        );
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_plan_finish")
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        for (parent, selected_context) in parent_runs {
+            let plans = RunPlanRepository::new(&db);
+            assert_eq!(
+                plans.read_by_run(parent).unwrap().unwrap().decision_status,
+                PLAN_STATUS_NONE
+            );
+            assert_eq!(run_no_shell(&db, parent).unwrap(), selected_context);
+
+            let mut write = tool_response("write", "write_file");
+            write.tool_calls[0].arguments =
+                r#"{"path":"must_not_exist.txt","content":"blocked"}"#.into();
+            let executor = Arc::new(CapturingScriptedExecutor::new(vec![
+                Ok(write),
+                Ok(text_response("Continued plan")),
+            ]));
+            let next = continue_run(
+                &db,
+                Arc::new(AgentRunRegistry::default()),
+                host.clone(),
+                executor.clone(),
+                workspace.clone(),
+                parent,
+                "openai".into(),
+                "test-model".into(),
+                "synthetic".into(),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+            )
+            .unwrap();
+            assert!(matches!(
+                collect_frames(&rx).last(),
+                Some(RunFrame::Finished { .. })
+            ));
+            let captured = executor.captured.lock().unwrap();
+            let tools = &captured[0].tools;
+            assert!(tools.iter().any(|tool| tool.name == "read_file"));
+            assert!(tools.iter().all(|tool| !matches!(
+                tool.name.as_str(),
+                "write_file" | "edit_file" | "execute_command"
+            )));
+            assert!(!workspace.join("must_not_exist.txt").exists());
+            assert_eq!(run_no_shell(&db, next).unwrap(), selected_context);
+        }
+        drop(host);
         drop(db);
         let _ = std::fs::remove_dir_all(workspace);
     }

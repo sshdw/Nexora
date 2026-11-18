@@ -1,6 +1,6 @@
 //! Durable agent run plan & decision repository (`run_plans`, v19).
 
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, OptionalExtension, Row, Transaction};
 use serde::Serialize;
 
 use crate::storage::database::{now_secs, Database};
@@ -80,26 +80,29 @@ impl<'a> RunPlanRepository<'a> {
     /// # Errors
     /// Propagates any [`crate::storage::database::DatabaseError`].
     pub fn mark_started(&self, run_id: i64, conversation_id: i64) -> Result<RunPlan> {
-        let now = now_secs();
-        let row = self.transaction(|tx| {
-            let existing = {
-                let sql = format!("SELECT {SELECT_COLUMNS} FROM run_plans WHERE run_id = ?1");
-                tx.query_row(&sql, [run_id], map_plan).optional()?
-            };
-            if let Some(found) = existing {
-                return Ok(found);
-            }
-            tx.execute(
-                "INSERT INTO run_plans \
-                 (run_id, conversation_id, plan_content, decision_status, created_at) \
-                 VALUES (?1, ?2, NULL, 'none', ?3)",
-                params![run_id, conversation_id, now],
-            )?;
-            let id = tx.last_insert_rowid();
-            let sql = format!("SELECT {SELECT_COLUMNS} FROM run_plans WHERE id = ?1");
-            Ok(tx.query_row(&sql, [id], map_plan)?)
-        })?;
-        Ok(row)
+        self.transaction(|tx| Self::mark_started_in_transaction(tx, run_id, conversation_id))
+    }
+
+    /// Record the initial Plan marker in the caller's run-creation transaction.
+    ///
+    /// # Errors
+    /// Propagates any [`crate::storage::database::DatabaseError`].
+    pub fn mark_started_in_transaction(
+        tx: &Transaction<'_>,
+        run_id: i64,
+        conversation_id: i64,
+    ) -> Result<RunPlan> {
+        let sql = format!("SELECT {SELECT_COLUMNS} FROM run_plans WHERE run_id = ?1");
+        if let Some(found) = tx.query_row(&sql, [run_id], map_plan).optional()? {
+            return Ok(found);
+        }
+        tx.execute(
+            "INSERT INTO run_plans \
+             (run_id, conversation_id, plan_content, decision_status, created_at) \
+             VALUES (?1, ?2, NULL, 'none', ?3)",
+            params![run_id, conversation_id, now_secs()],
+        )?;
+        Ok(tx.query_row(&sql, [run_id], map_plan)?)
     }
 
     /// Persist a completed Plan run's content idempotently and mark `decision_status = 'pending'`.
