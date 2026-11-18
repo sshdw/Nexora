@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::application::agent::{checkpoints::sha256_hex, injection::redact_secrets};
+use crate::application::agent::{checkpoints::sha256_hex, redaction::redact_prompt_source};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::conversations::ConversationRepository;
 
@@ -23,9 +23,11 @@ const MAX_REFS: usize = 8;
 pub(crate) enum ContextError {
     Invalid,
     Stale,
+    AutoSelectionChanged,
     SkillUnavailable,
     ReadUnavailable,
     NoDiff,
+    DiffLimit,
     Settings,
     Limit,
 }
@@ -35,11 +37,15 @@ impl std::fmt::Display for ContextError {
         f.write_str(match self {
             Self::Invalid => "The prompt context request is invalid.",
             Self::Stale => "The selected content or workspace changed. Preview it again.",
+            Self::AutoSelectionChanged => "Automatic selection is no longer enabled for the selected skill. Review the draft and send again.",
             Self::SkillUnavailable => {
                 "This skill is disabled or needs approval for its current version."
             }
             Self::ReadUnavailable => "The selected content is unavailable for prompt context.",
             Self::NoDiff => "No eligible tracked text changes were found.",
+            Self::DiffLimit => {
+                "The working-tree diff exceeds the review limits. Choose a tracked file to review."
+            }
             Self::Settings => "The skill settings could not be accessed.",
             Self::Limit => "The selected prompt context exceeds its size or item limit.",
         })
@@ -56,6 +62,7 @@ impl From<DatabaseError> for ContextError {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct TurnReferences {
     skills: Vec<SkillRef>,
+    automatic_skills: Vec<SkillRef>,
     contexts: Vec<ContextRef>,
     review: bool,
 }
@@ -66,7 +73,10 @@ impl TurnReferences {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        !self.review && self.skills.is_empty() && self.contexts.is_empty()
+        !self.review
+            && self.skills.is_empty()
+            && self.automatic_skills.is_empty()
+            && self.contexts.is_empty()
     }
 }
 
@@ -151,6 +161,7 @@ impl<'a> PromptContext<'a> {
         }
         if refs.review
             && (!refs.skills.is_empty()
+                || !refs.automatic_skills.is_empty()
                 || !matches!(
                     refs.contexts.as_slice(),
                     [ContextRef {
@@ -161,10 +172,16 @@ impl<'a> PromptContext<'a> {
         {
             return Err(ContextError::Invalid);
         }
-        if refs.skills.len() + refs.contexts.len() > MAX_REFS {
+        if refs.skills.len() + refs.automatic_skills.len() + refs.contexts.len() > MAX_REFS {
             return Err(ContextError::Limit);
         }
-        let skills = skills::admit(self.db, self.app_data, self.workspace, &refs.skills)?;
+        let skills = skills::admit(
+            self.db,
+            self.app_data,
+            self.workspace,
+            &refs.skills,
+            &refs.automatic_skills,
+        )?;
         let mut context = Vec::new();
         for (index, reference) in refs.contexts.iter().enumerate() {
             if refs.contexts[..index]
@@ -191,6 +208,8 @@ impl<'a> PromptContext<'a> {
                 source: &view.label,
                 text: &view.text,
             }));
+        // Each source and body is already sanitized in its preview form. JSON
+        // string boundaries keep data fields separate without joining tokens.
         let rendered =
             serde_json::to_string(&items.collect::<Vec<_>>()).map_err(|_| ContextError::Invalid)?;
         if rendered.len() > MAX_PROMPT_BYTES {
@@ -210,15 +229,17 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 fn secret_free(text: &str) -> String {
-    let (redacted, _) = redact_secrets(text);
-    redacted
+    // Scrub the original boundaries and the normalized ones. Removing an
+    // invisible character can expose a prefix or change its token boundary.
+    let normalized = redact_prompt_source(text)
         .chars()
         .filter(|ch| {
             matches!(ch, '\r' | '\n' | '\t')
                 || (!ch.is_control()
                     && !matches!(ch, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
         })
-        .collect()
+        .collect::<String>();
+    redact_prompt_source(&normalized)
 }
 
 const SKILL_SETTING_PREFIX: &str = "composer.skill.";
@@ -228,9 +249,16 @@ pub(crate) fn internal_setting(key: &str) -> bool {
     key.starts_with(SKILL_SETTING_PREFIX) || key.starts_with(RUN_SETTING_PREFIX)
 }
 
-pub(crate) fn mark_run_no_shell(db: &Database, run_id: i64) -> Result<(), DatabaseError> {
+pub(crate) fn mark_run_no_shell(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: i64,
+) -> Result<(), DatabaseError> {
     use crate::infrastructure::repository::settings::SettingsRepository;
-    SettingsRepository::new(db).create(&format!("{RUN_SETTING_PREFIX}{run_id}"), Some("true"))
+    SettingsRepository::create_in_transaction(
+        tx,
+        &format!("{RUN_SETTING_PREFIX}{run_id}"),
+        Some("true"),
+    )
 }
 
 pub(crate) fn run_no_shell(db: &Database, run_id: i64) -> Result<bool, DatabaseError> {

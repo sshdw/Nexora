@@ -98,7 +98,7 @@ impl<'a> Workspace<'a> {
         read_relative(&self.dir, relative, MAX_FILE_BYTES)
     }
 
-    fn folder(&self, name: &str) -> Result<(String, bool), ContextError> {
+    fn folder(&self, name: &str) -> Result<(String, String, bool), ContextError> {
         let path = if name == "." {
             PathBuf::new()
         } else {
@@ -111,6 +111,7 @@ impl<'a> Workspace<'a> {
         let dir = open_relative(&self.dir, &path).map_err(|_| ContextError::ReadUnavailable)?;
         let mut folder = Folder {
             workspace: self,
+            raw: String::new(),
             text: String::new(),
             examined: 0,
             files: 0,
@@ -120,12 +121,13 @@ impl<'a> Workspace<'a> {
         if folder.files == 0 {
             return Err(ContextError::ReadUnavailable);
         }
-        Ok((folder.text, folder.omitted))
+        Ok((folder.raw, folder.text, folder.omitted))
     }
 }
 
 struct Folder<'a> {
     workspace: &'a Workspace<'a>,
+    raw: String,
     text: String,
     examined: usize,
     files: usize,
@@ -174,11 +176,19 @@ impl Folder<'_> {
                 self.omitted = true;
                 continue;
             };
-            let entry = format!("\n--- {label} ---\n{text}\n");
-            if self.text.len() + entry.len() > MAX_CONTEXT_BYTES {
+            let raw = format!("\n--- {label} ---\n{text}\n");
+            let entry = format!(
+                "\n--- {} ---\n{}\n",
+                secret_free(&label),
+                secret_free(&text)
+            );
+            if self.raw.len() + raw.len() > MAX_CONTEXT_BYTES
+                || self.text.len() + entry.len() > MAX_CONTEXT_BYTES
+            {
                 self.omitted = true;
                 continue;
             }
+            self.raw.push_str(&raw);
             self.text.push_str(&entry);
             self.files += 1;
         }
@@ -193,21 +203,21 @@ fn references(document: &str, symbol: &str) -> Result<(String, bool), ContextErr
         return Err(ContextError::Invalid);
     }
     let lines = document.lines().collect::<Vec<_>>();
+    let redacted = secret_free(document);
+    let visible = redacted.split('\n').take(lines.len());
+    let contains_symbol = |line: &str| line.split(|ch| !identifier(ch)).any(|word| word == symbol);
     let mut chosen = vec![false; lines.len()];
-    for (index, line) in lines.iter().enumerate() {
-        if line.split(|ch| !identifier(ch)).any(|word| word == symbol) {
+    for (index, (raw, safe)) in lines.iter().zip(visible.clone()).enumerate() {
+        if contains_symbol(raw) && contains_symbol(safe) {
             let end = (index + 3).min(lines.len());
             chosen[index.saturating_sub(2)..end].fill(true);
         }
     }
     let mut rendered = String::new();
     let mut count = 0;
-    for (index, line) in lines
-        .into_iter()
-        .enumerate()
-        .filter(|(index, _)| chosen[*index])
-    {
+    for (index, line) in visible.enumerate().filter(|(index, _)| chosen[*index]) {
         use std::fmt::Write;
+        let line = line.strip_suffix('\r').unwrap_or(line);
         let _ = writeln!(rendered, "{}: {line}", index + 1);
         count += 1;
         if count == MAX_SYMBOL_LINES {
@@ -230,20 +240,31 @@ pub(super) fn resolve(
     selector: ContextSelector,
 ) -> Result<ContextView, ContextError> {
     let workspace = Workspace::open(base)?;
-    let (label, raw, omitted) = match &selector {
-        ContextSelector::File { path } => (path.clone(), workspace.file(path)?, false),
+    let (label, source_revision, text, omitted) = match &selector {
+        ContextSelector::File { path } => {
+            let source = workspace.file(path)?;
+            let text = secret_free(&source);
+            (path.clone(), digest(source.as_bytes()), text, false)
+        }
         ContextSelector::Folder { path } => {
-            let (text, more) = workspace.folder(path)?;
-            (path.clone(), text, more)
+            let (source, text, more) = workspace.folder(path)?;
+            (path.clone(), digest(source.as_bytes()), text, more)
         }
         ContextSelector::Symbol { path, symbol } => {
-            let (text, more) = references(&workspace.file(path)?, symbol)?;
-            (format!("{path}#{symbol}"), text, more)
+            let source = workspace.file(path)?;
+            let (text, more) = references(&source, symbol)?;
+            (
+                format!("{path}#{symbol}"),
+                digest(source.as_bytes()),
+                text,
+                more,
+            )
         }
         ContextSelector::Diff { path } => {
             let (text, more) = super::git::working_diff(&workspace, app_data, path.as_deref())?;
             (
                 path.clone().unwrap_or_else(|| "HEAD → working tree".into()),
+                digest(text.as_bytes()),
                 text,
                 more,
             )
@@ -251,15 +272,23 @@ pub(super) fn resolve(
     };
     let stable_root =
         crate::application::agent::tools::path_safety::path_to_comparable_string(base);
-    let identity = serde_json::to_vec(&(stable_root, conversation_id, &selector, omitted, &raw))
-        .map_err(|_| ContextError::Invalid)?;
+    let text = secret_free(&text);
+    let identity = serde_json::to_vec(&(
+        stable_root,
+        conversation_id,
+        &selector,
+        omitted,
+        &source_revision,
+        &text,
+    ))
+    .map_err(|_| ContextError::Invalid)?;
     Ok(ContextView {
         reference: ContextRef {
             selector,
             revision: digest(&identity),
         },
         label: secret_free(&label),
-        text: secret_free(&raw),
+        text,
         omitted,
     })
 }

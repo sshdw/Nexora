@@ -122,10 +122,14 @@ impl Candidate {
             sha256: self.sha256.clone(),
             trusted: self.is_trusted(pref),
             enabled: !pref.disabled,
-            auto_select: pref.auto_revision.as_ref() == Some(&self.reference.revision)
-                && self.is_trusted(pref)
-                && !pref.disabled,
+            auto_select: self.is_automatic(pref),
         }
+    }
+
+    fn is_automatic(&self, pref: &Preference) -> bool {
+        pref.auto_revision.as_ref() == Some(&self.reference.revision)
+            && self.is_trusted(pref)
+            && !pref.disabled
     }
 
     fn settings_key(&self) -> String {
@@ -241,18 +245,24 @@ pub(super) fn admit(
     db: &Database,
     app_data: &Path,
     workspace: Option<&Path>,
-    references: &[SkillRef],
+    explicit: &[SkillRef],
+    automatic: &[SkillRef],
 ) -> Result<Vec<(String, String)>, ContextError> {
-    if references.is_empty() {
+    if explicit.is_empty() && automatic.is_empty() {
         return Ok(Vec::new());
     }
     let skills = catalog(app_data, workspace);
+    let _serial = PREFERENCE_WRITE
+        .lock()
+        .map_err(|_| ContextError::Settings)?;
     let mut output = Vec::new();
-    for (index, reference) in references.iter().enumerate() {
-        if references[..index]
-            .iter()
-            .any(|prior| prior.source_id == reference.source_id)
-        {
+    let mut sources = std::collections::HashSet::new();
+    let references = explicit
+        .iter()
+        .map(|reference| (reference, false))
+        .chain(automatic.iter().map(|reference| (reference, true)));
+    for (reference, is_automatic) in references {
+        if !sources.insert(&reference.source_id) {
             return Err(ContextError::Invalid);
         }
         let skill = skills
@@ -262,6 +272,9 @@ pub(super) fn admit(
         let pref = skill.preference(db)?;
         if pref.disabled || !skill.is_trusted(&pref) {
             return Err(ContextError::SkillUnavailable);
+        }
+        if is_automatic && !skill.is_automatic(&pref) {
+            return Err(ContextError::AutoSelectionChanged);
         }
         output.push((skill.name.clone(), skill.text.clone()));
     }
@@ -393,7 +406,9 @@ impl SkillScan {
         })
     }
     fn candidate(&self, path: &str, text: &str, commit: Option<&str>) -> Option<Candidate> {
-        let (name, description) = metadata(text)?;
+        metadata(text)?;
+        let safe_text = secret_free(text);
+        let (name, description) = metadata(&safe_text)?;
         let source = self.root.join(path);
         let source_id = digest(source.to_str()?.as_bytes());
         let sha256 = digest(text.as_bytes());
@@ -410,7 +425,7 @@ impl SkillScan {
             path: secret_free(path),
             commit: commit.map(str::to_owned),
             sha256,
-            text: secret_free(text),
+            text: safe_text,
         })
     }
 }

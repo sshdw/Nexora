@@ -518,6 +518,33 @@ impl AgentRunRepository<'_> {
     /// rejected by the table CHECK constraints.
     pub fn create_run(&self, conversation_id: Option<i64>, model: &str, mode: &str) -> Result<i64> {
         let conn = self.conn()?;
+        Self::insert_run(&conn, conversation_id, model, mode)
+    }
+
+    /// Insert a new run and its caller-owned state in a single transaction.
+    ///
+    /// # Errors
+    /// Returns an error and leaves no run if the insert, callback, or commit fails.
+    pub fn create_run_with(
+        &self,
+        conversation_id: Option<i64>,
+        model: &str,
+        mode: &str,
+        persist: impl FnOnce(&rusqlite::Transaction<'_>, i64) -> Result<()>,
+    ) -> Result<i64> {
+        self.transaction(|tx| {
+            let run_id = Self::insert_run(tx, conversation_id, model, mode)?;
+            persist(tx, run_id)?;
+            Ok(run_id)
+        })
+    }
+
+    fn insert_run(
+        conn: &rusqlite::Connection,
+        conversation_id: Option<i64>,
+        model: &str,
+        mode: &str,
+    ) -> Result<i64> {
         conn.execute(
             "INSERT INTO agent_runs (conversation_id, model, mode) VALUES (?1, ?2, ?3)",
             params![conversation_id, model, mode],

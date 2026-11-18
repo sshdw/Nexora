@@ -20,7 +20,7 @@ interface Props {
   sheet: PromptSheet;
   onUseSkill: (name: string) => void;
   onIncludeContext: () => void;
-  onReview: (view: PromptContextView) => Promise<boolean>;
+  onReview?: (view: PromptContextView) => Promise<boolean>;
 }
 
 export default function ComposerPromptSheet({
@@ -75,7 +75,7 @@ export default function ComposerPromptSheet({
   }
 
   async function previewContext() {
-    if (!contextMode || busy) return;
+    if (!contextMode || loading || busy) return;
     const value = path.trim();
     let selector: ContextSelector;
     if (selectorKind === "symbol") {
@@ -156,14 +156,15 @@ export default function ComposerPromptSheet({
             </div>
           </>
         )}
-        {contextMode && !review && (
+        {review && <p>{t("prompt.reviewScope")}</p>}
+        {contextMode && (
           <form className="nex-prompt-form" onSubmit={(event) => {
             event.preventDefault();
             void previewContext();
           }}>
             <label>
               {t(selectorKind === "diff" ? "prompt.diffPath" : "prompt.path")}
-              <input className="nex-prompt-field" value={path} disabled={busy}
+              <input className="nex-prompt-field" value={path} disabled={busy || loading}
                 maxLength={1024}
                 onChange={(event) => { setPath(event.currentTarget.value); setPreview(null); }} />
             </label>
@@ -176,16 +177,15 @@ export default function ComposerPromptSheet({
               </label>
             )}
             <M3Button type="submit" variant="secondary" loading={busy}
-              disabled={(selectorKind !== "diff" && !path.trim()) || (selectorKind === "symbol" && !symbol.trim())}>
+              disabled={loading || (selectorKind !== "diff" && !path.trim()) || (selectorKind === "symbol" && !symbol.trim())}>
               {t("prompt.preview")}
             </M3Button>
           </form>
         )}
-        {review && <p>{t("prompt.reviewScope")}</p>}
         {preview && (
           <>
             <p><code>{preview.label}</code></p>
-            {preview.omitted && <p role="status">{t("prompt.omitted")}</p>}
+            {preview.omitted && <p role="status">{t(review ? "prompt.reviewPartial" : "prompt.omitted")}</p>}
             <pre className="nex-prompt-preview" tabIndex={0}>{preview.text}</pre>
             <div className="nex-prompt-actions">
               <M3Button variant="primary" loading={busy} onClick={() => {
@@ -194,6 +194,7 @@ export default function ComposerPromptSheet({
                   onIncludeContext();
                   return;
                 }
+                if (!onReview) return;
                 setBusy(true);
                 void onReview(preview).then((sent) => {
                   if (sent) close();

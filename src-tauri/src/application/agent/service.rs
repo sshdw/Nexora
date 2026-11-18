@@ -1024,8 +1024,7 @@ fn start_run_claimed(
         Vec::new()
     };
 
-    // Create the linked run row (D50) through the recorder so the run id is
-    // known synchronously; the spawned run adopts it (no second insert).
+    // Create the linked run row (D50) before spawning the run that adopts it.
     let checkpoint_store = host.checkpoint_store();
     let gate = ApprovalGate::new(mode)
         .with_access(access)
@@ -1040,29 +1039,24 @@ fn start_run_claimed(
     ));
     let control = RunControl::new();
     let mode_column = mode_to_column(mode);
-    let Some(run_id) = RunRecorder::new(db)
-        .with_conversation(request.conversation_id)
-        .create_run_row(&request.model, mode_column)
-    else {
-        return Err(AgentRunError::RunNotPersisted);
-    };
-
     let prompt_no_shell = options.inherited_no_shell || options.prompt_context.is_some();
-    let preset = if prompt_no_shell {
-        if let Err(error) = super::super::prompt_context::mark_run_no_shell(db, run_id) {
-            let _ = AgentRunRepository::new(db).finalize_run(
-                run_id,
-                "error",
-                None,
-                Some("The prompt context restriction could not be saved."),
-                None,
-                None,
-            );
-            return Err(AgentRunError::Database(error));
-        }
-        RunPreset::Document
+    let (run_id, preset) = if prompt_no_shell {
+        // An orphan must never become visible without its durable authority ceiling.
+        let run_id = AgentRunRepository::new(db)
+            .create_run_with(
+                Some(request.conversation_id),
+                &request.model,
+                mode_column,
+                super::super::prompt_context::mark_run_no_shell,
+            )
+            .map_err(AgentRunError::Database)?;
+        (run_id, RunPreset::Document)
     } else {
-        preset
+        let run_id = RunRecorder::new(db)
+            .with_conversation(request.conversation_id)
+            .create_run_row(&request.model, mode_column)
+            .ok_or(AgentRunError::RunNotPersisted)?;
+        (run_id, preset)
     };
 
     if options.is_plan {
@@ -4125,7 +4119,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_context_is_current_turn_data_and_document_ceiling_survives_continuation() {
+    fn prompt_context_is_current_turn_data_and_sets_the_document_ceiling() {
         let (db, workspace, rx, host) = setup("prompt-context-doc");
         let conversations = ConversationService::new(&db);
         let conversation_id = conversations.create("prompt context").unwrap();
@@ -4166,19 +4160,47 @@ mod tests {
             .unwrap()
             .iter()
             .all(|message| !message.content.contains("private context marker")));
+        let _ = std::fs::remove_dir_all(workspace);
+    }
 
+    #[test]
+    fn prompt_context_document_ceiling_is_enforced_after_restart_and_continue() {
+        use super::super::super::prompt_context::{mark_run_no_shell, run_no_shell};
+        use crate::infrastructure::database::open;
+        let workspace = temp_workspace("prompt-context-restart");
+        let path = workspace.join("run-test.db");
+        let interrupted = {
+            let db = Database::new(open(&path).unwrap());
+            let conversation = ConversationService::new(&db).create("restart").unwrap();
+            AgentRunRepository::new(&db)
+                .create_run_with(
+                    Some(conversation),
+                    "test-model",
+                    "full_autonomous",
+                    mark_run_no_shell,
+                )
+                .unwrap()
+        };
+        let db = Database::new(open(&path).unwrap());
         let runs = AgentRunRepository::new(&db);
-        let interrupted = runs
-            .create_run(Some(conversation_id), "test-model", "full_autonomous")
-            .unwrap();
-        super::super::super::prompt_context::mark_run_no_shell(&db, interrupted).unwrap();
-        runs.fail_orphaned_running_runs("interrupted test").unwrap();
-        let continuation = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
-            "Continued",
-        ))]));
+        assert!(run_no_shell(&db, interrupted).unwrap());
+        assert_eq!(
+            runs.fail_orphaned_running_runs("interrupted test").unwrap(),
+            1
+        );
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        let continuation = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(tool_response("unexpected", "execute_command")),
+            Ok(text_response("Continued")),
+        ]));
         let next = continue_run(
             &db,
-            registry,
+            Arc::new(AgentRunRegistry::default()),
             host,
             continuation.clone(),
             workspace.clone(),
@@ -4190,13 +4212,140 @@ mod tests {
             RunPreset::Coding,
         )
         .unwrap();
-        collect_frames(&rx);
-        assert!(super::super::super::prompt_context::run_no_shell(&db, next).unwrap());
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last(), Some(RunFrame::Finished { .. })));
+        assert!(run_no_shell(&db, next).unwrap());
         let captured = continuation.captured.lock().unwrap();
         assert!(!captured[0]
             .tools
             .iter()
             .any(|tool| tool.name == "execute_command"));
+        assert!(runs.list_steps(next).unwrap().iter().any(|step| {
+            step.tool_name.as_deref() == Some("execute_command")
+                && step.status.as_deref() == Some("denied")
+        }));
+        drop(db);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_policy_failure_rolls_back_the_run_before_it_is_observable() {
+        use crate::infrastructure::database::open;
+        let workspace = temp_workspace("prompt-context-policy-rollback");
+        let path = workspace.join("run-test.db");
+        let conversation = {
+            let db = Database::new(open(&path).unwrap());
+            let conversation = ConversationService::new(&db).create("rollback").unwrap();
+            db.lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER reject_prompt_policy BEFORE INSERT ON app_settings
+                 WHEN NEW.key GLOB 'composer.no_shell.*'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;",
+                )
+                .unwrap();
+            let (tx, rx) = mpsc::channel();
+            let host = Arc::new(FakeHost {
+                frames_tx: tx,
+                db: db.clone(),
+                persisted: Mutex::new(Vec::new()),
+            });
+            let executor = Arc::new(CapturingScriptedExecutor::new(Vec::new()));
+            let registry = Arc::new(AgentRunRegistry::default());
+            let result = start_run_with_options(
+                &db,
+                Arc::clone(&registry),
+                host,
+                executor.clone(),
+                workspace.clone(),
+                request(conversation, "Test rollback"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+                RunLaunchOptions {
+                    prompt_context: Some("[]".into()),
+                    ..RunLaunchOptions::default()
+                },
+            );
+            assert!(matches!(result, Err(AgentRunError::Database(_))));
+            assert!(executor.captured.lock().unwrap().is_empty());
+            assert!(rx.try_recv().is_err());
+            assert!(list_runs_for_conversation(&db, conversation)
+                .unwrap()
+                .is_empty());
+            assert!(registry.claim_conversation(conversation));
+            conversation
+        };
+        let db = Database::new(open(&path).unwrap());
+        assert!(list_runs_for_conversation(&db, conversation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            AgentRunRepository::new(&db)
+                .fail_orphaned_running_runs("test restart")
+                .unwrap(),
+            0
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_authority_is_inherited_by_accepted_plan_implementation() {
+        use super::super::super::prompt_context::run_no_shell;
+        use super::super::plan::{decide_run_plan, PlanDecision};
+        let (db, workspace, rx, host) = setup("prompt-context-accepted-plan");
+        let conversation = ConversationService::new(&db)
+            .create("restricted plan")
+            .unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+        let plan = start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host.clone(),
+            Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+                "## Plan\n1. Update the text.",
+            ))])),
+            workspace.clone(),
+            request(conversation, "Plan a change"),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                is_plan: true,
+                prompt_context: Some("[]".into()),
+                ..RunLaunchOptions::default()
+            },
+        )
+        .unwrap();
+        collect_frames(&rx);
+        assert!(run_no_shell(&db, plan).unwrap());
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+            "Implemented",
+        ))]));
+        let implementation = decide_run_plan(
+            &db,
+            plan,
+            &PlanDecision::Accepted,
+            Some(test_plan_launch_target(
+                &workspace,
+                executor.clone(),
+                &host,
+                &registry,
+            )),
+        )
+        .unwrap()
+        .launched_run_id
+        .unwrap();
+        collect_frames(&rx);
+        assert!(run_no_shell(&db, implementation).unwrap());
+        let captured = executor.captured.lock().unwrap();
+        assert!(!captured[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "execute_command"));
+        assert!(captured[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "write_file"));
         let _ = std::fs::remove_dir_all(workspace);
     }
 

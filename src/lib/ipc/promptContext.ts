@@ -49,6 +49,7 @@ export interface PromptContextView {
 
 export interface PromptReferences {
   skills?: SkillReference[];
+  automatic_skills?: SkillReference[];
   contexts?: ContextReference[];
   review?: boolean;
 }

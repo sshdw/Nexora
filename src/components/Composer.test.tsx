@@ -52,10 +52,18 @@ import { tr } from "../lib/strings";
 import { REDUCED_MOTION_QUERY } from "../lib/useReducedMotion";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { Attachment } from "../lib/tauri";
+import { previewPromptContext } from "../lib/tauri";
+import { useComposerContext } from "../lib/useComposerContext";
 import { LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import Composer, { type ComposerProps } from "./Composer";
+
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/tauri")>(),
+  listPromptSkills: vi.fn().mockResolvedValue([]),
+  previewPromptContext: vi.fn(),
+}));
 
 // P7 (review 06 D-15): the vendored per-character typing component and
 // its timeline dependency left the tree, and with them the file-wide
@@ -191,14 +199,17 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
  *  mode for the composer). Nothing here clears or sends on its own. */
 function StatefulComposer({
   overrides = {},
+  withPromptContext = false,
 }: {
   overrides?: Partial<ComposerProps>;
+  withPromptContext?: boolean;
 }) {
   const [draft, setDraft] = useState(overrides.draft ?? "");
   const [agentMode, setAgentMode] = useState(overrides.agentMode ?? true);
+  const Field = withPromptContext ? ComposerWithContext : Composer;
   return (
     <LocaleProvider>
-      <Composer
+      <Field
         {...composerProps(overrides)}
         draft={draft}
         onDraftChange={setDraft}
@@ -208,6 +219,67 @@ function StatefulComposer({
     </LocaleProvider>
   );
 }
+
+function ComposerWithContext(props: ComposerProps) {
+  const context = useComposerContext(props.conversationId, props.workspace.root, props.draft, false);
+  return <Composer {...props} promptContext={context} />;
+}
+
+describe("composer — context selectors", () => {
+  it.each(["file", "folder", "diff", "symbol"])("opens /@%s with Enter", async (kind) => {
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ onSubmit, canSend: true }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: `/@${kind}` } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const dialog = await screen.findByRole("dialog", { name: `@${kind}` });
+    expect(within(dialog).getAllByRole("textbox")[0]).toHaveFocus();
+    expect(field).toHaveValue(`/@${kind}`);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("uses the keyboard highlight for a partial slash context command without changing the draft", async () => {
+    render(<StatefulComposer withPromptContext />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    const draft = "/@f keep this";
+    fireEvent.change(field, { target: { value: draft, selectionStart: 3, selectionEnd: 3 } });
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(await screen.findByRole("dialog", { name: "@folder" })).toBeInTheDocument();
+    expect(field).toHaveValue(draft);
+  });
+
+  it("keeps the draft on Escape and removes only the included partial token at the caret", async () => {
+    vi.mocked(previewPromptContext).mockResolvedValue({
+      reference: { selector: { kind: "file", path: "sample.txt" }, revision: "fixture" },
+      label: "sample.txt", text: "Synthetic contents", omitted: false,
+    });
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ onSubmit, canSend: true }} />);
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
+    const original = "Keep @fi and this";
+    field.focus();
+    fireEvent.change(field, { target: { value: original, selectionStart: 8, selectionEnd: 8 } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    let dialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.keyDown(within(dialog).getByRole("textbox"), { key: "Escape" });
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(field).toHaveValue(original);
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: "Keep @fil and this", selectionStart: 9, selectionEnd: 9 } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    dialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "sample.txt" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    expect(await within(dialog).findByText("Synthetic contents")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Include in message" }));
+    expect(field).toHaveValue("Keep  and this");
+    expect(field).toHaveFocus();
+    expect(field.selectionStart).toBe(5);
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+});
 
 describe("composer — send flow", () => {
   it("sends on Enter and never on Shift+Enter", () => {

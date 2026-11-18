@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import type { PromptContextView, PromptSkill } from "../lib/tauri";
@@ -75,8 +75,29 @@ it("previews a read-only Git review and waits for explicit send", async () => {
   mocks.previewPromptContext.mockResolvedValue(preview);
   const { onReview } = renderSheet({ kind: "review" });
   expect(await screen.findByText("HEAD → working tree")).toBeInTheDocument();
+  expect(screen.getByText("This preview is partial. Review sends only the changes shown.")).toBeInTheDocument();
   expect(mocks.previewPromptContext).toHaveBeenCalledWith(7, { kind: "diff", path: null });
   expect(onReview).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Send for review" }));
+  await waitFor(() => expect(onReview).toHaveBeenCalledWith(preview));
+});
+
+it("offers tracked-file review after the working tree exceeds its limits", async () => {
+  const preview: PromptContextView = {
+    reference: { selector: { kind: "diff", path: "changed.txt" }, revision: "file-revision" },
+    label: "changed.txt", text: "-old\n+new", omitted: false,
+  };
+  mocks.previewPromptContext
+    .mockRejectedValueOnce({ message: "The working-tree diff exceeds the review limits. Choose a tracked file to review." })
+    .mockResolvedValueOnce(preview);
+  const { onReview } = renderSheet({ kind: "review" });
+  expect(await screen.findByRole("alert")).toHaveTextContent("exceeds the review limits");
+  expect(screen.queryByRole("button", { name: "Send for review" })).not.toBeInTheDocument();
+  const path = screen.getByLabelText("Workspace-relative file, or leave empty for the working tree");
+  fireEvent.change(path, { target: { value: "changed.txt" } });
+  fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+  expect(await screen.findByText("changed.txt")).toBeInTheDocument();
+  expect(mocks.previewPromptContext).toHaveBeenLastCalledWith(7, { kind: "diff", path: "changed.txt" });
   fireEvent.click(screen.getByRole("button", { name: "Send for review" }));
   await waitFor(() => expect(onReview).toHaveBeenCalledWith(preview));
 });
@@ -88,8 +109,12 @@ it("requests automatic matches only for opted-in skills and suppresses them duri
     ({ live }) => useComposerContext(7, "workspace", "Please audit this", live),
     { initialProps: { live: false } }
   );
-  await waitFor(() => expect(result.current.references?.skills).toEqual([skill.reference]));
+  await waitFor(() => expect(result.current.references?.automatic_skills).toEqual([skill.reference]));
+  expect(result.current.references?.skills).toEqual([]);
   expect(mocks.listPromptSkills).toHaveBeenCalledWith(7, "Please audit this");
   rerender({ live: true });
   expect(result.current.references).toBeUndefined();
+  act(() => result.current.includeSkill(optedIn));
+  expect(result.current.references?.skills).toEqual([skill.reference]);
+  expect(result.current.references?.automatic_skills).toEqual([]);
 });

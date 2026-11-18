@@ -1,5 +1,5 @@
-import type { PromptContextView } from "../lib/tauri";
-import type { ComposerContextState } from "../lib/useComposerContext";
+import type { ContextSelector, PromptContextView } from "../lib/tauri";
+import type { ContextDraftToken, ComposerContextState } from "../lib/useComposerContext";
 import ComposerPromptSheet from "./ComposerPromptSheet";
 /* ============================================================
    COMPOSER — the conversation's single dominant control (#220)
@@ -182,6 +182,19 @@ export interface ComposerProps {
   onUndo?: () => void;
 }
 
+const CONTEXT_SELECTORS = ["file", "folder", "diff", "symbol"] as const;
+
+function mentionAt(draft: string, caret: number) {
+  const match = /(?:^|\s)(\/?@)(\S*)$/.exec(draft.slice(0, caret));
+  if (!match) return null;
+  const tail = /^\S*/.exec(draft.slice(caret))?.[0] ?? "";
+  return {
+    query: match[2].toLowerCase(),
+    slash: match[1] === "/@",
+    token: { draft, start: caret - match[1].length - match[2].length, end: caret + tail.length },
+  };
+}
+
 export default function Composer({
   draft,
   onDraftChange,
@@ -241,6 +254,8 @@ export default function Composer({
   const [mentionOpen, setMentionOpen] = useState(false);
   const [slashHighlight, setSlashHighlight] = useState(0);
   const [mentionHighlight, setMentionHighlight] = useState(0);
+  const [caret, setCaret] = useState<number | null>(null);
+  const includedCaret = useRef<number | null>(null);
   const returnFocusToFieldRef = useRef(false);
 
   const togglePlanMode = useCallback(() => {
@@ -259,11 +274,23 @@ export default function Composer({
   );
 
   // Active slash/mention query extracted from the current draft.
-  const slashMatch = /^\/([^\s]*)(?:[ \t]+[\s\S]*)?$/.exec(draft);
+  const slashCommand = /^\/([^\s]*)(?:[ \t]+[\s\S]*)?$/.exec(draft)?.[1];
   const slashHasArguments = /^\/\S+[ \t]+/.test(draft);
-  const slashQuery = slashMatch ? slashMatch[1].toLowerCase() : "";
-  const mentionMatch = /(?:^|\s)@([^\s]*)$/.exec(draft);
-  const mentionQuery = mentionMatch ? mentionMatch[1].toLowerCase() : "";
+  const contextQuery = useMemo(
+    () => mentionAt(draft, Math.min(caret ?? draft.length, draft.length)),
+    [caret, draft]
+  );
+  const slashContextQuery = contextQuery?.slash ? contextQuery.query : null;
+  const slashQuery = slashContextQuery === null ? slashCommand?.toLowerCase() ?? "" : `@${slashContextQuery}`;
+  const mentionQuery = contextQuery && !contextQuery.slash ? contextQuery.query : "";
+  const contextToken = contextQuery?.token;
+  const mentionToken = contextQuery?.slash ? undefined : contextToken;
+
+  const setPromptSheet = promptContext?.setSheet;
+  const openContext = useCallback((selector: ContextSelector["kind"], token?: ContextDraftToken) => {
+    fieldRef.current?.focus();
+    setPromptSheet?.({ kind: "context", selector, token });
+  }, [setPromptSheet]);
 
   const slashItems = useMemo(() => {
     const items = [
@@ -340,6 +367,16 @@ export default function Composer({
       });
     }
     if (promptContext) {
+      for (const selector of CONTEXT_SELECTORS) {
+        items.push({
+          id: `context:${selector}`,
+          command: `/@${selector}`,
+          description: t(`prompt.kind.${selector}`),
+          disabled: busy || live,
+          run: () => openContext(selector, slashContextQuery !== null ? contextToken :
+            slashCommand !== undefined ? { draft, start: 0, end: slashCommand.length + 1 } : undefined),
+        });
+      }
       items.push({
         id: "skill-catalog",
         command: "/skills",
@@ -360,8 +397,12 @@ export default function Composer({
         });
       }
     }
+    if (slashContextQuery !== null) {
+      return items.filter((item) => item.id.startsWith("context:") && item.command.startsWith(`/@${slashContextQuery}`));
+    }
     if (slashHasArguments) {
-      return items.filter((item) => item.id.startsWith("skill:") && item.command === `/${slashQuery}`);
+      return items.filter((item) => (item.id.startsWith("skill:") || item.id.startsWith("context:")) &&
+        item.command === `/${slashQuery}`);
     }
     if (!slashQuery) return items;
     return items.filter(
@@ -374,7 +415,8 @@ export default function Composer({
     attachmentsBusy,
     busy,
     live,
-    draft.length,
+    contextToken,
+    draft,
     onAgentModeChange,
     onCompactContext,
     onDraftChange,
@@ -382,12 +424,15 @@ export default function Composer({
     onPickFiles,
     onReview,
     onUndo,
+    openContext,
     promptContext,
     ready,
     compactBusy,
     setPlanEnabled,
     slashQuery,
     slashHasArguments,
+    slashContextQuery,
+    slashCommand,
     t,
     togglePlanMode,
   ]);
@@ -407,14 +452,13 @@ export default function Composer({
       run?: () => void;
     }> = [];
     if (promptContext && !live) {
-      const supported = ["file", "folder", "diff", "symbol"] as const;
-      for (const selector of supported) {
+      for (const selector of CONTEXT_SELECTORS) {
         items.push({
           id: `context:${selector}`,
           label: `@${selector}`,
           detail: t(`prompt.kind.${selector}`),
           kind: "workspace",
-          run: () => promptContext.setSheet({ kind: "context", selector }),
+          run: () => openContext(selector, mentionToken),
         });
       }
     }
@@ -465,13 +509,13 @@ export default function Composer({
         item.label.toLowerCase().includes(mentionQuery) ||
         item.detail.toLowerCase().includes(mentionQuery)
     );
-  }, [agentMode, attachments, live, mentionQuery, promptContext, t, workspace]);
+  }, [agentMode, attachments, live, mentionQuery, mentionToken, openContext, promptContext, t, workspace]);
 
   const runSlashItem = useCallback(
     (item: (typeof slashItems)[number]) => {
       if (item.disabled) return;
       if (item.id !== "clear" && item.id !== "review" && item.id !== "undo"
-          && !item.id.startsWith("skill:") && /^\/[^\s]*$/.test(draft)) {
+          && !item.id.startsWith("skill:") && !item.id.startsWith("context:") && /^\/[^\s]*$/.test(draft)) {
         onDraftChange("");
       }
       item.run();
@@ -491,8 +535,9 @@ export default function Composer({
       if (!item.token) return;
       const replacement = `${item.token} `;
       let next: string;
-      if (/(?:^|\s)@([^\s]*)$/.test(draft)) {
-        next = draft.replace(/@([^\s]*)$/, replacement);
+      if (mentionToken) {
+        const tail = draft.slice(mentionToken.end);
+        next = draft.slice(0, mentionToken.start) + (tail ? item.token : replacement) + tail;
       } else if (draft.length === 0 || /\s$/.test(draft)) {
         next = draft + replacement;
       } else {
@@ -502,14 +547,16 @@ export default function Composer({
       setMentionOpen(false);
       fieldRef.current?.focus();
     },
-    [draft, onDraftChange]
+    [draft, mentionToken, onDraftChange]
   );
 
   const handleDraftInput = useCallback(
-    (value: string) => {
+    (value: string, position: number) => {
       onDraftChange(value);
+      setCaret(position);
+      const query = mentionAt(value, position);
       const skillCommand = /^\/([^\s]+)[ \t]+/.exec(value)?.[1].toLowerCase();
-      if (/^\/[^\s]*$/.test(value) || promptContext?.skills.some((item) => item.name === skillCommand)) {
+      if (query?.slash || /^\/[^\s]*$/.test(value) || promptContext?.skills.some((item) => item.name === skillCommand)) {
         if (!slashOpen && promptContext) void promptContext.refresh();
         setPlusOpen(false);
         setSlashOpen(true);
@@ -517,7 +564,7 @@ export default function Composer({
         setMentionOpen(false);
       } else {
         if (slashOpen) setSlashOpen(false);
-        if (/(?:^|\s)@([^\s]*)$/.test(value)) {
+        if (query) {
           setPlusOpen(false);
           setMentionOpen(true);
           setMentionHighlight(0);
@@ -548,7 +595,20 @@ export default function Composer({
   }, [autoFocusField]);
 
   const sheet = promptContext?.sheet;
+  useEffect(() => {
+    if (sheet || includedCaret.current === null) return;
+    fieldRef.current?.setSelectionRange(includedCaret.current, includedCaret.current);
+    includedCaret.current = null;
+  }, [draft, sheet]);
+
   const submitDraft = () => {
+    if (mentionOpen && contextQuery && !contextQuery.slash) {
+      const exact = mentionItems.find((item) => item.id.startsWith("context:") && item.label === `@${mentionQuery}`);
+      if (exact) {
+        runMentionItem(exact);
+        return;
+      }
+    }
     if (promptContext && slashQuery) {
       const matching = slashItems.filter((item) => item.command === `/${slashQuery}`);
       const builtIn = matching.find((item) => !item.id.startsWith("skill:"));
@@ -570,14 +630,17 @@ export default function Composer({
     onSubmit();
   };
   const fieldFocus = () => fieldRef.current?.focus();
-  const finishMention = () => {
-    onDraftChange(draft.replace(/(^|\s)@(?:file|folder|diff|symbol)?$/i, "$1"));
-    fieldFocus();
+  const finishContext = () => {
+    const token = sheet?.kind === "context" ? sheet.token : undefined;
+    if (!token || token.draft !== draft) return;
+    includedCaret.current = token.start;
+    setCaret(token.start);
+    onDraftChange(draft.slice(0, token.start) + draft.slice(token.end));
   };
 
   return (
     <div className="nex-composer">
-      {promptContext && sheet && onReview && (
+      {promptContext && sheet && (
         <ComposerPromptSheet
           key={sheet.kind === "skill" ? sheet.skill.reference.revision : sheet.kind}
           conversationId={conversationId}
@@ -589,7 +652,7 @@ export default function Composer({
             if (invocation?.[1].toLowerCase() === name) onDraftChange(invocation[2] ?? "");
             fieldFocus();
           }}
-          onIncludeContext={finishMention}
+          onIncludeContext={finishContext}
         />
       )}
       <div className="nex-composer-inner">
@@ -671,7 +734,15 @@ export default function Composer({
               aria-label={t("conv.messageAria")}
               value={draft}
               disabled={busy}
-              onChange={(event) => handleDraftInput(event.target.value)}
+              onChange={(event) => handleDraftInput(event.target.value, event.target.selectionStart)}
+              onSelect={(event) => {
+                const field = event.currentTarget;
+                setCaret(field.selectionStart);
+                const query = field.selectionStart === field.selectionEnd
+                  ? mentionAt(draft, field.selectionStart) : null;
+                if (mentionOpen && mentionToken && (!query || query.slash)) setMentionOpen(false);
+                if (slashOpen && slashContextQuery !== null && !query?.slash) setSlashOpen(false);
+              }}
               onKeyDown={(event) => {
                 if (slashOpen) {
                   if (event.key === "Escape") {

@@ -7,10 +7,16 @@ import {
   type PromptSkill,
 } from "./tauri";
 
+export interface ContextDraftToken {
+  draft: string;
+  start: number;
+  end: number;
+}
+
 export type PromptSheet =
   | { kind: "skills" }
   | { kind: "skill"; skill: PromptSkill }
-  | { kind: "context"; selector: ContextSelector["kind"] }
+  | { kind: "context"; selector: ContextSelector["kind"]; token?: ContextDraftToken }
   | { kind: "review" };
 
 type IncludedContext = Pick<PromptContextView, "reference" | "label">;
@@ -101,14 +107,20 @@ export function useComposerContext(
     ? automatic.skills.filter((item) =>
         !excluded.includes(item.reference.source_id) &&
         !explicit.some((selected) => selected.reference.source_id === item.reference.source_id) &&
-        skills.some((current) => current.auto_select && current.reference.revision === item.reference.revision)
+        skills.some((current) => current.auto_select &&
+          current.reference.source_id === item.reference.source_id &&
+          current.reference.revision === item.reference.revision)
       )
     : [];
   const selected = [...explicit, ...suggested];
   const active = selected.length + contexts.length > 0;
   const pending = needsMatch && automatic?.draft !== draft;
   const references: PromptReferences | undefined = active
-    ? { skills: selected.map((item) => item.reference), contexts: contexts.map((item) => item.reference) }
+    ? {
+        skills: explicit.map((item) => item.reference),
+        automatic_skills: suggested.map((item) => item.reference),
+        contexts: contexts.map((item) => item.reference),
+      }
     : undefined;
 
   function updateSkill(item: PromptSkill) {

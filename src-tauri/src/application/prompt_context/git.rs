@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
-use git2::{ErrorCode, ObjectType, Oid, Patch, Repository, Tree};
+use git2::{ObjectType, Oid, Patch, Repository, Tree};
 
 use super::io::{bytes_at, open_absolute, path_label, relative_path};
 use super::workspace::{Workspace, MAX_FILE_BYTES};
@@ -68,6 +68,7 @@ fn absent<T>(result: io::Result<T>) -> Result<Option<T>, ContextError> {
 
 struct Snapshot {
     repo: Repository,
+    git: Dir,
     source: Dir,
     dest: Dir,
     scratch: Scratch,
@@ -105,22 +106,30 @@ impl Snapshot {
             .map_err(unavailable)?;
         let snapshot = Self {
             repo,
+            git,
             source,
             dest,
             scratch,
             loose_budget: Cell::new(MAX_LOOSE_BYTES),
         };
         snapshot.copy_packs()?;
-        if let Some(index) = absent(bytes_at(&git, OsStr::new("index"), MAX_METADATA_BYTES))? {
-            snapshot
-                .scratch
-                .dir
-                .as_ref()
-                .ok_or(ContextError::ReadUnavailable)?
-                .write("index", index)
-                .map_err(unavailable)?;
-        }
         Ok(snapshot)
+    }
+
+    fn index(&self) -> Result<Option<git2::Index>, ContextError> {
+        let Some(index) = absent(bytes_at(&self.git, OsStr::new("index"), MAX_METADATA_BYTES))?
+        else {
+            return Ok(None);
+        };
+        self.scratch
+            .dir
+            .as_ref()
+            .ok_or(ContextError::ReadUnavailable)?
+            .write("index", index)
+            .map_err(unavailable)?;
+        git2::Index::open(&self.scratch.path.join("index"))
+            .map(Some)
+            .map_err(unavailable)
     }
 
     fn copy_packs(&self) -> Result<(), ContextError> {
@@ -245,10 +254,10 @@ impl Snapshot {
         depth: usize,
     ) -> Result<(), ContextError> {
         if depth >= MAX_TREE_DEPTH {
-            return Err(ContextError::Limit);
+            return Err(ContextError::DiffLimit);
         }
         for entry in tree {
-            *remaining = remaining.checked_sub(1).ok_or(ContextError::Limit)?;
+            *remaining = remaining.checked_sub(1).ok_or(ContextError::DiffLimit)?;
             let Ok(name) = entry.name() else { continue };
             // Tree entries must be one filename. Reject malformed separators
             // before joining, including Windows alternate path forms.
@@ -301,28 +310,24 @@ pub(super) fn working_diff(
         if let Some(tree) = tree.as_ref() {
             snapshot.collect_tree(workspace, tree, Path::new(""), &mut paths, &mut budget, 0)?;
         }
-        match git2::Index::open(&snapshot.scratch.path.join("index")) {
-            Ok(index) => {
-                if index.len() > MAX_PATHS {
-                    return Err(ContextError::Limit);
+        if let Some(index) = snapshot.index()? {
+            if index.len() > MAX_PATHS {
+                return Err(ContextError::DiffLimit);
+            }
+            for entry in index.iter() {
+                if !matches!(entry.mode, 0o100_644 | 0o100_755) {
+                    continue;
                 }
-                for entry in index.iter() {
-                    if !matches!(entry.mode, 0o100_644 | 0o100_755) {
-                        continue;
-                    }
-                    let Some(path) = std::str::from_utf8(&entry.path)
-                        .ok()
-                        .and_then(|path| relative_path(path).ok())
-                    else {
-                        continue;
-                    };
-                    if workspace.allowed(&path, false) {
-                        paths.insert(path);
-                    }
+                let Some(path) = std::str::from_utf8(&entry.path)
+                    .ok()
+                    .and_then(|path| relative_path(path).ok())
+                else {
+                    continue;
+                };
+                if workspace.allowed(&path, false) {
+                    paths.insert(path);
                 }
             }
-            Err(error) if error.code() == ErrorCode::NotFound => {}
-            Err(error) => return Err(unavailable(error)),
         }
         paths
     };
@@ -331,7 +336,7 @@ pub(super) fn working_diff(
     let mut emitted = 0;
     let mut omitted = false;
     for path in paths {
-        let combined = file_patch(workspace, &snapshot, tree.clone(), &path);
+        let combined = file_patch(workspace, &snapshot, tree.clone(), &path, file.is_some());
         let patch = match combined {
             Ok(patch) => patch,
             Err(_) if file.is_none() => {
@@ -344,6 +349,9 @@ pub(super) fn working_diff(
             continue;
         }
         if emitted == MAX_DIFF_FILES || result.len() + patch.len() > MAX_DIFF_BYTES {
+            if file.is_some() {
+                return Err(ContextError::Limit);
+            }
             omitted = true;
             continue;
         }
@@ -351,6 +359,9 @@ pub(super) fn working_diff(
         emitted += 1;
     }
     if emitted == 0 {
+        if omitted {
+            return Err(ContextError::DiffLimit);
+        }
         return Err(ContextError::NoDiff);
     }
     Ok((result, omitted))
@@ -361,16 +372,26 @@ fn file_patch(
     snapshot: &Snapshot,
     tree: Option<Tree<'_>>,
     path: &Path,
+    verify_tracked: bool,
 ) -> Result<String, ContextError> {
     let old = tree
         .map(|tree| snapshot.base_object(tree, path))
         .transpose()?
         .flatten();
+    if verify_tracked && old.is_none() {
+        let tracked = snapshot
+            .index()?
+            .and_then(|index| index.get_path(path, 0))
+            .is_some_and(|entry| matches!(entry.mode, 0o100_644 | 0o100_755));
+        if !tracked {
+            return Err(ContextError::NoDiff);
+        }
+    }
     let new = absent(workspace.read(path))?;
     if old == new {
         return Ok(String::new());
     }
-    let label = path_label(path).ok_or(ContextError::Invalid)?;
+    let label = secret_free(&path_label(path).ok_or(ContextError::Invalid)?);
     let label = Path::new(&label);
     let old_text = old.as_deref().map(secret_free).unwrap_or_default();
     let new_text = new.as_deref().map(secret_free).unwrap_or_default();

@@ -627,6 +627,7 @@ export default function ConversationView({
     }
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
     const attachmentIds = attachments.map((attachment) => attachment.id);
+    const hasAutomaticSkills = Boolean(promptContext.references?.automatic_skills?.length);
     // Agent path: opt-in streaming via start_agent_run (DP-3, DP-4).
     if (agentMode) {
       setAgentError(null);
@@ -659,7 +660,8 @@ export default function ConversationView({
               ? String((e as { message: unknown }).message)
               : String(e);
         setAgentError(msg);
-        await Promise.all([refreshAttachments(), reloadAgent()]);
+        await Promise.all([refreshAttachments(), reloadAgent(),
+          ...(hasAutomaticSkills ? [promptContext.refresh()] : [])]);
       } finally {
         setAgentBusy(false);
       }
@@ -682,6 +684,7 @@ export default function ConversationView({
       setDraft("");
       promptContext.clear();
     }
+    if (failure !== null && hasAutomaticSkills) await promptContext.refresh();
     // The backend is the source of truth: on success the drafts are now
     // message-linked and disappear; on failure they remain drafts and
     // reappear unchanged (FR-008 draft lifecycle).
