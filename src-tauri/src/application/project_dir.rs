@@ -81,6 +81,7 @@ const MAX_IGNORE_BYTES: u64 = 256 * 1024;
 
 /// Ignore patterns kept per file; the tail is dropped rather than erroring.
 const MAX_IGNORE_PATTERNS: usize = 500;
+const MAX_IGNORE_MATCH_WORK: usize = 100_000;
 
 /// Largest profile document accepted before it is rejected as invalid.
 const MAX_PROFILE_BYTES: u64 = 64 * 1024;
@@ -447,6 +448,7 @@ struct IgnorePattern {
 pub(crate) struct IgnoreRules {
     /// Patterns in file order; the last match wins.
     patterns: Vec<IgnorePattern>,
+    pub(crate) truncated: bool,
 }
 
 /// Parse ignore file text into rules (blank lines and `#` comments skipped).
@@ -492,6 +494,12 @@ pub(crate) fn parse_ignore_rules(text: &str) -> IgnoreRules {
         if rest.is_empty() {
             continue;
         }
+        if patterns.len() == MAX_IGNORE_PATTERNS {
+            return IgnoreRules {
+                patterns,
+                truncated: true,
+            };
+        }
         let anchored = rest.contains('/');
         patterns.push(IgnorePattern {
             negated,
@@ -499,17 +507,26 @@ pub(crate) fn parse_ignore_rules(text: &str) -> IgnoreRules {
             anchored,
             body: rest.to_string(),
         });
-        if patterns.len() >= MAX_IGNORE_PATTERNS {
-            break;
-        }
     }
-    IgnoreRules { patterns }
+    IgnoreRules {
+        patterns,
+        truncated: false,
+    }
+}
+
+fn spend_ignore_work(work: &mut usize, cost: usize) -> Option<()> {
+    *work = work.saturating_sub(cost);
+    (*work > 0).then_some(())
 }
 
 /// Match one path segment: `*` spans any run within the segment, `?` is one
 /// character, everything else (including `[`) is literal.
-#[must_use]
-fn segment_match(pattern: &str, text: &str) -> bool {
+fn segment_match(pattern: &str, text: &str, work: &mut usize) -> Option<bool> {
+    spend_ignore_work(work, pattern.len() + 1)?;
+    if !pattern.contains(['*', '?']) {
+        return Some(pattern == text);
+    }
+    spend_ignore_work(work, text.len())?;
     let pat: Vec<char> = pattern.chars().collect();
     let chars: Vec<char> = text.chars().collect();
     let mut pi = 0_usize;
@@ -517,6 +534,7 @@ fn segment_match(pattern: &str, text: &str) -> bool {
     let mut star: Option<usize> = None;
     let mut mark = 0_usize;
     while ti < chars.len() {
+        spend_ignore_work(work, 1)?;
         if pi < pat.len() && (pat[pi] == '?' || pat[pi] == chars[ti]) {
             pi += 1;
             ti += 1;
@@ -529,53 +547,47 @@ fn segment_match(pattern: &str, text: &str) -> bool {
             mark += 1;
             ti = mark;
         } else {
-            return false;
+            return Some(false);
         }
     }
     while pi < pat.len() && pat[pi] == '*' {
         pi += 1;
     }
-    pi == pat.len()
+    Some(pi == pat.len())
 }
 
-/// Match slash-joined segments where `**` eats zero or more segments.
-fn match_segments(pat: &[&str], text: &[&str]) -> bool {
-    if pat.is_empty() {
-        return text.is_empty();
+/// Match any nonempty ancestor prefix (or the path itself). Each row
+/// represents the prefixes matched by the pattern segments seen so far.
+fn anchored_prefix_match(body: &str, text: &[&str], work: &mut usize) -> Option<bool> {
+    spend_ignore_work(work, body.len() + text.len())?;
+    let mut matches = vec![false; text.len() + 1];
+    matches[0] = true;
+    for segment in body.split('/') {
+        spend_ignore_work(work, matches.len())?;
+        if segment == "**" {
+            for i in 1..matches.len() {
+                matches[i] |= matches[i - 1];
+            }
+        } else {
+            for i in (1..matches.len()).rev() {
+                matches[i] = matches[i - 1] && segment_match(segment, text[i - 1], work)?;
+            }
+            matches[0] = false;
+        }
     }
-    if pat[0] == "**" {
-        for eaten in 0..=text.len() {
-            if match_segments(&pat[1..], &text[eaten..]) {
-                return true;
+    Some(matches[1..].contains(&true))
+}
+
+fn pattern_matches(pattern: &IgnorePattern, candidates: &[&str], work: &mut usize) -> Option<bool> {
+    if pattern.anchored {
+        anchored_prefix_match(&pattern.body, candidates, work)
+    } else {
+        for candidate in candidates {
+            if segment_match(&pattern.body, candidate, work)? {
+                return Some(true);
             }
         }
-        return false;
-    }
-    if text.is_empty() || !segment_match(pat[0], text[0]) {
-        return false;
-    }
-    match_segments(&pat[1..], &text[1..])
-}
-
-/// Match an anchored body against a workspace-relative path.
-#[must_use]
-fn anchored_match(body: &str, rel: &str) -> bool {
-    let pat: Vec<&str> = body.split('/').collect();
-    let text: Vec<&str> = rel.split('/').collect();
-    match_segments(&pat, &text)
-}
-
-/// Whether one pattern matches `candidate` (a workspace-relative path).
-#[must_use]
-fn pattern_matches(pattern: &IgnorePattern, candidate: &str, is_dir: bool) -> bool {
-    if pattern.dir_only && !is_dir {
-        return false;
-    }
-    if pattern.anchored {
-        anchored_match(&pattern.body, candidate)
-    } else {
-        let base = candidate.rsplit('/').next().unwrap_or(candidate);
-        segment_match(&pattern.body, base)
+        Some(false)
     }
 }
 
@@ -586,26 +598,32 @@ fn pattern_matches(pattern: &IgnorePattern, candidate: &str, is_dir: bool) -> bo
 /// pattern wins overall. Unlike git there is no parent-exclusion stickiness:
 /// a later negation can re-include below an excluded directory.
 #[must_use]
-fn rules_verdict(rules: &IgnoreRules, rel: &str, is_dir: bool) -> bool {
-    let mut prefixes: Vec<String> = Vec::new();
-    let mut prefix = String::new();
-    for part in rel.split('/') {
-        if !prefix.is_empty() {
-            prefix.push('/');
-        }
-        prefix.push_str(part);
-        prefixes.push(prefix.clone());
+pub(crate) fn rules_verdict(rules: &IgnoreRules, rel: &str, is_dir: bool) -> bool {
+    let mut work = MAX_IGNORE_MATCH_WORK;
+    rules_verdict_with_budget(rules, rel, is_dir, &mut work).unwrap_or(true)
+}
+
+/// Share a work limit across all paths in a context preview. Exhaustion
+/// produces no verdict, so callers can refuse the entire selection.
+pub(crate) fn rules_verdict_with_budget(
+    rules: &IgnoreRules,
+    rel: &str,
+    is_dir: bool,
+    work: &mut usize,
+) -> Option<bool> {
+    if rules.patterns.is_empty() {
+        return Some(false);
     }
+    spend_ignore_work(work, rel.len() + rules.patterns.len())?;
+    let parts: Vec<_> = rel.split('/').collect();
     let mut ignored = false;
     for pattern in &rules.patterns {
-        for (index, candidate) in prefixes.iter().enumerate() {
-            let dir = index + 1 < prefixes.len() || is_dir;
-            if pattern_matches(pattern, candidate, dir) {
-                ignored = !pattern.negated;
-            }
+        let count = parts.len() - usize::from(pattern.dir_only && !is_dir);
+        if pattern_matches(pattern, &parts[..count], work)? {
+            ignored = !pattern.negated;
         }
     }
-    ignored
+    Some(ignored)
 }
 
 /// Workspace-relative `/`-joined path for `target`, or [`None`] when either
@@ -1912,6 +1930,21 @@ mod tests {
         assert!(rules_verdict(&rules, "src/x.generated.ts", false));
         assert!(!rules_verdict(&rules, "other/x.generated.ts", false));
         assert!(!rules_verdict(&rules, "src/keep.ts", false));
+    }
+
+    #[test]
+    fn ignore_match_reports_exhausted_work_with_a_small_budget() {
+        let rules = parse_ignore_rules("docs/**/draft.md\n!docs/published/**\n");
+        let path = "docs/chapter/draft.md";
+        assert_eq!(rules_verdict_with_budget(&rules, path, false, &mut 8), None);
+        assert_eq!(
+            rules_verdict_with_budget(&rules, path, false, &mut 512),
+            Some(true)
+        );
+        assert_eq!(
+            rules_verdict_with_budget(&rules, "docs/published/draft.md", false, &mut 512),
+            Some(false)
+        );
     }
 
     #[test]

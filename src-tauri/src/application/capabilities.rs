@@ -569,6 +569,8 @@ mod tests {
 
     #[test]
     fn capability_precedence_is_manual_override_gt_api_metadata_gt_builtin_gt_unknown() {
+        // Keep the cache write separate from the model used by context statistics tests.
+        let model_id = "gpt-5.6-sol";
         let _guard = TEST_CACHE_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -588,7 +590,7 @@ mod tests {
         assert!(builtin.supported_efforts.is_empty());
         assert!(!builtin.supports_thinking);
 
-        let builtin_thinking = resolve_model_capabilities(&db, "openai", "gpt-5.6-terra");
+        let builtin_thinking = resolve_model_capabilities(&db, "openai", model_id);
         assert_eq!(
             builtin_thinking.provenance,
             CapabilityProvenance::BuiltInCatalog
@@ -603,7 +605,7 @@ mod tests {
         cache_api_metadata(
             "openai",
             &[ApiModelMetadata {
-                model_id: "gpt-5.6-terra".to_string(),
+                model_id: model_id.to_string(),
                 context_window: Some(512_000),
                 supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
                 supports_thinking: Some(true),
@@ -611,7 +613,7 @@ mod tests {
                 supports_tools: Some(true),
             }],
         );
-        let api_resolved = resolve_model_capabilities(&db, "openai", "gpt-5.6-terra");
+        let api_resolved = resolve_model_capabilities(&db, "openai", model_id);
         assert_eq!(api_resolved.provenance, CapabilityProvenance::ApiMetadata);
         assert_eq!(api_resolved.context_window, Some(512_000));
         assert_eq!(api_resolved.supported_efforts, vec!["low", "high"]);
@@ -620,7 +622,7 @@ mod tests {
         let manual = set_manual_override(
             &db,
             "openai",
-            "gpt-5.6-terra",
+            model_id,
             Some(ModelCapabilityOverride {
                 context_window: Some(128_000),
                 supported_efforts: Some(vec!["medium".to_string()]),
@@ -637,8 +639,8 @@ mod tests {
         assert!(!manual.supports_thinking);
 
         // Clearing Manual Override restores ApiMetadata provenance cleanly.
-        let cleared = set_manual_override(&db, "openai", "gpt-5.6-terra", None)
-            .expect("clear manual override");
+        let cleared =
+            set_manual_override(&db, "openai", model_id, None).expect("clear manual override");
         assert_eq!(cleared.provenance, CapabilityProvenance::ApiMetadata);
         assert!(!cleared.has_manual_override);
         assert_eq!(cleared.context_window, Some(512_000));

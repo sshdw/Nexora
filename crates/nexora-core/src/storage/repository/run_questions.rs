@@ -1,6 +1,6 @@
 //! Durable model-to-user clarifying questions repository (`run_questions`, v18).
 
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, OptionalExtension, Row, Transaction};
 use serde::Serialize;
 
 use crate::storage::database::{now_secs, Database};
@@ -249,16 +249,21 @@ impl<'a> RunQuestionRepository<'a> {
     ///
     /// Returns [`DatabaseError`](crate::storage::database::DatabaseError) when the update fails.
     pub fn cancel_pending_for_run(&self, run_id: i64) -> Result<usize> {
-        let now = now_secs();
-        self.transaction(|tx| {
-            let count = tx.execute(
-                "UPDATE run_questions
-                 SET status = 'cancelled', answered_at = ?2
-                 WHERE run_id = ?1 AND status = 'pending'",
-                params![run_id, now],
-            )?;
-            Ok(count)
-        })
+        self.transaction(|tx| Self::cancel_pending_for_run_in(tx, run_id))
+    }
+
+    /// Cancel the source run's unanswered questions in the child-start transaction.
+    ///
+    /// # Errors
+    /// Returns a database error if the update fails.
+    pub fn cancel_pending_for_run_in(tx: &Transaction<'_>, run_id: i64) -> Result<usize> {
+        let count = tx.execute(
+            "UPDATE run_questions
+             SET status = 'cancelled', answered_at = ?2
+             WHERE run_id = ?1 AND status = 'pending'",
+            params![run_id, now_secs()],
+        )?;
+        Ok(count)
     }
 
     /// Cancel any pending questions whose owning run is no longer `running`.

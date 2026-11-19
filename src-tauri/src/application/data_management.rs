@@ -402,6 +402,16 @@ mod tests {
                  key TEXT PRIMARY KEY CHECK(length(key) > 0 AND length(key) <= 200),
                  value TEXT CHECK(value IS NULL OR length(value) <= 10000)
              );
+             CREATE TABLE agent_runs (
+                 id INTEGER PRIMARY KEY,
+                 conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE
+             );
+             CREATE TABLE durable_run_events (
+                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 run_id INTEGER REFERENCES agent_runs(id) ON DELETE CASCADE,
+                 conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE,
+                 kind TEXT NOT NULL
+             );
              CREATE VIRTUAL TABLE conversations_fts USING fts5(title);
              CREATE VIRTUAL TABLE messages_fts USING fts5(content);
              CREATE VIRTUAL TABLE prompts_fts USING fts5(title, content);

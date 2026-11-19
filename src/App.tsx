@@ -61,6 +61,7 @@ import {
   type ProviderStatus,
 } from "./lib/useProviders";
 import { useSpendLimit } from "./lib/useSpendLimit";
+import type { ComposerPromptDraft, ComposerPromptDraftStore } from "./lib/useComposerContext";
 import { useWorkspace } from "./lib/useWorkspace";
 
 export { mergeConnectionModels };
@@ -125,7 +126,10 @@ function AppShell() {
   // other and switching tabs preserves in-progress input (tab state survives
   // conversation switch). The Prompt Library stages into the active pane's
   // draft (FR-007).
-  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [drafts, setDrafts] = useState<Record<number, { text: string }>>({});
+  const [promptDrafts, setPromptDrafts] = useState<Record<number, ComposerPromptDraft>>({});
+  const reviewingTabs = useRef(new Set<number>());
+  const [pendingReviews, setPendingReviews] = useState<ReadonlySet<number>>(new Set());
   // Import/Export (FR-010, FR-011): the conversation being exported (opens the
   // export modal when set) and whether the import modal is shown.
   const io = useImportExport();
@@ -172,14 +176,45 @@ function AppShell() {
     (() => void) | null
   >(null);
 
-  const draftFor = useCallback((id: number) => drafts[id] ?? "", [drafts]);
+  const draftFor = useCallback((id: number) => drafts[id]?.text ?? "", [drafts]);
   const setDraftFor = useCallback(
     (id: number) => (value: string) =>
       setDrafts((prev) =>
-        prev[id] === value ? prev : { ...prev, [id]: value }
+        prev[id]?.text === value ? prev : { ...prev, [id]: { text: value } }
       ),
     []
   );
+
+  const acceptDraftFor = (id: number) => {
+    const submitted = drafts[id];
+    return () => {
+      setDrafts((current) => submitted && current[id] === submitted
+        ? { ...current, [id]: { text: "" } }
+        : current);
+    };
+  };
+
+  const promptDraftFor = (id: number): ComposerPromptDraftStore => ({
+    value: promptDrafts[id],
+    update: (edit) => setPromptDrafts((current) => {
+      const next = edit(current[id]);
+      return next && next !== current[id] ? { ...current, [id]: next } : current;
+    }),
+  });
+
+  const reviewSendFor = (id: number) => ({
+    pending: pendingReviews.has(id),
+    begin: () => {
+      const pending = reviewingTabs.current;
+      if (pending.has(id)) return null;
+      pending.add(id);
+      setPendingReviews(new Set(pending));
+      return () => {
+        pending.delete(id);
+        setPendingReviews(new Set(pending));
+      };
+    },
+  });
 
   // Model list + selection dispatch for the composer's model picker
   // (#220). Both come out of the ONE provider store above — the
@@ -248,10 +283,14 @@ function AppShell() {
   // tab close, Alt+W, prune, and backend delete uniformly.
   useEffect(() => {
     const open = new Set(tabs.openIds);
+    setPromptDrafts((previous) => {
+      if (Object.keys(previous).every((key) => open.has(Number(key)))) return previous;
+      return Object.fromEntries(Object.entries(previous).filter(([key]) => open.has(Number(key))));
+    });
     setDrafts((prev) => {
       const keys = Object.keys(prev);
       if (keys.every((key) => open.has(Number(key)))) return prev;
-      const next: Record<number, string> = {};
+      const next: typeof prev = {};
       for (const [key, value] of Object.entries(prev)) {
         if (open.has(Number(key))) next[Number(key)] = value;
       }
@@ -370,7 +409,7 @@ function AppShell() {
   // then return to the conversation so the staged text is visible.
   const handleUsePrompt = (content: string) => {
     if (tabs.activeId !== null) {
-      setDrafts((prev) => ({ ...prev, [tabs.activeId as number]: content }));
+      setDraftFor(tabs.activeId)(content);
     }
     router.closeLibrary();
   };
@@ -759,6 +798,9 @@ function AppShell() {
           conversation={activeConversation}
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
+          onDraftAccepted={acceptDraftFor(activeConversation.id)}
+          promptDraft={promptDraftFor(activeConversation.id)}
+          reviewSend={reviewSendFor(activeConversation.id)}
           secondary={false}
           split
         />
@@ -767,6 +809,9 @@ function AppShell() {
           conversation={splitConversation}
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
+          onDraftAccepted={acceptDraftFor(splitConversation.id)}
+          promptDraft={promptDraftFor(splitConversation.id)}
+          reviewSend={reviewSendFor(splitConversation.id)}
           secondary
           split
         />
@@ -777,6 +822,9 @@ function AppShell() {
         conversation={activeConversation}
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
+        onDraftAccepted={acceptDraftFor(activeConversation.id)}
+        promptDraft={promptDraftFor(activeConversation.id)}
+        reviewSend={reviewSendFor(activeConversation.id)}
         secondary={false}
       />
     );

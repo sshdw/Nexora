@@ -29,6 +29,7 @@ export {
 } from "./ipc/confirmations";
 export * from "./ipc/search";
 export * from "./ipc/prompts";
+export * from "./ipc/promptContext";
 export * from "./ipc/attachments";
 export * from "./ipc/agent";
 export * from "./ipc/tasks";

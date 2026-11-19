@@ -59,7 +59,7 @@ use crate::application::execution::{
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{
-    AgentRun, AgentRunRepository, AgentStep, NewConversationCompaction,
+    AgentRun, AgentRunRepository, AgentStep, NewConversationCompaction, RunSource,
 };
 use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::messages::MessageRepository;
@@ -347,8 +347,6 @@ pub(crate) struct AgentRunRequest {
 pub(crate) struct RunLaunchOptions {
     /// Enforce user-initiated read-only Plan mode (`AccessProfile::ReadOnly`).
     pub is_plan: bool,
-    /// Optional interrupted parent run id linked via `run_continuations`.
-    pub continued_from_run_id: Option<i64>,
     /// Additional prior messages injected after persisted conversation history
     /// (never persisted into `messages`).
     pub extra_history: Vec<AiMessage>,
@@ -357,16 +355,35 @@ pub(crate) struct RunLaunchOptions {
     pub persist_user_message: bool,
     /// Draft attachment IDs admitted and linked with this run's user turn.
     pub attachment_ids: Vec<i64>,
+    /// Exact server-admitted context included on this turn only.
+    pub prompt_context: Option<String>,
+    /// Original owner of inherited history and tool restrictions.
+    pub source: Option<RunLaunchSource>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RunLaunchSource {
+    Continue(RunSource),
+    Plan(RunSource),
+}
+
+impl RunLaunchSource {
+    fn run(self) -> RunSource {
+        match self {
+            Self::Continue(source) | Self::Plan(source) => source,
+        }
+    }
 }
 
 impl Default for RunLaunchOptions {
     fn default() -> Self {
         Self {
             is_plan: false,
-            continued_from_run_id: None,
             extra_history: Vec::new(),
             persist_user_message: true,
             attachment_ids: Vec::new(),
+            prompt_context: None,
+            source: None,
         }
     }
 }
@@ -750,8 +767,8 @@ pub(crate) fn continue_run(
         return Err(AgentRunError::WorkspaceProtected);
     }
     let repo = AgentRunRepository::new(db);
-    let parent = repo
-        .read_run(run_id)
+    let (parent, source) = repo
+        .read_run_with_source(run_id)
         .map_err(AgentRunError::Database)?
         .ok_or(AgentRunError::RunNotFound { run_id })?;
     if !parent.interrupted && parent.status != "interrupted" {
@@ -759,13 +776,11 @@ pub(crate) fn continue_run(
             status: parent.status,
         });
     }
-    let conversation_id = parent
-        .conversation_id
-        .ok_or(AgentRunError::ConversationNotFound { id: 0 })?;
+    let source = source.ok_or(AgentRunError::ConversationNotFound { id: 0 })?;
+    let conversation_id = source.conversation_id;
 
     let prior_steps = repo.list_steps(run_id).map_err(AgentRunError::Database)?;
     let q_repo = RunQuestionRepository::new(db);
-    let _ = q_repo.cancel_pending_for_run(run_id);
     let prior_questions: Vec<_> = q_repo
         .list_for_conversation(conversation_id)
         .map_err(AgentRunError::Database)?
@@ -807,10 +822,11 @@ pub(crate) fn continue_run(
         preset,
         RunLaunchOptions {
             is_plan,
-            continued_from_run_id: Some(run_id),
             extra_history: plan.extra_messages,
             persist_user_message: false,
             attachment_ids: Vec::new(),
+            source: Some(RunLaunchSource::Continue(source)),
+            prompt_context: None,
         },
     )
 }
@@ -945,7 +961,8 @@ fn load_action_summary(db: &Database, conversation_id: i64) -> ActionSummary {
 }
 
 /// The post-claim setup: user message, run row, registration, spawn.
-#[allow(clippy::too_many_arguments)]
+// Keep pre-spawn persistence and failure handling in one launch path.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn start_run_claimed(
     db: &Database,
     registry: &Arc<AgentRunRegistry>,
@@ -991,7 +1008,7 @@ fn start_run_claimed(
 
     // Prepare and link current attachments synchronously before spawning.
     // Current bytes are appended by the runner exactly once, after history.
-    let current_attachments = if options.persist_user_message {
+    let current_attachments = if options.persist_user_message && options.source.is_none() {
         ConversationService::new(db)
             .persist_user_message_with_attachments(
                 request.conversation_id,
@@ -1014,8 +1031,7 @@ fn start_run_claimed(
         Vec::new()
     };
 
-    // Create the linked run row (D50) through the recorder so the run id is
-    // known synchronously; the spawned run adopts it (no second insert).
+    // Create the linked run row (D50) before spawning the run that adopts it.
     let checkpoint_store = host.checkpoint_store();
     let gate = ApprovalGate::new(mode)
         .with_access(access)
@@ -1030,27 +1046,69 @@ fn start_run_claimed(
     ));
     let control = RunControl::new();
     let mode_column = mode_to_column(mode);
-    let Some(run_id) = RunRecorder::new(db)
-        .with_conversation(request.conversation_id)
-        .create_run_row(&request.model, mode_column)
-    else {
-        return Err(AgentRunError::RunNotPersisted);
+    let prompt_no_shell = options.source.is_some_and(|source| source.run().no_shell)
+        || options.prompt_context.is_some();
+    let run_id = if options.is_plan || prompt_no_shell || options.source.is_some() {
+        AgentRunRepository::new(db)
+            .create_run_with(
+                Some(request.conversation_id),
+                &request.model,
+                mode_column,
+                |tx, run_id| {
+                    if let Some(source) = options.source {
+                        source.run().verify_in(tx, request.conversation_id)?;
+                        match source {
+                            RunLaunchSource::Continue(source) => {
+                                RunQuestionRepository::cancel_pending_for_run_in(
+                                    tx,
+                                    source.run_id,
+                                )?;
+                                AgentRunRepository::record_continuation_in(tx, run_id, source)?;
+                            }
+                            RunLaunchSource::Plan(source) => {
+                                RunPlanRepository::verify_pending_in(tx, source)?;
+                                if options.persist_user_message {
+                                    MessageRepository::create_in_transaction(
+                                        tx,
+                                        request.conversation_id,
+                                        "user",
+                                        &request.user_request,
+                                        None,
+                                        None,
+                                    )?;
+                                    ConversationRepository::touch_updated_at(
+                                        tx,
+                                        request.conversation_id,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                    if prompt_no_shell {
+                        super::super::prompt_context::mark_run_no_shell(tx, run_id)?;
+                    }
+                    if options.is_plan {
+                        RunPlanRepository::mark_started_in_transaction(
+                            tx,
+                            run_id,
+                            request.conversation_id,
+                        )?;
+                    }
+                    Ok(())
+                },
+            )
+            .map_err(AgentRunError::Database)?
+    } else {
+        RunRecorder::new(db)
+            .with_conversation(request.conversation_id)
+            .create_run_row(&request.model, mode_column)
+            .ok_or(AgentRunError::RunNotPersisted)?
     };
-
-    if options.is_plan {
-        if let Err(err) = RunPlanRepository::new(db).mark_started(run_id, request.conversation_id) {
-            log::warn!("agent run plan row start failed (run {run_id}): {err}");
-        }
-    }
-    if let Some(parent_run_id) = options.continued_from_run_id {
-        if let Err(err) = AgentRunRepository::new(db).record_continuation(
-            run_id,
-            parent_run_id,
-            request.conversation_id,
-        ) {
-            log::warn!("agent run continuation link failed (run {run_id}): {err}");
-        }
-    }
+    let preset = if prompt_no_shell {
+        RunPreset::Document
+    } else {
+        preset
+    };
 
     observe_transition(RunState::Queued, RunState::Running);
     registry.register(
@@ -1079,6 +1137,7 @@ fn start_run_claimed(
         checkpoint_store,
         options.is_plan,
         current_attachments,
+        options.prompt_context,
     )?;
     Ok(run_id)
 }
@@ -1111,6 +1170,7 @@ fn spawn_run(
     checkpoint_store: Option<CheckpointStore>,
     is_plan: bool,
     current_attachments: Vec<crate::application::execution::AiAttachment>,
+    prompt_context: Option<String>,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -1198,6 +1258,7 @@ fn spawn_run(
                     .with_permission_store(permission_store)
                     .with_history(history)
                     .with_attachments(current_attachments)
+                    .with_prompt_context(prompt_context)
                     .with_action_summary(action_summary)
                     .with_context_limit(context_limit)
                     .with_run_flags(resolved_flags.run_flags())
@@ -4087,6 +4148,474 @@ mod tests {
                 .pop_front()
                 .expect("unexpected model turn")
         }
+    }
+
+    #[test]
+    fn prompt_context_is_current_turn_data_and_sets_the_document_ceiling() {
+        let (db, workspace, rx, host) = setup("prompt-context-doc");
+        let conversations = ConversationService::new(&db);
+        let conversation_id = conversations.create("prompt context").unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+            "Done",
+        ))]));
+        let run_id = start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host.clone(),
+            executor.clone(),
+            workspace.clone(),
+            request(conversation_id, "Take a look"),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                prompt_context: Some("[{\"kind\":\"skill\",\"source\":\"fixture\",\"text\":\"private context marker\"}]".into()),
+                ..RunLaunchOptions::default()
+            },
+        ).unwrap();
+        collect_frames(&rx);
+        {
+            let requests = executor.captured.lock().unwrap();
+            let first = &requests[0];
+            assert!(first
+                .messages
+                .iter()
+                .any(|message| message.content.contains("private context marker")));
+            assert!(!first
+                .tools
+                .iter()
+                .any(|tool| tool.name == "execute_command"));
+        }
+        assert!(super::super::super::prompt_context::run_no_shell(&db, run_id).unwrap());
+        assert!(conversations
+            .agent_history(conversation_id, "openai")
+            .unwrap()
+            .iter()
+            .all(|message| !message.content.contains("private context marker")));
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_document_ceiling_is_enforced_after_restart_and_continue() {
+        use super::super::super::prompt_context::{mark_run_no_shell, run_no_shell};
+        use crate::infrastructure::database::open;
+        let workspace = temp_workspace("prompt-context-restart");
+        let path = workspace.join("run-test.db");
+        let interrupted = {
+            let db = Database::new(open(&path).unwrap());
+            let conversation = ConversationService::new(&db).create("restart").unwrap();
+            AgentRunRepository::new(&db)
+                .create_run_with(
+                    Some(conversation),
+                    "test-model",
+                    "full_autonomous",
+                    mark_run_no_shell,
+                )
+                .unwrap()
+        };
+        let db = Database::new(open(&path).unwrap());
+        let runs = AgentRunRepository::new(&db);
+        assert!(run_no_shell(&db, interrupted).unwrap());
+        assert_eq!(
+            runs.fail_orphaned_running_runs("interrupted test").unwrap(),
+            1
+        );
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        let continuation = Arc::new(CapturingScriptedExecutor::new(vec![
+            Ok(tool_response("unexpected", "execute_command")),
+            Ok(text_response("Continued")),
+        ]));
+        let next = continue_run(
+            &db,
+            Arc::new(AgentRunRegistry::default()),
+            host,
+            continuation.clone(),
+            workspace.clone(),
+            interrupted,
+            "openai".to_owned(),
+            "test-model".to_owned(),
+            "synthetic".to_owned(),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+        )
+        .unwrap();
+        let frames = collect_frames(&rx);
+        assert!(matches!(frames.last(), Some(RunFrame::Finished { .. })));
+        assert!(run_no_shell(&db, next).unwrap());
+        let captured = continuation.captured.lock().unwrap();
+        assert!(!captured[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "execute_command"));
+        assert!(runs.list_steps(next).unwrap().iter().any(|step| {
+            step.tool_name.as_deref() == Some("execute_command")
+                && step.status.as_deref() == Some("denied")
+        }));
+        drop(db);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_policy_failure_rolls_back_the_run_before_it_is_observable() {
+        use crate::infrastructure::database::open;
+        let workspace = temp_workspace("prompt-context-policy-rollback");
+        let path = workspace.join("run-test.db");
+        let conversation = {
+            let db = Database::new(open(&path).unwrap());
+            let conversation = ConversationService::new(&db).create("rollback").unwrap();
+            db.lock()
+                .unwrap()
+                .execute_batch(
+                    "CREATE TRIGGER reject_prompt_policy BEFORE INSERT ON app_settings
+                 WHEN NEW.key GLOB 'composer.no_shell.*'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic write failure'); END;",
+                )
+                .unwrap();
+            let (tx, rx) = mpsc::channel();
+            let host = Arc::new(FakeHost {
+                frames_tx: tx,
+                db: db.clone(),
+                persisted: Mutex::new(Vec::new()),
+            });
+            let executor = Arc::new(CapturingScriptedExecutor::new(Vec::new()));
+            let registry = Arc::new(AgentRunRegistry::default());
+            let result = start_run_with_options(
+                &db,
+                Arc::clone(&registry),
+                host,
+                executor.clone(),
+                workspace.clone(),
+                request(conversation, "Test rollback"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+                RunLaunchOptions {
+                    prompt_context: Some("[]".into()),
+                    ..RunLaunchOptions::default()
+                },
+            );
+            assert!(matches!(result, Err(AgentRunError::Database(_))));
+            assert!(executor.captured.lock().unwrap().is_empty());
+            assert!(rx.try_recv().is_err());
+            assert!(list_runs_for_conversation(&db, conversation)
+                .unwrap()
+                .is_empty());
+            assert!(registry.claim_conversation(conversation));
+            conversation
+        };
+        let db = Database::new(open(&path).unwrap());
+        assert!(list_runs_for_conversation(&db, conversation)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            AgentRunRepository::new(&db)
+                .fail_orphaned_running_runs("test restart")
+                .unwrap(),
+            0
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_policy_is_deleted_with_its_run_and_never_reused() {
+        use crate::infrastructure::repository::conversations::ConversationRepository;
+        let db = crate::infrastructure::database::in_memory_database();
+        let conversations = ConversationRepository::new(&db);
+        let runs = AgentRunRepository::new(&db);
+
+        for delete_conversation in [true, false] {
+            let conversation = conversations.create("first owner", "active").unwrap();
+            let marked = runs
+                .create_run_with(
+                    Some(conversation),
+                    "m",
+                    "supervised",
+                    AgentRunRepository::mark_no_shell,
+                )
+                .unwrap();
+            assert!(runs.no_shell(marked).unwrap());
+            if delete_conversation {
+                conversations.delete(conversation).unwrap();
+            } else {
+                runs.delete_run(marked).unwrap();
+            }
+            let markers: i64 = db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM app_settings WHERE key GLOB 'composer.no_shell.*'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(markers, 0);
+
+            db.lock().unwrap().execute(
+                "INSERT INTO app_settings (key, value) VALUES ('composer.no_shell.' || ?1, 'true')",
+                [marked],
+            ).unwrap();
+            let replacement = conversations.create("new owner", "active").unwrap();
+            let plain = runs
+                .create_run(Some(replacement), "m", "supervised")
+                .unwrap();
+            assert_eq!(plain, marked);
+            assert!(!runs.no_shell(plain).unwrap());
+            runs.delete_run(plain).unwrap();
+            let restricted = runs
+                .create_run_with(
+                    Some(replacement),
+                    "m",
+                    "supervised",
+                    AgentRunRepository::mark_no_shell,
+                )
+                .unwrap();
+            assert_eq!(restricted, marked);
+            assert!(runs.no_shell(restricted).unwrap());
+            conversations.delete(replacement).unwrap();
+        }
+    }
+
+    #[test]
+    fn plan_start_marker_failure_rolls_back_run_and_prompt_policy() {
+        let (db, workspace, rx, host) = setup("plan-marker-rollback");
+        let conversation = ConversationService::new(&db)
+            .create("Plan rollback")
+            .unwrap();
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_plan_start BEFORE INSERT ON run_plans
+                 BEGIN SELECT RAISE(ABORT, 'synthetic Plan marker failure'); END;",
+            )
+            .unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+        let executor = Arc::new(CapturingScriptedExecutor::new(Vec::new()));
+        for prompt_context in [None, Some("[]".into())] {
+            let result = start_run_with_options(
+                &db,
+                Arc::clone(&registry),
+                host.clone(),
+                executor.clone(),
+                workspace.clone(),
+                request(conversation, "Plan a change"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+                RunLaunchOptions {
+                    is_plan: true,
+                    prompt_context,
+                    ..RunLaunchOptions::default()
+                },
+            );
+            assert!(matches!(result, Err(AgentRunError::Database(_))));
+            assert!(executor.captured.lock().unwrap().is_empty());
+            assert!(rx.try_recv().is_err());
+            assert!(list_runs_for_conversation(&db, conversation)
+                .unwrap()
+                .is_empty());
+            assert!(list_conversation_run_events(&db, conversation, 0, 100)
+                .unwrap()
+                .events
+                .is_empty());
+            assert!(registry.claim_conversation(conversation));
+            registry.unclaim_conversation(conversation);
+        }
+        let no_shell_markers: i64 = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM app_settings WHERE key GLOB 'composer.no_shell.*'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(no_shell_markers, 0);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    fn start_plans_without_terminal_checkpoint(path: &Path, workspace: &Path) -> [(i64, bool); 2] {
+        use crate::infrastructure::database::open;
+
+        let db = Database::new(open(path).unwrap());
+        // Leave the committed run in its pre-terminal state for the startup sweep.
+        db.lock()
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_plan_finish BEFORE INSERT ON durable_run_events
+                 WHEN NEW.kind = 'run_finished'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic interruption'); END;",
+            )
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        [false, true].map(|selected_context| {
+            let conversation = ConversationService::new(&db)
+                .create("Plan restart")
+                .unwrap();
+            let run_id = start_run_with_options(
+                &db,
+                Arc::new(AgentRunRegistry::default()),
+                host.clone(),
+                Arc::new(ScriptedExecutor::new(vec![Err(ExecutorError::Failure)])),
+                workspace.to_path_buf(),
+                request(conversation, "Plan a change"),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+                RunLaunchOptions {
+                    is_plan: true,
+                    prompt_context: selected_context.then(|| "[]".into()),
+                    ..RunLaunchOptions::default()
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                collect_frames(&rx).last(),
+                Some(RunFrame::Finished { .. })
+            ));
+            (run_id, selected_context)
+        })
+    }
+
+    #[test]
+    fn interrupted_plan_remains_read_only_after_restart_and_continue() {
+        use super::super::super::prompt_context::run_no_shell;
+        use crate::infrastructure::database::open;
+        use crate::infrastructure::repository::run_plans::PLAN_STATUS_NONE;
+
+        let workspace = temp_workspace("plan-restart");
+        let path = workspace.join("run-test.db");
+        let parent_runs = start_plans_without_terminal_checkpoint(&path, &workspace);
+
+        let db = Database::new(open(&path).unwrap());
+        let runs = AgentRunRepository::new(&db);
+        assert_eq!(
+            runs.fail_orphaned_running_runs("interrupted test").unwrap(),
+            2
+        );
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_plan_finish")
+            .unwrap();
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(FakeHost {
+            frames_tx: tx,
+            db: db.clone(),
+            persisted: Mutex::new(Vec::new()),
+        });
+        for (parent, selected_context) in parent_runs {
+            let plans = RunPlanRepository::new(&db);
+            assert_eq!(
+                plans.read_by_run(parent).unwrap().unwrap().decision_status,
+                PLAN_STATUS_NONE
+            );
+            assert_eq!(run_no_shell(&db, parent).unwrap(), selected_context);
+
+            let mut write = tool_response("write", "write_file");
+            write.tool_calls[0].arguments =
+                r#"{"path":"must_not_exist.txt","content":"blocked"}"#.into();
+            let executor = Arc::new(CapturingScriptedExecutor::new(vec![
+                Ok(write),
+                Ok(text_response("Continued plan")),
+            ]));
+            let next = continue_run(
+                &db,
+                Arc::new(AgentRunRegistry::default()),
+                host.clone(),
+                executor.clone(),
+                workspace.clone(),
+                parent,
+                "openai".into(),
+                "test-model".into(),
+                "synthetic".into(),
+                AutonomyMode::FullAutonomous,
+                RunPreset::Coding,
+            )
+            .unwrap();
+            assert!(matches!(
+                collect_frames(&rx).last(),
+                Some(RunFrame::Finished { .. })
+            ));
+            let captured = executor.captured.lock().unwrap();
+            let tools = &captured[0].tools;
+            assert!(tools.iter().any(|tool| tool.name == "read_file"));
+            assert!(tools.iter().all(|tool| !matches!(
+                tool.name.as_str(),
+                "write_file" | "edit_file" | "execute_command"
+            )));
+            assert!(!workspace.join("must_not_exist.txt").exists());
+            assert_eq!(run_no_shell(&db, next).unwrap(), selected_context);
+        }
+        drop(host);
+        drop(db);
+        let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_authority_is_inherited_by_accepted_plan_implementation() {
+        use super::super::super::prompt_context::run_no_shell;
+        use super::super::plan::{decide_run_plan, PlanDecision};
+        let (db, workspace, rx, host) = setup("prompt-context-accepted-plan");
+        let conversation = ConversationService::new(&db)
+            .create("restricted plan")
+            .unwrap();
+        let registry = Arc::new(AgentRunRegistry::default());
+        let plan = start_run_with_options(
+            &db,
+            Arc::clone(&registry),
+            host.clone(),
+            Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+                "## Plan\n1. Update the text.",
+            ))])),
+            workspace.clone(),
+            request(conversation, "Plan a change"),
+            AutonomyMode::FullAutonomous,
+            RunPreset::Coding,
+            RunLaunchOptions {
+                is_plan: true,
+                prompt_context: Some("[]".into()),
+                ..RunLaunchOptions::default()
+            },
+        )
+        .unwrap();
+        collect_frames(&rx);
+        assert!(run_no_shell(&db, plan).unwrap());
+        let executor = Arc::new(CapturingScriptedExecutor::new(vec![Ok(text_response(
+            "Implemented",
+        ))]));
+        let implementation = decide_run_plan(
+            &db,
+            plan,
+            &PlanDecision::Accepted,
+            Some(test_plan_launch_target(
+                &workspace,
+                executor.clone(),
+                &host,
+                &registry,
+            )),
+        )
+        .unwrap()
+        .launched_run_id
+        .unwrap();
+        collect_frames(&rx);
+        assert!(run_no_shell(&db, implementation).unwrap());
+        let captured = executor.captured.lock().unwrap();
+        assert!(!captured[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "execute_command"));
+        assert!(captured[0]
+            .tools
+            .iter()
+            .any(|tool| tool.name == "write_file"));
+        let _ = std::fs::remove_dir_all(workspace);
     }
 
     #[test]

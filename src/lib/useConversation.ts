@@ -1,3 +1,4 @@
+import type { PromptReferences } from "./ipc/promptContext";
 //! One-conversation message data hook.
 //!
 //! Loads a conversation's persisted messages via `conversation_history` and
@@ -65,7 +66,8 @@ export interface ConversationStore {
     provider: string,
     model: string,
     attachmentIds: number[],
-    effort?: string | null
+    effort?: string | null,
+    promptReferences?: PromptReferences
   ) => Promise<CommandError | null>;
 }
 
@@ -228,7 +230,8 @@ export function useConversation(
       provider: string,
       model: string,
       attachmentIds: number[],
-      effort?: string | null
+      effort?: string | null,
+      promptReferences?: PromptReferences
     ): Promise<CommandError | null> => {
       if (conversationId === null) return null;
       const beforeIds = new Set(messagesRef.current.map((m) => m.id));
@@ -244,7 +247,8 @@ export function useConversation(
           provider,
           model,
           attachmentIds,
-          effort
+          effort,
+          ...(promptReferences ? [promptReferences] : [])
         );
         // Success: reflect the persisted user + assistant messages.
         const latest = await reload();

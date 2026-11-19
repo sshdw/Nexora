@@ -36,6 +36,7 @@ import {
   continueAgentRun,
   decideRunPlan,
   extendAgentRun,
+  listRunCheckpoints,
   pauseAgentRun,
   resolveAgentApproval,
   resumeAgentRun,
@@ -44,15 +45,18 @@ import {
   type CompactionResult,
   type ConnectionModelCapabilities,
   type PlanDecisionKind,
+  type PromptContextView,
 } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import { useAgentRun } from "../lib/useAgentRun";
 import { useAttachments } from "../lib/useAttachments";
+import { useComposerContext, type ComposerPromptDraftStore } from "../lib/useComposerContext";
 import { useConversation } from "../lib/useConversation";
 import { useWorkQueue } from "../lib/useWorkQueue";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
 import Composer from "./Composer";
+import ConfirmDialog from "./ConfirmDialog";
 import PlanDecisionPanel from "./PlanDecisionPanel";
 import QuestionPanel from "./QuestionPanel";
 import WorkQueueStrip from "./WorkQueueStrip";
@@ -96,6 +100,9 @@ export interface ConversationViewProps {
   draft: string;
   /** Replace the composer draft (FR-007 "Use" insertion). */
   setDraft: (value: string) => void;
+  onDraftAccepted?: () => void;
+  promptDraft?: ComposerPromptDraftStore;
+  reviewSend?: { pending: boolean; begin: () => (() => void) | null };
   /** Effective workspace store, for the composer's workspace control
    *  (D3 / R6-03). */
   workspace: WorkspaceStore;
@@ -119,19 +126,34 @@ export default function ConversationView({
   onMessageSent,
   draft,
   setDraft,
+  onDraftAccepted,
+  promptDraft,
+  reviewSend,
   workspace,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
+  const [undo, setUndo] = useState<{ runId: number; turn: number; count: number } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
   const {
     messages,
     loading,
     error,
-    sending,
+    sending: chatSending,
     streamingText,
     streamingThinking,
     thinkingByMessageId = {},
     send,
+    reload: reloadChat,
   } = useConversation(conversationId);
+  const sending = chatSending || reviewSend?.pending === true;
+  const waitingForUnmountedReview = useRef(false);
+  useEffect(() => {
+    if (reviewSend?.pending && !chatSending) waitingForUnmountedReview.current = true;
+    if (!reviewSend?.pending && waitingForUnmountedReview.current) {
+      waitingForUnmountedReview.current = false;
+      void reloadChat({ silent: true });
+    }
+  }, [chatSending, reloadChat, reviewSend?.pending]);
   const {
     attachments,
     error: attachmentError,
@@ -222,6 +244,7 @@ export default function ConversationView({
     ) ?? null;
   const liveRunId = activeRun?.run_id ?? null;
   const hasActiveRun = activeRun !== null;
+  const promptContext = useComposerContext(conversationId, workspace.root, draft, hasActiveRun, promptDraft);
   const pendingQuestion = activeRun?.pending_question ?? null;
   const pendingPlanRun = useMemo(() => {
     const candidates = runs.filter(
@@ -260,6 +283,7 @@ export default function ConversationView({
   const canSend =
     ready &&
     draft.trim() !== "" &&
+    !promptContext.pending &&
     !sending &&
     !attachmentsBusy &&
     !agentBusy &&
@@ -551,6 +575,67 @@ export default function ConversationView({
     [autonomy, runs]
   );
 
+  const clearAcceptedDraft = (submittedDraft: typeof chatDraftRef.current) => {
+    if (onDraftAccepted) onDraftAccepted();
+    else if (chatDraftRef.current === submittedDraft) setDraft("");
+  };
+
+  const handleReview = async (view: PromptContextView) => {
+    if (!ready || !selectedProvider || !selectedModel || sending || agentBusy || hasActiveRun) return false;
+    const release = reviewSend?.begin();
+    if (release === null) return false;
+    const submittedDraft = chatDraftRef.current;
+    try {
+      const failure = await send("/review", selectedProvider, selectedModel, [], effectiveEffort,
+        { contexts: [view.reference], review: true });
+      if (failure !== null) return false;
+      if (draft.trim() === "/review") clearAcceptedDraft(submittedDraft);
+      onMessageSent?.();
+      return true;
+    } finally {
+      release?.();
+    }
+  };
+
+  const handleUndo = async () => {
+    if (undoBusy || hasActiveRun || sending || agentBusy) return;
+    setUndoBusy(true);
+    setAgentError(null);
+    try {
+      const candidates = [...runs].sort((left, right) => right.run_id - left.run_id);
+      for (const run of candidates) {
+        const checkpoints = await listRunCheckpoints(run.run_id);
+        const eligible = checkpoints.filter((item) => item.reverted_at === null && item.post_blob_sha256 !== null);
+        if (eligible.length === 0) continue;
+        const latest = Math.max(...eligible.map((item) => item.turn_index));
+        setUndo({ runId: run.run_id, turn: latest, count: eligible.filter((item) => item.turn_index === latest).length });
+        return;
+      }
+      setAgentError(t("prompt.undoEmpty"));
+    } catch {
+      setAgentError(t("prompt.undoFailed"));
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
+  const confirmUndo = async () => {
+    if (!undo || undoBusy || hasActiveRun) return;
+    const submittedDraft = chatDraftRef.current;
+    setUndoBusy(true);
+    try {
+      const outcome = await revertTurn(undo.runId, undo.turn, false);
+      if (outcome.status === "reverted") {
+        if (draft.trim() === "/undo") clearAcceptedDraft(submittedDraft);
+      } else {
+        setAgentError(outcome.message);
+      }
+      setUndo(null);
+    } finally {
+      setUndoBusy(false);
+    }
+  };
+
   const handleSubmit = async () => {
     const content = draft.trim();
     if (content === "/compact") {
@@ -558,13 +643,22 @@ export default function ConversationView({
       await handleCompactContext();
       return;
     }
+    if (content === "/undo") {
+      await handleUndo();
+      return;
+    }
+    if (content === "/review") {
+      if (ready && !sending && !agentBusy && !hasActiveRun) promptContext.setSheet({ kind: "review" });
+      return;
+    }
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
     const attachmentIds = attachments.map((attachment) => attachment.id);
+    const hasAutomaticSkills = Boolean(promptContext.references?.automatic_skills?.length);
     // Agent path: opt-in streaming via start_agent_run (DP-3, DP-4).
     if (agentMode) {
       setAgentError(null);
       setAgentBusy(true);
-      setDraft("");
+      const submittedDraft = chatDraftRef.current;
       try {
         await startAgentRun(
           conversationId,
@@ -573,8 +667,11 @@ export default function ConversationView({
           selectedModel,
           effectiveEffort,
           agentMode && planMode,
-          attachmentIds
+          attachmentIds,
+          ...(promptContext.references ? [promptContext.references] : [])
         );
+        clearAcceptedDraft(submittedDraft);
+        promptContext.consumeSelection();
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
         onMessageSent?.();
@@ -587,8 +684,8 @@ export default function ConversationView({
               ? String((e as { message: unknown }).message)
               : String(e);
         setAgentError(msg);
-        setDraft(content);
-        await Promise.all([refreshAttachments(), reloadAgent()]);
+        await Promise.all([refreshAttachments(), reloadAgent(),
+          ...(hasAutomaticSkills ? [promptContext.refresh()] : [])]);
       } finally {
         setAgentBusy(false);
       }
@@ -600,15 +697,18 @@ export default function ConversationView({
       selectedProvider,
       selectedModel,
       attachmentIds,
-      effectiveEffort
+      effectiveEffort,
+      ...(promptContext.references ? [promptContext.references] : [])
     );
     // Admission can reject before the user message is persisted. Keep the
-    // draft for every failure, including provider requests, and clear only
-    // after success if this pane still owns the unchanged submitted draft.
+    // draft for every failure, including provider requests. On success the
+    // tab owns draft reconciliation even if this pane has unmounted.
     // History remains exclusively backend-owned (DATABASE.md §7.2).
-    if (failure === null && chatDraftRef.current === submittedDraft) {
-      setDraft("");
+    if (failure === null) {
+      clearAcceptedDraft(submittedDraft);
+      promptContext.consumeSelection();
     }
+    if (failure !== null && hasAutomaticSkills) await promptContext.refresh();
     // The backend is the source of truth: on success the drafts are now
     // message-linked and disappear; on failure they remain drafts and
     // reappear unchanged (FR-008 draft lifecycle).
@@ -618,7 +718,7 @@ export default function ConversationView({
 
   const handleClarifyNow = useCallback(async () => {
     const content = draft.trim();
-    if (!content || liveRunId === null || liveActionBusy || attachments.length > 0) return;
+    if (!content || liveRunId === null || liveActionBusy || attachments.length > 0 || promptContext.active) return;
     setAgentError(null);
     setLiveActionBusy(true);
     try {
@@ -635,11 +735,11 @@ export default function ConversationView({
     } finally {
       setLiveActionBusy(false);
     }
-  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft, attachments.length]);
+  }, [draft, liveRunId, liveActionBusy, clarifyRun, setDraft, attachments.length, promptContext.active]);
 
   const handleQueuePrompt = useCallback(async () => {
     const content = draft.trim();
-    if (!content || !selectedProvider || !selectedModel || liveActionBusy || attachments.length > 0) return;
+    if (!content || !selectedProvider || !selectedModel || liveActionBusy || attachments.length > 0 || promptContext.active) return;
     setAgentError(null);
     setLiveActionBusy(true);
     try {
@@ -668,6 +768,7 @@ export default function ConversationView({
     effectiveEffort,
     liveActionBusy,
     attachments.length,
+    promptContext.active,
     enqueueQueueItem,
     setDraft,
   ]);
@@ -991,8 +1092,22 @@ export default function ConversationView({
         </div>
       )}
 
+      {undo && (
+        <ConfirmDialog
+          title={t("prompt.undoTitle")}
+          body={t("prompt.undoBody", { count: undo.count })}
+          confirmLabel={t("agent.checkpointRevertTurn")}
+          danger
+          busy={undoBusy}
+          onConfirm={() => void confirmUndo()}
+          onCancel={() => setUndo(null)}
+        />
+      )}
       <Composer
         draft={draft}
+        promptContext={promptContext}
+        onReview={handleReview}
+        onUndo={() => void handleUndo()}
         onDraftChange={setDraft}
         onSubmit={() => void handleSubmit()}
         sending={sending}

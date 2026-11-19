@@ -35,6 +35,7 @@
 //! assertions anywhere (repo policy).
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -51,11 +52,21 @@ import { SHORTCUTS, shortcutById, shortcutKeys } from "../lib/shortcuts";
 import { tr } from "../lib/strings";
 import { REDUCED_MOTION_QUERY } from "../lib/useReducedMotion";
 import type { AutonomyStore } from "../lib/useAutonomy";
-import type { Attachment } from "../lib/tauri";
-import { LocaleProvider } from "../lib/useLocale";
+import type { Attachment, PromptSkill } from "../lib/tauri";
+import { listPromptSkills, previewPromptContext, updatePromptSkill, viewPromptSkill } from "../lib/tauri";
+import { type ComposerPromptDraft, useComposerContext } from "../lib/useComposerContext";
+import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import Composer, { type ComposerProps } from "./Composer";
+
+vi.mock("../lib/tauri", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../lib/tauri")>(),
+  listPromptSkills: vi.fn().mockResolvedValue([]),
+  previewPromptContext: vi.fn(),
+  updatePromptSkill: vi.fn(),
+  viewPromptSkill: vi.fn(),
+}));
 
 // P7 (review 06 D-15): the vendored per-character typing component and
 // its timeline dependency left the tree, and with them the file-wide
@@ -83,6 +94,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.mocked(listPromptSkills).mockReset().mockResolvedValue([]);
 });
 
 function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
@@ -191,14 +203,17 @@ function renderComposer(overrides: Partial<ComposerProps> = {}) {
  *  mode for the composer). Nothing here clears or sends on its own. */
 function StatefulComposer({
   overrides = {},
+  withPromptContext = false,
 }: {
   overrides?: Partial<ComposerProps>;
+  withPromptContext?: boolean;
 }) {
   const [draft, setDraft] = useState(overrides.draft ?? "");
   const [agentMode, setAgentMode] = useState(overrides.agentMode ?? true);
+  const Field = withPromptContext ? ComposerWithContext : Composer;
   return (
     <LocaleProvider>
-      <Composer
+      <Field
         {...composerProps(overrides)}
         draft={draft}
         onDraftChange={setDraft}
@@ -208,6 +223,272 @@ function StatefulComposer({
     </LocaleProvider>
   );
 }
+
+function ComposerWithContext(props: ComposerProps) {
+  const context = useComposerContext(props.conversationId, props.workspace.root, props.draft, false);
+  return <Composer {...props} promptContext={context} />;
+}
+
+describe("composer — context selectors", () => {
+  it.each(["file", "folder", "diff", "symbol"])("opens /@%s with Enter", async (kind) => {
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ onSubmit, canSend: true }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: `/@${kind}` } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const dialog = await screen.findByRole("dialog", { name: `@${kind}` });
+    expect(within(dialog).getAllByRole("textbox")[0]).toHaveFocus();
+    expect(field).toHaveValue(`/@${kind}`);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("uses the keyboard highlight for a partial slash context command without changing the draft", async () => {
+    render(<StatefulComposer withPromptContext />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    const draft = "/@f keep this";
+    fireEvent.change(field, { target: { value: draft, selectionStart: 3, selectionEnd: 3 } });
+    fireEvent.keyDown(field, { key: "ArrowDown" });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(await screen.findByRole("dialog", { name: "@folder" })).toBeInTheDocument();
+    expect(field).toHaveValue(draft);
+  });
+
+  const readSkill: PromptSkill = {
+    name: "read", description: "Summarize text", scope: "personal", path: "read/SKILL.md",
+    reference: { source_id: "read-skill", revision: "revision" }, sha256: "hash", commit: null,
+    enabled: true, trusted: true, auto_select: false,
+  };
+
+  it("localizes declined skill trust in Russian instead of showing raw English", async () => {
+    const untrustedSkill: PromptSkill = { ...readSkill, trusted: false };
+    vi.mocked(listPromptSkills).mockResolvedValue([untrustedSkill]);
+    vi.mocked(viewPromptSkill).mockResolvedValue({ summary: untrustedSkill, text: "Read Skill contents" });
+    vi.mocked(updatePromptSkill).mockRejectedValue({
+      kind: "confirmationRequired",
+      message: "Skill trust was not confirmed.",
+    });
+    window.localStorage.setItem(LOCALE_KEY, "ru");
+    try {
+      render(<StatefulComposer withPromptContext />);
+      const field = screen.getByRole("textbox", { name: tr("ru", "conv.messageAria") });
+      fireEvent.change(field, { target: { value: "/read" } });
+      await screen.findByText("/read");
+      fireEvent.keyDown(field, { key: "Enter" });
+      const dialog = await screen.findByRole("dialog", { name: "/read" });
+      await within(dialog).findByText("Read Skill contents");
+      fireEvent.click(within(dialog).getByRole("button", { name: tr("ru", "prompt.trust") }));
+      expect(await within(dialog).findByRole("alert")).toHaveTextContent(tr("ru", "prompt.trustDeclined"));
+      expect(within(dialog).queryByText("Skill trust was not confirmed.")).toBeNull();
+    } finally {
+      window.localStorage.removeItem(LOCALE_KEY);
+    }
+  });
+
+  it("renders @diff preview inside the sheet preview class without prompt-library clamping", async () => {
+    const diffText = [
+      "HEAD abcdef1 → working tree",
+      "diff --git a/sample/example.rs b/sample/example.rs",
+      "index 1111111..2222222 100644",
+      "--- a/sample/example.rs",
+      "+++ b/sample/example.rs",
+      "@@ -1 +1 @@",
+      "-fn fixture_value() -> u32 { 1 }",
+      "+fn fixture_value() -> u32 { 2 }",
+    ].join("\n");
+    vi.mocked(previewPromptContext).mockResolvedValue({
+      reference: { selector: { kind: "diff", path: null }, revision: "diff-rev" },
+      label: "HEAD → working tree",
+      text: diffText,
+      omitted: false,
+    });
+    render(<StatefulComposer withPromptContext />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "@diff" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const dialog = await screen.findByRole("dialog", { name: "@diff" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    const pre = await within(dialog).findByText(/-fn fixture_value\(\)/);
+    expect(pre.tagName).toBe("PRE");
+    expect(pre).toHaveClass("nex-prompt-sheet-preview");
+    expect(pre).not.toHaveClass("nex-prompt-preview");
+    expect(pre.textContent).toContain("+fn fixture_value() -> u32 { 2 }");
+  });
+
+  it("ignores a delayed skill disable from a previous workspace", async () => {
+    let finishDisable!: (summary: PromptSkill) => void;
+    vi.mocked(listPromptSkills).mockResolvedValue([readSkill]);
+    vi.mocked(viewPromptSkill).mockResolvedValue({ summary: readSkill, text: "Read Skill contents" });
+    vi.mocked(updatePromptSkill).mockReturnValue(new Promise((resolve) => { finishDisable = resolve; }));
+    vi.mocked(previewPromptContext).mockResolvedValue({
+      reference: { selector: { kind: "file", path: "keep.txt" }, revision: "keep-rev" },
+      label: "keep.txt",
+      text: "Kept content",
+      omitted: false,
+    });
+
+    function WorkspaceSwitchHarness() {
+      const [root, setRoot] = useState("/ws-a");
+      const [draft, setDraft] = useState("");
+      const [saved, setSaved] = useState<ComposerPromptDraft | undefined>(undefined);
+      const store = {
+        value: saved,
+        update: (edit: (current?: ComposerPromptDraft) => ComposerPromptDraft | undefined) => {
+          setSaved((current) => {
+            const next = edit(current);
+            return next && next !== current ? next : current;
+          });
+        },
+      };
+      const context = useComposerContext(1, root, draft, false, store);
+      return (
+        <LocaleProvider>
+          <button type="button" onClick={() => setRoot("/ws-b")}>Switch workspace</button>
+          <Composer
+            {...composerProps({ workspace: workspaceStub({ root }) })}
+            draft={draft}
+            onDraftChange={setDraft}
+            promptContext={context}
+          />
+        </LocaleProvider>
+      );
+    }
+
+    render(<WorkspaceSwitchHarness />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "/read" } });
+    await screen.findByText("/read");
+    fireEvent.keyDown(field, { key: "Enter" });
+    const dialog = await screen.findByRole("dialog", { name: "/read" });
+    await within(dialog).findByText("Read Skill contents");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disable skill" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch workspace" }));
+    fireEvent.change(field, { target: { value: "@file" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const fileDialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.change(within(fileDialog).getByRole("textbox"), { target: { value: "keep.txt" } });
+    fireEvent.click(within(fileDialog).getByRole("button", { name: "Preview" }));
+    await within(fileDialog).findByText("Kept content");
+    fireEvent.click(within(fileDialog).getByRole("button", { name: "Include in message" }));
+    expect(screen.getByRole("button", { name: "Remove keep.txt from this message" })).toBeInTheDocument();
+
+    await act(async () => { finishDisable({ ...readSkill, enabled: false }); });
+    expect(screen.getByRole("button", { name: "Remove keep.txt from this message" })).toBeInTheDocument();
+  });
+
+  it("waits for skill discovery before submitting a slash token", async () => {
+    let discover!: (skills: PromptSkill[]) => void;
+    vi.mocked(listPromptSkills).mockReturnValue(new Promise((resolve) => { discover = resolve; }));
+    vi.mocked(viewPromptSkill).mockResolvedValue({ summary: readSkill, text: "Read Skill contents" });
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ canSend: true, onSubmit }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "/read" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(onSubmit).not.toHaveBeenCalled();
+    await act(async () => { discover([readSkill]); });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(await screen.findByText("Read Skill contents")).toBeInTheDocument();
+  });
+
+  it.each(["Enter", "Send"])("prioritizes exact slash names when invoked with %s", async (method) => {
+    vi.mocked(listPromptSkills).mockResolvedValue([readSkill]);
+    vi.mocked(viewPromptSkill).mockResolvedValue({ summary: readSkill, text: "Read Skill contents" });
+    render(<StatefulComposer withPromptContext overrides={{ canSend: true, onReview: vi.fn() }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "/read" } });
+    const commands = screen.getByRole("listbox", { name: "Available slash commands" });
+    await within(commands).findByText("/read");
+    expect(within(commands).getByText("/review")).toBeInTheDocument();
+    if (method === "Enter") fireEvent.keyDown(field, { key: "Enter" });
+    else fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText("Read Skill contents")).toBeInTheDocument();
+    expect(viewPromptSkill).toHaveBeenCalledWith(1, readSkill.reference);
+  });
+
+  it("keeps the keyboard-highlighted slash option in the list viewport", async () => {
+    vi.mocked(listPromptSkills).mockResolvedValue([readSkill]);
+    render(<StatefulComposer withPromptContext />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    field.focus();
+    fireEvent.change(field, { target: { value: "/" } });
+    const list = screen.getByRole("listbox", { name: "Available slash commands" });
+    const option = (await within(list).findByText("/read")).closest("button")!;
+    vi.spyOn(list, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 240, 120));
+    vi.spyOn(option, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 240, 240, 30));
+    fireEvent.keyDown(field, { key: "ArrowUp" });
+    expect(list.scrollTop).toBe(150);
+    expect(option).toHaveAttribute("aria-selected", "true");
+    expect(field).toHaveAttribute("aria-activedescendant", option.id);
+    expect(field).toHaveFocus();
+  });
+
+  it("clears staged context along with the text when /clear runs", async () => {
+    vi.mocked(previewPromptContext).mockResolvedValue({
+      reference: { selector: { kind: "file", path: "sample.txt" }, revision: "fixture" },
+      label: "sample.txt", text: "Synthetic contents", omitted: false,
+    });
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ onSubmit, canSend: true }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "@file" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const dialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "sample.txt" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await within(dialog).findByText("Synthetic contents");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Include in message" }));
+    expect(screen.getByRole("button", { name: "Remove sample.txt from this message" })).toBeInTheDocument();
+    fireEvent.change(field, { target: { value: "@folder" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const folder = await screen.findByRole("dialog", { name: "@folder" });
+    expect(within(folder).getByText(tr("en", "prompt.noShell"))).toBeInTheDocument();
+    fireEvent.click(within(folder).getByRole("button", { name: "Close" }));
+    fireEvent.change(field, { target: { value: "/clear" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(field).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Remove sample.txt from this message" })).toBeNull();
+    fireEvent.change(field, { target: { value: "Fresh message" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the draft on Escape and removes only the included partial token at the caret", async () => {
+    vi.mocked(previewPromptContext).mockResolvedValue({
+      reference: { selector: { kind: "file", path: "sample.txt" }, revision: "fixture" },
+      label: "sample.txt", text: "Synthetic contents", omitted: false,
+    });
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ onSubmit, canSend: true }} />);
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Message" });
+    const original = "Keep @fi and this";
+    field.focus();
+    fireEvent.change(field, { target: { value: original, selectionStart: 8, selectionEnd: 8 } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    let dialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.keyDown(within(dialog).getByRole("textbox"), { key: "Escape" });
+    await waitFor(() => {
+      expect(dialog).not.toBeInTheDocument();
+      expect(field).toHaveFocus();
+    });
+    expect(field).toHaveValue(original);
+    fireEvent.change(field, { target: { value: "Keep @fil and this", selectionStart: 9, selectionEnd: 9 } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    dialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "sample.txt" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    expect(await within(dialog).findByText("Synthetic contents")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Include in message" }));
+    expect(field).toHaveValue("Keep  and this");
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+      expect(field.selectionStart).toBe(5);
+    });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+});
 
 describe("composer — send flow", () => {
   it("sends on Enter and never on Shift+Enter", () => {

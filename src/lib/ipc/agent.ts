@@ -1,3 +1,4 @@
+import type { PromptReferences } from "./promptContext";
 //! Agent-run IPC area (AC-205): the streaming agent runs (Task 5.1), the
 //! read-only run inspector (WS-D.1), the spend dashboard, the activity feed,
 //! persistent permission rules (M1-core), and run mode/pause control
@@ -243,7 +244,8 @@ export function startAgentRun(
   model: string,
   effort?: string | null,
   isPlan?: boolean | null,
-  attachmentIds: number[] = []
+  attachmentIds: number[] = [],
+  promptReferences?: PromptReferences
 ): Promise<{ run_id: number }> {
   return invoke<{ run_id: number }>("start_agent_run", {
     conversationId,
@@ -253,6 +255,7 @@ export function startAgentRun(
     effort: effort ?? null,
     isPlan: isPlan ?? null,
     attachmentIds,
+    promptReferences: promptReferences ?? null,
   });
 }
 

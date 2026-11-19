@@ -215,9 +215,13 @@ impl ConversationRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the delete fails.
     pub(crate) fn delete(&self, id: i64) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM conversations WHERE id = ?1", [id])?;
-        Ok(())
+        self.transaction(|tx| {
+            super::agent_runs::AgentRunRepository::delete_conversation_policy_in_transaction(
+                tx, id,
+            )?;
+            tx.execute("DELETE FROM conversations WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 
     /// Return whether a conversation with `id` exists.

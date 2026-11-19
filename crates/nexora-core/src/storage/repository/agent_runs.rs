@@ -69,6 +69,62 @@ pub struct AgentRun {
     pub limit_micro_usd: Option<u64>,
 }
 
+/// Conversation-owned source of a derived run, read with its inherited policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunSource {
+    /// The source run's row ID.
+    pub run_id: i64,
+    /// The owning conversation at the time of the snapshot.
+    pub conversation_id: i64,
+    /// Whether the source disallows shell tools.
+    pub no_shell: bool,
+    // A missing event is valid only for legacy rows. New rows get an event
+    // in their insert transaction, so they cannot reuse a legacy identity.
+    start_event_id: Option<i64>,
+}
+
+impl RunSource {
+    pub(super) fn read_in(
+        conn: &rusqlite::Connection,
+        run_id: i64,
+        conversation_id: i64,
+    ) -> Result<Option<Self>> {
+        let event = conn
+            .query_row(
+                "SELECT e.event_id FROM agent_runs AS r
+                 LEFT JOIN durable_run_events AS e
+                   ON e.run_id = r.id AND e.kind = 'run_started'
+                 WHERE r.id = ?1 AND r.conversation_id = ?2",
+                params![run_id, conversation_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?;
+        event
+            .map(|start_event_id| {
+                Ok(Self {
+                    run_id,
+                    conversation_id,
+                    start_event_id,
+                    no_shell: AgentRunRepository::no_shell_in(conn, run_id)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Verify source ownership and the inherited policy at a write boundary.
+    ///
+    /// # Errors
+    /// Returns an error if the source has changed or the lookup fails.
+    pub fn verify_in(self, tx: &rusqlite::Transaction<'_>, conversation_id: i64) -> Result<()> {
+        if self.conversation_id != conversation_id
+            || Self::read_in(tx, self.run_id, conversation_id)? != Some(self)
+        {
+            return Err(SqliteError::QueryReturnedNoRows.into());
+        }
+        Ok(())
+    }
+}
+
 /// A single `agent_steps` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.9. It is a plain persistence record and carries no
 /// interpretation or business meaning; `kind` holds the column value
@@ -517,12 +573,110 @@ impl AgentRunRepository<'_> {
     /// `conversation_id` (foreign-key violation) or a `model` / `mode` value
     /// rejected by the table CHECK constraints.
     pub fn create_run(&self, conversation_id: Option<i64>, model: &str, mode: &str) -> Result<i64> {
-        let conn = self.conn()?;
+        self.transaction(|tx| Self::insert_run(tx, conversation_id, model, mode))
+    }
+
+    /// Insert a new run and its caller-owned state in a single transaction.
+    ///
+    /// # Errors
+    /// Returns an error and leaves no run if the insert, callback, or commit fails.
+    pub fn create_run_with(
+        &self,
+        conversation_id: Option<i64>,
+        model: &str,
+        mode: &str,
+        persist: impl FnOnce(&rusqlite::Transaction<'_>, i64) -> Result<()>,
+    ) -> Result<i64> {
+        self.transaction(|tx| {
+            let run_id = Self::insert_run(tx, conversation_id, model, mode)?;
+            persist(tx, run_id)?;
+            Ok(run_id)
+        })
+    }
+
+    fn insert_run(
+        conn: &rusqlite::Transaction<'_>,
+        conversation_id: Option<i64>,
+        model: &str,
+        mode: &str,
+    ) -> Result<i64> {
         conn.execute(
             "INSERT INTO agent_runs (conversation_id, model, mode) VALUES (?1, ?2, ?3)",
             params![conversation_id, model, mode],
         )?;
-        Ok(conn.last_insert_rowid())
+        let run_id = conn.last_insert_rowid();
+        // Older draft builds keyed this setting to a reusable run ID. An
+        // orphaned key must never apply to the fresh owner of that ID.
+        conn.execute(
+            "DELETE FROM app_settings WHERE key = 'composer.no_shell.' || ?1",
+            [run_id],
+        )?;
+        Ok(run_id)
+    }
+
+    /// Restrict a conversation-owned run using its immutable start event ID.
+    /// The event identity is never reused, even when the run ID is recycled.
+    ///
+    /// # Errors
+    /// Returns an error if the start event is missing or the marker cannot be written.
+    pub fn mark_no_shell(tx: &rusqlite::Transaction<'_>, run_id: i64) -> Result<()> {
+        let event_id: i64 = tx.query_row(
+            "SELECT event_id FROM durable_run_events WHERE run_id = ?1 AND kind = 'run_started'",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('composer.no_shell.event.' || ?1, 'true')",
+            [event_id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the recorded shell ceiling. Marker presence is restrictive even if
+    /// its value is malformed.
+    ///
+    /// # Errors
+    /// Returns an error if the policy lookup fails.
+    pub fn no_shell(&self, run_id: i64) -> Result<bool> {
+        let conn = self.read_conn()?;
+        Self::no_shell_in(&conn, run_id)
+    }
+
+    pub(super) fn no_shell_in(conn: &rusqlite::Connection, run_id: i64) -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM durable_run_events AS e JOIN app_settings AS s
+                    ON s.key = 'composer.no_shell.event.' || e.event_id
+                WHERE e.run_id = ?1 AND e.kind = 'run_started'
+            ) OR EXISTS (
+                SELECT 1 FROM agent_runs AS r JOIN app_settings AS s
+                    ON s.key = 'composer.no_shell.' || r.id
+                WHERE r.id = ?1
+            )",
+            [run_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Remove private policy markers before the conversation's start events
+    /// cascade. The caller performs both deletes in one transaction.
+    ///
+    /// # Errors
+    /// Returns an error if the marker deletion fails.
+    pub fn delete_conversation_policy_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        conversation_id: i64,
+    ) -> Result<()> {
+        tx.execute(
+            "DELETE FROM app_settings WHERE key IN (
+                SELECT 'composer.no_shell.event.' || event_id FROM durable_run_events
+                WHERE conversation_id = ?1 AND kind = 'run_started'
+                UNION ALL
+                SELECT 'composer.no_shell.' || id FROM agent_runs WHERE conversation_id = ?1
+            )",
+            [conversation_id],
+        )?;
+        Ok(())
     }
 
     /// Record continuation provenance linking `run_id` to its interrupted `parent_run_id`.
@@ -537,6 +691,27 @@ impl AgentRunRepository<'_> {
         conversation_id: i64,
     ) -> Result<()> {
         let conn = self.conn()?;
+        Self::insert_continuation(&conn, run_id, parent_run_id, conversation_id)
+    }
+
+    /// Record provenance inside the child run's creation transaction.
+    ///
+    /// # Errors
+    /// Returns a database error if the insert fails.
+    pub fn record_continuation_in(
+        tx: &rusqlite::Transaction<'_>,
+        run_id: i64,
+        source: RunSource,
+    ) -> Result<()> {
+        Self::insert_continuation(tx, run_id, source.run_id, source.conversation_id)
+    }
+
+    fn insert_continuation(
+        conn: &rusqlite::Connection,
+        run_id: i64,
+        parent_run_id: i64,
+        conversation_id: i64,
+    ) -> Result<()> {
         conn.execute(
             "INSERT OR IGNORE INTO run_continuations (run_id, parent_run_id, conversation_id, created_at) \
              VALUES (?1, ?2, ?3, (unixepoch()))",
@@ -651,12 +826,35 @@ impl AgentRunRepository<'_> {
     /// Returns a [`DatabaseError`] if the read fails.
     pub fn read_run(&self, id: i64) -> Result<Option<AgentRun>> {
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
+        Self::read_run_from(&conn, id)
+    }
+
+    /// Read a run and its conversation-owned source from one snapshot.
+    ///
+    /// # Errors
+    /// Returns a [`DatabaseError`] if either read fails.
+    pub fn read_run_with_source(&self, id: i64) -> Result<Option<(AgentRun, Option<RunSource>)>> {
+        let mut conn = self.read_conn()?;
+        let tx = conn.transaction()?;
+        let Some(run) = Self::read_run_from(&tx, id)? else {
+            return Ok(None);
+        };
+        let source = run
+            .conversation_id
+            .map(|conversation_id| RunSource::read_in(&tx, id, conversation_id))
+            .transpose()?
+            .flatten();
+        tx.commit()?;
+        Ok(Some((run, source)))
+    }
+
+    fn read_run_from(conn: &rusqlite::Connection, id: i64) -> Result<Option<AgentRun>> {
+        Ok(conn.query_row(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
              total_steps, final_content, error, spent_micro_usd, limit_micro_usd, interrupted FROM agent_runs WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map([id], row_to_agent_run)?;
-        rows.next().transpose().map_err(DatabaseError::Sqlite)
+            [id],
+            row_to_agent_run,
+        ).optional()?)
     }
 
     /// List all runs ordered by `started_at` descending — the run history
@@ -746,9 +944,17 @@ impl AgentRunRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the delete fails.
     pub fn delete_run(&self, id: i64) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM agent_runs WHERE id = ?1", [id])?;
-        Ok(())
+        self.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM app_settings WHERE key IN (
+                    SELECT 'composer.no_shell.event.' || event_id FROM durable_run_events
+                    WHERE run_id = ?1 AND kind = 'run_started'
+                ) OR key = 'composer.no_shell.' || ?1",
+                [id],
+            )?;
+            tx.execute("DELETE FROM agent_runs WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 
     /// Append one step record to a run (DATABASE.md §7.9).

@@ -85,7 +85,16 @@ pub(crate) fn redact_command_output(text: &str) -> (String, bool) {
 /// at least one replacement occurred.
 #[must_use]
 pub(crate) fn redact_with_marker(text: &str, marker: &str) -> (String, bool) {
-    let (blocked, pem_hit) = redact_pem_blocks(text, marker);
+    redact(text, marker, false)
+}
+
+/// Redact a bounded prompt source while preserving its original line offsets.
+pub(crate) fn redact_prompt_source(text: &str) -> String {
+    redact(text, LEGACY_REDACTED_MARKER, true).0
+}
+
+fn redact(text: &str, marker: &str, preserve_pem_lines: bool) -> (String, bool) {
+    let (blocked, pem_hit) = redact_pem_blocks(text, marker, preserve_pem_lines);
     let (url_scrubbed, url_hit) = redact_url_userinfo(&blocked, marker);
     let (prefix_scrubbed, prefix_hit) = redact_schemes_and_prefixes(&url_scrubbed, marker);
     let (assignment_scrubbed, assignment_hit) = redact_assignment_values(&prefix_scrubbed, marker);
@@ -989,7 +998,7 @@ fn match_assignment_field(low_bytes: &[u8], index: usize) -> (usize, bool, usize
     (0, false, ASSIGNMENT_MIN_VALUE)
 }
 
-fn redact_pem_blocks(text: &str, marker: &str) -> (String, bool) {
+fn redact_pem_blocks(text: &str, marker: &str, preserve_lines: bool) -> (String, bool) {
     let bytes = text.as_bytes();
     let mut scrubbed = String::with_capacity(text.len());
     let mut cursor = 0;
@@ -1002,8 +1011,14 @@ fn redact_pem_blocks(text: &str, marker: &str) -> (String, bool) {
                 .map_or(text.len(), |offset| end + offset)
         });
         scrubbed.push_str(&text[cursor..begin]);
-        scrubbed.push_str("-----BEGIN ");
-        scrubbed.push_str(marker);
+        if preserve_lines {
+            // Avoid leaving an open PEM delimiter in the sanitized source.
+            scrubbed.push_str(marker);
+            scrubbed.extend(text[begin..end].chars().filter(|&ch| ch == '\n'));
+        } else {
+            scrubbed.push_str("-----BEGIN ");
+            scrubbed.push_str(marker);
+        }
         hit = true;
         cursor = end;
     }

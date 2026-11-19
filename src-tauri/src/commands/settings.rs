@@ -113,6 +113,7 @@ fn desktop_config_registry_impl() -> nexora_core::config::ConfigRegistry<'static
 /// keys above reach persistence, and secret-like values are rejected before
 /// persistence.
 fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> {
+    refuse_context_internal_setting(key)?;
     // The tolerant workspace parsers are the one place where the desktop's
     // rule is stricter than the shared syntactic check: a value that parses
     // but does not round-trip is corrupt and must not be stored. They are
@@ -196,9 +197,20 @@ pub(crate) fn set_setting(
         .map_err(Into::into)
 }
 
+fn refuse_context_internal_setting(key: &str) -> Result<(), CommandError> {
+    if crate::application::prompt_context::internal_setting(key) {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "Use the dedicated skill controls.",
+        ));
+    }
+    Ok(())
+}
+
 /// Delete one setting by `key` (a no-op when it does not exist).
 #[tauri::command]
 pub(crate) fn delete_setting(key: String, db: State<'_, Database>) -> Result<(), CommandError> {
+    refuse_context_internal_setting(&key)?;
     SettingsService::new(db.inner())
         .delete(&key)
         .map_err(Into::into)

@@ -1,0 +1,214 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  listPromptSkills,
+  type ContextSelector,
+  type PromptContextView,
+  type PromptReferences,
+  type PromptSkill,
+} from "./tauri";
+
+export interface ContextDraftToken {
+  draft: string;
+  start: number;
+  end: number;
+}
+
+export type PromptSheet =
+  | { kind: "skills" }
+  | { kind: "skill"; skill: PromptSkill }
+  | { kind: "context"; selector: ContextSelector["kind"]; token?: ContextDraftToken }
+  | { kind: "review" };
+
+type IncludedContext = Pick<PromptContextView, "reference" | "label">;
+
+export interface ComposerPromptDraft {
+  workspaceRoot: string | null;
+  explicit: PromptSkill[];
+  contexts: IncludedContext[];
+  excluded: string[];
+}
+
+export interface ComposerPromptDraftStore {
+  value?: ComposerPromptDraft;
+  update: (edit: (current?: ComposerPromptDraft) => ComposerPromptDraft | undefined) => void;
+}
+
+const emptyDraft = (workspaceRoot: string | null): ComposerPromptDraft =>
+  ({ workspaceRoot, explicit: [], contexts: [], excluded: [] });
+
+const noSkills: PromptSkill[] = [];
+
+function withoutSkill(draft: ComposerPromptDraft, id: string): ComposerPromptDraft {
+  return {
+    ...draft,
+    explicit: draft.explicit.filter((skill) => skill.reference.source_id !== id),
+    excluded: [...new Set([...draft.excluded, id])],
+  };
+}
+
+export function useComposerContext(
+  conversationId: number,
+  workspaceRoot: string | null,
+  draft: string,
+  live: boolean,
+  store?: ComposerPromptDraftStore
+) {
+  const [discovery, setDiscovery] = useState<{
+    conversationId: number; workspaceRoot: string | null; skills: PromptSkill[]; failed: boolean;
+  } | null>(null);
+  const currentDiscovery = discovery?.conversationId === conversationId
+    && discovery.workspaceRoot === workspaceRoot ? discovery : null;
+  const skills = currentDiscovery?.skills ?? noSkills;
+  const skillError = currentDiscovery?.failed ?? false;
+  const skillsLoading = currentDiscovery === null;
+  const [local, setLocal] = useState<ComposerPromptDraft>(() => emptyDraft(workspaceRoot));
+  const saved = store ? store.value : local;
+  const { explicit, contexts, excluded } = saved?.workspaceRoot === workspaceRoot
+    ? saved
+    : emptyDraft(workspaceRoot);
+  const updateDraft = (edit: (current: ComposerPromptDraft) => ComposerPromptDraft) => {
+    const update = (current?: ComposerPromptDraft) => edit(current?.workspaceRoot === workspaceRoot
+      ? current : emptyDraft(workspaceRoot));
+    if (store) store.update(update);
+    else setLocal(update);
+  };
+  const refreshRevision = useRef(0);
+  const [automatic, setAutomatic] = useState<{ draft: string; skills: PromptSkill[] } | null>(null);
+  const [sheet, setSheet] = useState<PromptSheet | null>(null);
+
+  const refresh = useCallback(async () => {
+    const revision = ++refreshRevision.current;
+    try {
+      const items = await listPromptSkills(conversationId);
+      if (revision !== refreshRevision.current) return;
+      setDiscovery({ conversationId, workspaceRoot, skills: Array.isArray(items) ? items : [], failed: false });
+    } catch {
+      if (revision !== refreshRevision.current) return;
+      setDiscovery({ conversationId, workspaceRoot, skills: noSkills, failed: true });
+    }
+  }, [conversationId, workspaceRoot]);
+
+  useEffect(() => {
+    setSheet(null);
+    setDiscovery(null);
+    setAutomatic(null);
+    void refresh();
+    return () => { refreshRevision.current += 1; };
+  }, [refresh]);
+
+  const automaticEnabled = skills.some((item) => item.auto_select);
+  const needsMatch = !live && automaticEnabled && draft.trim() !== "" && !draft.startsWith("/");
+  useEffect(() => {
+    if (!needsMatch) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void listPromptSkills(conversationId, draft)
+        .then((items) => {
+          if (!cancelled) setAutomatic({ draft, skills: Array.isArray(items) ? items : [] });
+        })
+        .catch(() => {
+          // Auto selection is voluntary. A failed lookup sends no extra skill.
+          if (!cancelled) setAutomatic({ draft, skills: [] });
+        });
+    }, 140);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [conversationId, draft, needsMatch, workspaceRoot, skills]);
+
+  const suggested = needsMatch && automatic?.draft === draft
+    ? automatic.skills.filter((item) =>
+        !excluded.includes(item.reference.source_id) &&
+        !explicit.some((selected) => selected.reference.source_id === item.reference.source_id) &&
+        skills.some((current) => current.auto_select &&
+          current.reference.source_id === item.reference.source_id &&
+          current.reference.revision === item.reference.revision)
+      )
+    : [];
+  const selected = [...explicit, ...suggested];
+  const active = selected.length + contexts.length > 0;
+  const pending = needsMatch && automatic?.draft !== draft;
+  const references: PromptReferences | undefined = active
+    ? {
+        skills: explicit.map((item) => item.reference),
+        automatic_skills: suggested.map((item) => item.reference),
+        contexts: contexts.map((item) => item.reference),
+      }
+    : undefined;
+
+  function updateSkill(item: PromptSkill) {
+    const id = item.reference.source_id;
+    setDiscovery((current) => {
+      if (current?.conversationId !== conversationId || current.workspaceRoot !== workspaceRoot) return current;
+      return { ...current, skills: current.skills.map((skill) => skill.reference.source_id === id ? item : skill) };
+    });
+    if (item.enabled && item.trusted) return;
+    const removeFromSameWorkspace = (current?: ComposerPromptDraft) =>
+      current?.workspaceRoot === workspaceRoot ? withoutSkill(current, id) : current;
+    if (store) store.update(removeFromSameWorkspace);
+    else setLocal((current) => removeFromSameWorkspace(current) ?? current);
+  }
+
+  function includeSkill(item: PromptSkill) {
+    updateDraft((current) => ({
+      ...current,
+      explicit: [
+        ...current.explicit.filter((skill) => skill.reference.source_id !== item.reference.source_id),
+        { ...item },
+      ],
+    }));
+    setSheet(null);
+  }
+
+  function removeSkill(item: PromptSkill) {
+    updateDraft((current) => withoutSkill(current, item.reference.source_id));
+  }
+
+  function includeContext(item: PromptContextView) {
+    const selector = JSON.stringify(item.reference.selector);
+    updateDraft((current) => ({
+      ...current,
+      contexts: [
+        ...current.contexts.filter((view) => JSON.stringify(view.reference.selector) !== selector),
+        { reference: item.reference, label: item.label },
+      ],
+    }));
+    setSheet(null);
+  }
+
+  function removeContext(item: IncludedContext) {
+    updateDraft((current) => ({
+      ...current,
+      contexts: current.contexts.filter((view) => view.reference.revision !== item.reference.revision),
+    }));
+  }
+
+  function clear() {
+    updateDraft(() => emptyDraft(workspaceRoot));
+  }
+
+  function consumeSelection() {
+    if (!saved || saved.workspaceRoot !== workspaceRoot) return;
+    const consume = (current?: ComposerPromptDraft) => {
+      if (!current || current.workspaceRoot !== workspaceRoot) return current;
+      if (current === saved) return emptyDraft(workspaceRoot);
+      // A newly staged item has a fresh identity, including a re-selection.
+      return {
+        ...current,
+        explicit: current.explicit.filter((item) => !saved.explicit.includes(item)),
+        contexts: current.contexts.filter((item) => !saved.contexts.includes(item)),
+      };
+    };
+    if (store) store.update(consume);
+    else setLocal((current) => consume(current) ?? current);
+  }
+
+  return {
+    skills, skillError, skillsLoading, refresh, selected, suggested, contexts, active, pending, references,
+    sheet, setSheet, updateSkill, includeSkill, removeSkill, includeContext, clear,
+    removeContext, consumeSelection,
+  };
+}
+
+export type ComposerContextState = ReturnType<typeof useComposerContext>;
