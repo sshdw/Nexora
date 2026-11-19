@@ -33,6 +33,7 @@ export interface ConversationPaneProps {
   autonomy: AutonomyStore;
   draft: string;
   setDraft: (value: string) => void;
+  onDraftAccepted?: () => void;
   promptDraft?: ComposerPromptDraftStore;
   onOpenSettings: () => void;
   onMessageSent: () => void;
@@ -84,6 +85,7 @@ export default function ConversationPane({
   autonomy,
   draft,
   setDraft,
+  onDraftAccepted,
   promptDraft,
   onOpenSettings,
   onMessageSent,
@@ -141,6 +143,7 @@ export default function ConversationPane({
             onMessageSent={onMessageSent}
             draft={draft}
             setDraft={setDraft}
+            onDraftAccepted={onDraftAccepted}
             promptDraft={promptDraft}
             workspace={workspace}
           />

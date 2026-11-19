@@ -149,6 +149,25 @@ impl<'a> RunPlanRepository<'a> {
     /// Propagates any [`crate::storage::database::DatabaseError`].
     pub fn read_by_run(&self, run_id: i64) -> Result<Option<RunPlan>> {
         let conn = self.read_conn()?;
+        Self::read_by_run_from(&conn, run_id)
+    }
+
+    /// Read the plan and its originating run's shell ceiling together.
+    ///
+    /// # Errors
+    /// Returns an error if either read fails.
+    pub fn read_by_run_with_no_shell(&self, run_id: i64) -> Result<Option<(RunPlan, bool)>> {
+        let mut conn = self.read_conn()?;
+        let tx = conn.transaction()?;
+        let Some(plan) = Self::read_by_run_from(&tx, run_id)? else {
+            return Ok(None);
+        };
+        let restricted = super::agent_runs::AgentRunRepository::no_shell_in(&tx, run_id)?;
+        tx.commit()?;
+        Ok(Some((plan, restricted)))
+    }
+
+    fn read_by_run_from(conn: &rusqlite::Connection, run_id: i64) -> Result<Option<RunPlan>> {
         let sql = format!("SELECT {SELECT_COLUMNS} FROM run_plans WHERE run_id = ?1");
         let row = conn.query_row(&sql, [run_id], map_plan).optional()?;
         Ok(row)

@@ -1,3 +1,5 @@
+mod pack;
+
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -136,8 +138,10 @@ impl Snapshot {
         let Some(source) = absent(self.source.open_dir_nofollow("pack"))? else {
             return Ok(());
         };
-        let dest = self.dest.open_dir_nofollow("pack").map_err(unavailable)?;
+        let path = self.scratch.path.join("objects").join("pack");
         let mut budget = MAX_PACK_BYTES;
+        let mut expanded_budget = MAX_PACK_BYTES;
+        let mut object_budget = pack::MAX_OBJECTS;
         for (count, entry) in source.entries().map_err(unavailable)?.enumerate() {
             if count >= 32 {
                 return Err(ContextError::Limit);
@@ -147,7 +151,7 @@ impl Snapshot {
             let Some((base, extension)) = value.split_once('.') else {
                 continue;
             };
-            if !matches!(extension, "pack" | "idx") {
+            if extension != "pack" {
                 continue;
             }
             if base.strip_prefix("pack-").is_none_or(|hash| {
@@ -157,7 +161,13 @@ impl Snapshot {
             }
             let bytes = bytes_at(&source, &name, budget).map_err(unavailable)?;
             budget -= bytes.len() as u64;
-            dest.write(&name, bytes).map_err(unavailable)?;
+            pack::validate(&bytes, &mut expanded_budget, &mut object_budget)?;
+            // Build an index from validated streams so Git never follows an
+            // offset supplied by the workspace. Normal on-disk packs are
+            // self-contained, so the indexer needs no external object store.
+            let mut indexer = git2::Indexer::new(None, &path, 0, false).map_err(unavailable)?;
+            indexer.write_all(&bytes).map_err(unavailable)?;
+            indexer.commit().map_err(unavailable)?;
         }
         Ok(())
     }

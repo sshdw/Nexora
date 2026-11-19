@@ -52,6 +52,7 @@ tree-sitter-powershell = "=0.26.4"
 sha2 = "=0.10.9"
 uuid = { version = "=1.24.0", features = ["v4"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
+flate2 = "1"
 
 [lints.rust]
 unsafe_code = "forbid"

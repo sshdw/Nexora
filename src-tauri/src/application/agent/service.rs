@@ -756,8 +756,8 @@ pub(crate) fn continue_run(
         return Err(AgentRunError::WorkspaceProtected);
     }
     let repo = AgentRunRepository::new(db);
-    let parent = repo
-        .read_run(run_id)
+    let (parent, inherited_no_shell) = repo
+        .read_run_with_no_shell(run_id)
         .map_err(AgentRunError::Database)?
         .ok_or(AgentRunError::RunNotFound { run_id })?;
     if !parent.interrupted && parent.status != "interrupted" {
@@ -817,8 +817,7 @@ pub(crate) fn continue_run(
             extra_history: plan.extra_messages,
             persist_user_message: false,
             attachment_ids: Vec::new(),
-            inherited_no_shell: super::super::prompt_context::run_no_shell(db, run_id)
-                .map_err(AgentRunError::Database)?,
+            inherited_no_shell,
             prompt_context: None,
         },
     )
@@ -1094,13 +1093,6 @@ fn start_run_claimed(
         },
     );
 
-    let mut model_request = request.clone();
-    if let Some(context) = options.prompt_context {
-        super::super::prompt_context::add_to_user_message(
-            &mut model_request.user_request,
-            &context,
-        );
-    }
     notify_durable(db, host.as_ref(), run_id, request.conversation_id, "start");
     spawn_run(
         Arc::clone(registry),
@@ -1112,12 +1104,13 @@ fn start_run_claimed(
         control,
         gate,
         preset,
-        model_request,
+        request.clone(),
         history,
         action_summary,
         checkpoint_store,
         options.is_plan,
         current_attachments,
+        options.prompt_context,
     )?;
     Ok(run_id)
 }
@@ -1150,6 +1143,7 @@ fn spawn_run(
     checkpoint_store: Option<CheckpointStore>,
     is_plan: bool,
     current_attachments: Vec<crate::application::execution::AiAttachment>,
+    prompt_context: Option<String>,
 ) -> Result<(), AgentRunError> {
     let (tx, rx): (Sender<AgentRunEvent>, Receiver<AgentRunEvent>) = mpsc::channel();
     // Terminal-frame channel: the run thread sends the `RunFinished` payload
@@ -1237,6 +1231,7 @@ fn spawn_run(
                     .with_permission_store(permission_store)
                     .with_history(history)
                     .with_attachments(current_attachments)
+                    .with_prompt_context(prompt_context)
                     .with_action_summary(action_summary)
                     .with_context_limit(context_limit)
                     .with_run_flags(resolved_flags.run_flags())
@@ -4297,6 +4292,65 @@ mod tests {
         );
         drop(db);
         let _ = std::fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn prompt_context_policy_is_deleted_with_its_run_and_never_reused() {
+        use crate::infrastructure::repository::conversations::ConversationRepository;
+        let db = crate::infrastructure::database::in_memory_database();
+        let conversations = ConversationRepository::new(&db);
+        let runs = AgentRunRepository::new(&db);
+
+        for delete_conversation in [true, false] {
+            let conversation = conversations.create("first owner", "active").unwrap();
+            let marked = runs
+                .create_run_with(
+                    Some(conversation),
+                    "m",
+                    "supervised",
+                    AgentRunRepository::mark_no_shell,
+                )
+                .unwrap();
+            assert!(runs.no_shell(marked).unwrap());
+            if delete_conversation {
+                conversations.delete(conversation).unwrap();
+            } else {
+                runs.delete_run(marked).unwrap();
+            }
+            let markers: i64 = db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM app_settings WHERE key GLOB 'composer.no_shell.*'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(markers, 0);
+
+            db.lock().unwrap().execute(
+                "INSERT INTO app_settings (key, value) VALUES ('composer.no_shell.' || ?1, 'true')",
+                [marked],
+            ).unwrap();
+            let replacement = conversations.create("new owner", "active").unwrap();
+            let plain = runs
+                .create_run(Some(replacement), "m", "supervised")
+                .unwrap();
+            assert_eq!(plain, marked);
+            assert!(!runs.no_shell(plain).unwrap());
+            runs.delete_run(plain).unwrap();
+            let restricted = runs
+                .create_run_with(
+                    Some(replacement),
+                    "m",
+                    "supervised",
+                    AgentRunRepository::mark_no_shell,
+                )
+                .unwrap();
+            assert_eq!(restricted, marked);
+            assert!(runs.no_shell(restricted).unwrap());
+            conversations.delete(replacement).unwrap();
+        }
     }
 
     #[test]

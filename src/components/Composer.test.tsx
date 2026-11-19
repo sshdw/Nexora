@@ -51,8 +51,8 @@ import { SHORTCUTS, shortcutById, shortcutKeys } from "../lib/shortcuts";
 import { tr } from "../lib/strings";
 import { REDUCED_MOTION_QUERY } from "../lib/useReducedMotion";
 import type { AutonomyStore } from "../lib/useAutonomy";
-import type { Attachment } from "../lib/tauri";
-import { previewPromptContext } from "../lib/tauri";
+import type { Attachment, PromptSkill } from "../lib/tauri";
+import { listPromptSkills, previewPromptContext, viewPromptSkill } from "../lib/tauri";
 import { useComposerContext } from "../lib/useComposerContext";
 import { LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
@@ -63,6 +63,7 @@ vi.mock("../lib/tauri", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/tauri")>(),
   listPromptSkills: vi.fn().mockResolvedValue([]),
   previewPromptContext: vi.fn(),
+  viewPromptSkill: vi.fn(),
 }));
 
 // P7 (review 06 D-15): the vendored per-character typing component and
@@ -91,6 +92,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.mocked(listPromptSkills).mockReset().mockResolvedValue([]);
 });
 
 function autonomyStub(overrides: Partial<AutonomyStore> = {}): AutonomyStore {
@@ -247,6 +249,69 @@ describe("composer — context selectors", () => {
     fireEvent.keyDown(field, { key: "Enter" });
     expect(await screen.findByRole("dialog", { name: "@folder" })).toBeInTheDocument();
     expect(field).toHaveValue(draft);
+  });
+
+  const readSkill: PromptSkill = {
+    name: "read", description: "Summarize text", scope: "personal", path: "read/SKILL.md",
+    reference: { source_id: "read-skill", revision: "revision" }, sha256: "hash", commit: null,
+    enabled: true, trusted: true, auto_select: false,
+  };
+
+  it.each(["Enter", "Send"])("prioritizes exact slash names when invoked with %s", async (method) => {
+    vi.mocked(listPromptSkills).mockResolvedValue([readSkill]);
+    vi.mocked(viewPromptSkill).mockResolvedValue({ summary: readSkill, text: "Read Skill contents" });
+    render(<StatefulComposer withPromptContext overrides={{ canSend: true, onReview: vi.fn() }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "/read" } });
+    const commands = screen.getByRole("listbox", { name: "Available slash commands" });
+    await within(commands).findByText("/read");
+    expect(within(commands).getByText("/review")).toBeInTheDocument();
+    if (method === "Enter") fireEvent.keyDown(field, { key: "Enter" });
+    else fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    expect(await screen.findByText("Read Skill contents")).toBeInTheDocument();
+    expect(viewPromptSkill).toHaveBeenCalledWith(1, readSkill.reference);
+  });
+
+  it("keeps the keyboard-highlighted slash option in the list viewport", async () => {
+    vi.mocked(listPromptSkills).mockResolvedValue([readSkill]);
+    render(<StatefulComposer withPromptContext />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    field.focus();
+    fireEvent.change(field, { target: { value: "/" } });
+    const list = screen.getByRole("listbox", { name: "Available slash commands" });
+    const option = (await within(list).findByText("/read")).closest("button")!;
+    vi.spyOn(list, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 240, 120));
+    vi.spyOn(option, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 240, 240, 30));
+    fireEvent.keyDown(field, { key: "ArrowUp" });
+    expect(list.scrollTop).toBe(150);
+    expect(option).toHaveAttribute("aria-selected", "true");
+    expect(field).toHaveAttribute("aria-activedescendant", option.id);
+    expect(field).toHaveFocus();
+  });
+
+  it("clears staged context along with the text when /clear runs", async () => {
+    vi.mocked(previewPromptContext).mockResolvedValue({
+      reference: { selector: { kind: "file", path: "sample.txt" }, revision: "fixture" },
+      label: "sample.txt", text: "Synthetic contents", omitted: false,
+    });
+    const onSubmit = vi.fn();
+    render(<StatefulComposer withPromptContext overrides={{ onSubmit, canSend: true }} />);
+    const field = screen.getByRole("textbox", { name: "Message" });
+    fireEvent.change(field, { target: { value: "@file" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const dialog = await screen.findByRole("dialog", { name: "@file" });
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "sample.txt" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+    await within(dialog).findByText("Synthetic contents");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Include in message" }));
+    expect(screen.getByRole("button", { name: "Remove sample.txt from this message" })).toBeInTheDocument();
+    fireEvent.change(field, { target: { value: "/clear" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(field).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Remove sample.txt from this message" })).toBeNull();
+    fireEvent.change(field, { target: { value: "Fresh message" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledOnce();
   });
 
   it("keeps the draft on Escape and removes only the included partial token at the caret", async () => {

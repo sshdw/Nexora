@@ -63,18 +63,6 @@ impl SettingsRepository<'_> {
     /// duplicate `key`.
     pub(crate) fn create(&self, key: &str, value: Option<&str>) -> Result<()> {
         let conn = self.conn()?;
-        Self::insert(&conn, key, value)
-    }
-
-    pub(crate) fn create_in_transaction(
-        tx: &Transaction<'_>,
-        key: &str,
-        value: Option<&str>,
-    ) -> Result<()> {
-        Self::insert(tx, key, value)
-    }
-
-    fn insert(conn: &rusqlite::Connection, key: &str, value: Option<&str>) -> Result<()> {
         conn.execute(
             "INSERT INTO app_settings (key, value) VALUES (?1, ?2)",
             params![key, value],

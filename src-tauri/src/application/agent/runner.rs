@@ -157,6 +157,7 @@ pub(crate) struct AgentRunner<'a> {
     /// slice). Empty by default; applied via [`Self::with_history`].
     prior_messages: Vec<AiMessage>,
     current_attachments: Vec<crate::application::execution::AiAttachment>,
+    prompt_context: Option<String>,
     /// Prior runs' compressed action trace (Layer-2 action memory). `None`
     /// by default; applied via [`Self::with_action_summary`].
     action_summary: Option<ActionSummary>,
@@ -253,6 +254,7 @@ impl<'a> AgentRunner<'a> {
             role: None,
             prior_messages: Vec::new(),
             current_attachments: Vec::new(),
+            prompt_context: None,
             action_summary: None,
             assembly_stage: None,
             context_limit_tokens: None,
@@ -282,6 +284,11 @@ impl<'a> AgentRunner<'a> {
         attachments: Vec<crate::application::execution::AiAttachment>,
     ) -> Self {
         self.current_attachments = attachments;
+        self
+    }
+
+    pub(crate) fn with_prompt_context(mut self, context: Option<String>) -> Self {
+        self.prompt_context = context;
         self
     }
 
@@ -815,11 +822,17 @@ impl<'a> AgentRunner<'a> {
             stage: self.assembly_stage,
             project_instructions: self.project_instructions.as_deref(),
         };
+        let provider_request = self.prompt_context.as_ref().map(|context| {
+            let mut text = user_request.to_owned();
+            super::super::prompt_context::add_to_user_message(&mut text, context);
+            text
+        });
+        let opening_request = provider_request.as_deref().unwrap_or(user_request);
         let mut messages = if self.run_flags.assembly {
             prompts::build_initial_messages_budgeted(
                 &self.prior_messages,
                 self.action_summary.as_ref(),
-                user_request,
+                opening_request,
                 &budget,
             )
         } else {
@@ -827,7 +840,7 @@ impl<'a> AgentRunner<'a> {
                 &self.prior_messages,
                 self.action_summary.as_ref(),
                 self.project_instructions.as_deref(),
-                user_request,
+                opening_request,
             )
         };
         if let Some(current) = messages.last_mut() {
@@ -868,6 +881,18 @@ impl<'a> AgentRunner<'a> {
                 }
             }
         }
+
+        // Assembly budgets the full opening request. Hold the portion that
+        // fits separately so neither compaction nor its structured extraction
+        // can see selected text. It is added back only for live model calls.
+        let live_context = provider_request.and_then(|_| {
+            let current = messages.last_mut()?;
+            current
+                .content
+                .starts_with(user_request)
+                .then(|| current.content.split_off(user_request.len()))
+                .filter(|context| !context.is_empty())
+        });
 
         loop {
             // ---- Step boundary: governance gates before the next LLM turn ----
@@ -955,6 +980,15 @@ impl<'a> AgentRunner<'a> {
             // `return`/`continue` below can observe the taken buffer. The
             // `unwrap_or_clone` fallback keeps correctness (at the cost of
             // one clone) if an executor ever retained a share.
+            let live_context_position = live_context.as_ref().and_then(|context| {
+                let index = messages
+                    .iter()
+                    .rposition(|message| message.role == AiRole::User)?;
+                let content = &mut messages[index].content;
+                let length = content.len();
+                content.push_str(context);
+                Some((index, length))
+            });
             let shared: Arc<Vec<AiMessage>> = Arc::from(std::mem::take(&mut messages));
             let request = AiRequest {
                 provider: provider.to_string(),
@@ -1008,6 +1042,16 @@ impl<'a> AgentRunner<'a> {
             // arms `return`/`continue`).
             drop(request);
             messages = Arc::unwrap_or_clone(shared);
+            // Budget the actual request when the provider omitted usage,
+            // including any selected context in the live payload.
+            let usage = outcome.as_ref().ok().map(|response| {
+                response
+                    .usage
+                    .unwrap_or_else(|| budget::estimate_usage(&messages, &response.content))
+            });
+            if let Some((index, length)) = live_context_position {
+                messages[index].content.truncate(length);
+            }
             let mut response = match outcome {
                 Ok(response) => response,
                 Err(ExecutorError::Cancelled) => {
@@ -1071,13 +1115,10 @@ impl<'a> AgentRunner<'a> {
             // conservative message-size estimate when the provider omits it
             // (NEX-AGENT-002) — whether or not a recorder is attached
             // (NEX-AGENT-015).
-            let usage = response
-                .usage
-                .unwrap_or_else(|| budget::estimate_usage(&messages, &response.content));
             budget::check_spend_guard(
                 &run_budget,
                 model,
-                Some(usage),
+                usage,
                 spent_micro_usd,
                 self.event_sender.as_ref(),
                 audit,
@@ -2321,6 +2362,80 @@ mod tests {
             }
         }
         assert!(saw_steering, "expected SteeringInjected event");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn selected_prompt_context_stays_live_and_out_of_durable_compaction() {
+        use crate::infrastructure::repository::agent_runs::AgentRunRepository;
+        use crate::infrastructure::repository::conversations::ConversationRepository;
+
+        let ws = temp_workspace();
+        let db = crate::infrastructure::database::in_memory_database();
+        let conversation_id = ConversationRepository::new(&db)
+            .create("Compaction", "active")
+            .unwrap();
+        let runs = AgentRunRepository::new(&db);
+        let run_id = runs
+            .create_run(Some(conversation_id), "m", "supervised")
+            .unwrap();
+        let control = RunControl::new();
+        let (gated, entered, release) = GatedExecutor::new(
+            vec![
+                Ok(text_response("initial work")),
+                Ok(text_response("clean durable summary")),
+                Ok(text_response("finished")),
+            ],
+            0,
+        );
+        let captured = thread::scope(|scope| {
+            let bg = control.clone();
+            let ws = &ws;
+            let db = &db;
+            let worker = scope.spawn(move || {
+                let recorder = RunRecorder::new(db)
+                    .with_run_id(run_id)
+                    .with_conversation(conversation_id);
+                AgentRunner::new(&gated, ws)
+                    .with_control(bg)
+                    .with_context_limit(22_000)
+                    .with_prompt_context(Some("selected-only-marker".to_owned()))
+                    .with_run_recorder(recorder)
+                    .run("openai", "m", "cred", "Original user goal")
+                    .unwrap();
+                gated.requests.into_inner()
+            });
+            while !entered.load(std::sync::atomic::Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            control.push_steering(format!("New detail {}", "x".repeat(10_000)));
+            control.request_compaction();
+            release.store(true, std::sync::atomic::Ordering::SeqCst);
+            worker.join().unwrap()
+        });
+        assert_eq!(captured.len(), 3);
+        for call in [&captured[0], &captured[2]] {
+            assert!(call
+                .messages
+                .iter()
+                .any(|message| message.content.contains("selected-only-marker")));
+        }
+        assert!(captured[1].tools.is_empty());
+        assert!(captured[1].messages[0]
+            .content
+            .contains("Original user goal"));
+        assert!(!captured[1].messages[0]
+            .content
+            .contains("selected-only-marker"));
+        let durable = runs.latest_compaction(conversation_id).unwrap().unwrap();
+        assert!(durable.summary.contains("clean durable summary"));
+        assert!(!durable.summary.contains("selected-only-marker"));
+        let later_history = crate::application::conversations::ConversationService::new(&db)
+            .agent_history(conversation_id, "openai")
+            .unwrap();
+        assert!(later_history
+            .iter()
+            .all(|message| !message.content.contains("selected-only-marker")));
         let _ = fs::remove_dir_all(&ws);
     }
 

@@ -2411,6 +2411,7 @@ dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
+ "flate2",
  "git2",
  "keyring",
  "log",

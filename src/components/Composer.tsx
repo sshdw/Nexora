@@ -61,7 +61,7 @@ import ComposerPromptSheet from "./ComposerPromptSheet";
        re-renders from the prop when the write lands.
    ============================================================ */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { formatBytes } from "../lib/format";
 import type {
@@ -252,7 +252,8 @@ export default function Composer({
   const [plusOpen, setPlusOpen] = useState(false);
   const [slashOpen, setSlashOpen] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
-  const [slashHighlight, setSlashHighlight] = useState(0);
+  const [slashHighlight, setSlashHighlight] = useState<number | null>(null);
+  const slashListId = useId();
   const [mentionHighlight, setMentionHighlight] = useState(0);
   const [caret, setCaret] = useState<number | null>(null);
   const includedCaret = useRef<number | null>(null);
@@ -337,8 +338,11 @@ export default function Composer({
         id: "clear",
         command: "/clear",
         description: t("conv.slashClearDesc"),
-        disabled: draft.length === 0,
-        run: () => onDraftChange(""),
+        disabled: draft.length === 0 && !promptContext?.active,
+        run: () => {
+          promptContext?.clear();
+          onDraftChange("");
+        },
       },
       {
         id: "settings",
@@ -409,7 +413,7 @@ export default function Composer({
       (item) =>
         item.command.slice(1).includes(slashQuery) ||
         item.description.toLowerCase().includes(slashQuery)
-    );
+    ).sort((a, b) => Number(b.command === `/${slashQuery}`) - Number(a.command === `/${slashQuery}`));
   }, [
     agentMode,
     attachmentsBusy,
@@ -436,6 +440,16 @@ export default function Composer({
     t,
     togglePlanMode,
   ]);
+
+  const activeSlashIndex = (slashHighlight ?? 0) % Math.max(1, slashItems.length);
+  const keepSlashOptionVisible = useCallback((option: HTMLButtonElement | null) => {
+    const list = option?.closest("ul");
+    if (!option || !list) return;
+    const row = option.getBoundingClientRect();
+    const viewport = list.getBoundingClientRect();
+    if (row.top < viewport.top) list.scrollTop += row.top - viewport.top;
+    else if (row.bottom > viewport.bottom) list.scrollTop += row.bottom - viewport.bottom;
+  }, []);
 
   const mentionItems = useMemo(() => {
     const baseName = (fullPath: string): string => {
@@ -560,7 +574,7 @@ export default function Composer({
         if (!slashOpen && promptContext) void promptContext.refresh();
         setPlusOpen(false);
         setSlashOpen(true);
-        setSlashHighlight(0);
+        setSlashHighlight(null);
         setMentionOpen(false);
       } else {
         if (slashOpen) setSlashOpen(false);
@@ -601,6 +615,28 @@ export default function Composer({
     includedCaret.current = null;
   }, [draft, sheet]);
 
+  const runExactSlash = () => {
+    if (slashQuery) {
+      const matching = slashItems.filter((item) => item.command === `/${slashQuery}`);
+      const builtIn = matching.find((item) => !item.id.startsWith("skill:"));
+      if (builtIn && !builtIn.disabled) {
+        runSlashItem(builtIn);
+        return true;
+      }
+      const matchingSkills = matching.filter((item) => item.id.startsWith("skill:") && !item.disabled);
+      if (matchingSkills.length === 1) {
+        runSlashItem(matchingSkills[0]);
+        return true;
+      }
+      if (matchingSkills.length > 1) {
+        setSlashOpen(true);
+        fieldRef.current?.focus();
+        return true;
+      }
+    }
+    return false;
+  };
+
   const submitDraft = () => {
     if (mentionOpen && contextQuery && !contextQuery.slash) {
       const exact = mentionItems.find((item) => item.id.startsWith("context:") && item.label === `@${mentionQuery}`);
@@ -609,25 +645,7 @@ export default function Composer({
         return;
       }
     }
-    if (promptContext && slashQuery) {
-      const matching = slashItems.filter((item) => item.command === `/${slashQuery}`);
-      const builtIn = matching.find((item) => !item.id.startsWith("skill:"));
-      if (builtIn && !builtIn.disabled) {
-        runSlashItem(builtIn);
-        return;
-      }
-      const matchingSkills = matching.filter((item) => item.id.startsWith("skill:") && !item.disabled);
-      if (matchingSkills.length === 1) {
-        runSlashItem(matchingSkills[0]);
-        return;
-      }
-      if (matchingSkills.length > 1) {
-        setSlashOpen(true);
-        fieldRef.current?.focus();
-        return;
-      }
-    }
-    onSubmit();
+    if (!runExactSlash()) onSubmit();
   };
   const fieldFocus = () => fieldRef.current?.focus();
   const finishContext = () => {
@@ -733,6 +751,8 @@ export default function Composer({
               }
               aria-label={t("conv.messageAria")}
               value={draft}
+              aria-controls={slashOpen && slashItems.length > 0 ? slashListId : undefined}
+              aria-activedescendant={slashOpen && slashItems.length > 0 ? `${slashListId}-${activeSlashIndex}` : undefined}
               disabled={busy}
               onChange={(event) => handleDraftInput(event.target.value, event.target.selectionStart)}
               onSelect={(event) => {
@@ -752,18 +772,20 @@ export default function Composer({
                   }
                   if (event.key === "ArrowDown" && slashItems.length > 0) {
                     event.preventDefault();
-                    setSlashHighlight((i) => (i + 1) % slashItems.length);
+                    setSlashHighlight((i) => ((i ?? 0) + 1) % slashItems.length);
                     return;
                   }
                   if (event.key === "ArrowUp" && slashItems.length > 0) {
                     event.preventDefault();
-                    setSlashHighlight(
-                      (i) => (i - 1 + slashItems.length) % slashItems.length
-                    );
+                    setSlashHighlight((i) => ((i ?? 0) - 1 + slashItems.length) % slashItems.length);
                     return;
                   }
                   if (event.key === "Enter" && !event.shiftKey) {
-                    const target = slashItems[slashHighlight];
+                    if (slashHighlight === null && runExactSlash()) {
+                      event.preventDefault();
+                      return;
+                    }
+                    const target = slashItems[activeSlashIndex];
                     if (target && !target.disabled) {
                       event.preventDefault();
                       runSlashItem(target);
@@ -890,7 +912,7 @@ export default function Composer({
                         returnFocusToFieldRef.current = true;
                         setPlusOpen(false);
                         setMentionOpen(false);
-                        setSlashHighlight(0);
+                        setSlashHighlight(null);
                         setSlashOpen(true);
                       }}
                     >
@@ -928,7 +950,7 @@ export default function Composer({
                   if (next) {
                     setPlusOpen(false);
                     setMentionOpen(false);
-                    setSlashHighlight(0);
+                    setSlashHighlight(null);
                   }
                 }}
               >
@@ -949,6 +971,7 @@ export default function Composer({
                     </p>
                   ) : (
                     <ul
+                      id={slashListId}
                       role="listbox"
                       aria-label={t("conv.slashMenuAria")}
                       className="nex-composer-trigger-list"
@@ -956,13 +979,15 @@ export default function Composer({
                       {slashItems.map((item, idx) => (
                         <li key={item.id}>
                           <button
+                            id={`${slashListId}-${idx}`}
+                            ref={idx === activeSlashIndex ? keepSlashOptionVisible : undefined}
                             type="button"
                             role="option"
-                            aria-selected={idx === slashHighlight}
+                            aria-selected={idx === activeSlashIndex}
                             disabled={item.disabled}
                             className={
                               "nex-composer-trigger-option" +
-                              (idx === slashHighlight ? " is-highlighted" : "")
+                              (idx === activeSlashIndex ? " is-highlighted" : "")
                             }
                             onClick={() => runSlashItem(item)}
                           >

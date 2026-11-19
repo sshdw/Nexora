@@ -133,8 +133,8 @@ pub(crate) fn decide_run_plan(
     launch_target: Option<PlanLaunchTarget>,
 ) -> Result<DecidePlanResult, PlanDecisionError> {
     let repo = RunPlanRepository::new(db);
-    let existing = repo
-        .read_by_run(run_id)?
+    let (existing, inherited_no_shell) = repo
+        .read_by_run_with_no_shell(run_id)?
         .ok_or(PlanDecisionError::PlanNotFound)?;
 
     if existing.decision_status == PLAN_STATUS_NONE || existing.plan_content.is_none() {
@@ -206,7 +206,7 @@ pub(crate) fn decide_run_plan(
                     extra_history: vec![approved_plan_msg],
                     persist_user_message,
                     attachment_ids: Vec::new(),
-                    inherited_no_shell: super::super::prompt_context::run_no_shell(db, run_id)?,
+                    inherited_no_shell,
                     prompt_context: None,
                 },
             )?;

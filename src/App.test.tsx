@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -21,7 +22,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 
 import App, { buildConnectionGroups, mergeConnectionModels } from "./App";
 import { rememberSession } from "./lib/lastSession";
-import type { ConnectionModelCapabilities } from "./lib/tauri";
+import type { ConnectionModelCapabilities, ContextSelector } from "./lib/tauri";
 import type { ProviderStatus } from "./lib/useProviders";
 
 const { mockInvoke, mockListen, state } = vi.hoisted(() => {
@@ -54,6 +55,7 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
       ["provider.model", "gpt-5.2"],
     ]),
     capabilities: [] as ConnectionModelCapabilities[],
+    pendingTurn: null as Promise<void> | null,
   };
   const mockListen = vi.fn(async () => () => {});
   const mockInvoke = vi.fn(
@@ -130,7 +132,19 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
         case "list_run_checkpoints":
         case "list_run_questions":
         case "list_work_queue":
+        case "list_prompt_skills":
           return [];
+        case "preview_prompt_context": {
+          const selector = args?.selector as Extract<ContextSelector, { kind: "file" | "folder" }>;
+          return {
+            reference: { selector, revision: selector.path }, label: selector.path,
+            text: `Preview of ${selector.path}`, omitted: false,
+          };
+        }
+        case "start_agent_run":
+        case "send_message":
+          await state.pendingTurn;
+          return { run_id: 11 };
         case "list_conversation_run_events":
           return {
             events: [],
@@ -178,6 +192,7 @@ beforeEach(() => {
   window.localStorage.removeItem("nexora.locale");
   mockInvoke.mockClear();
   mockListen.mockClear();
+  state.pendingTurn = null;
   window.localStorage.setItem("nexora.onboarding.completed", "1");
   rememberSession(1);
   state.settings = new Map<string, string | null>([
@@ -381,6 +396,53 @@ describe("App — Stage5 PR5A shell integration", () => {
     );
   });
   afterAll(() => vi.unstubAllGlobals());
+
+  it.each([
+    { mode: "Agent", command: "start_agent_run", edit: false },
+    { mode: "Chat", command: "send_message", edit: false },
+    { mode: "Agent", command: "start_agent_run", edit: true },
+    { mode: "Chat", command: "send_message", edit: true },
+  ])("reconciles accepted $mode draft after unmount (concurrent edit: $edit)", async ({ mode, command, edit }) => {
+    let accept!: () => void;
+    state.pendingTurn = new Promise((resolve) => { accept = resolve; });
+    render(<App />);
+    const firstField = await screen.findByRole("textbox", { name: "Message" });
+    if (mode === "Chat") {
+      fireEvent.click(screen.getByRole("radio", { name: "Chat mode — one answer per message" }));
+    }
+
+    async function stageFile(field: HTMLElement, path: string, text: string) {
+      fireEvent.change(field, { target: { value: `${text} @file` } });
+      fireEvent.keyDown(field, { key: "Enter" });
+      const dialog = await screen.findByRole("dialog", { name: "@file" });
+      fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: path } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Preview" }));
+      await within(dialog).findByText(`Preview of ${path}`);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Include in message" }));
+    }
+
+    await stageFile(firstField, "sent.txt", "Submitted");
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(command,
+      expect.objectContaining({ promptReferences: expect.objectContaining({ contexts: [
+        { selector: { kind: "file", path: "sent.txt" }, revision: "sent.txt" },
+      ] }) })));
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    fireEvent.click(await screen.findByText("Inactive session"));
+    await waitFor(() => expect(firstField).not.toBeInTheDocument());
+
+    const originalTab = screen.getByRole("tab", { name: "Test conversation" });
+    if (edit) {
+      fireEvent.click(originalTab);
+      const nextField = await screen.findByRole("textbox", { name: "Message" });
+      await stageFile(nextField, "new.txt", "Revised");
+    }
+    await act(async () => { accept(); });
+    if (!edit) fireEvent.click(originalTab);
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(edit ? "Revised " : "");
+    expect(screen.queryByRole("button", { name: "Remove sent.txt from this message" })).toBeNull();
+    if (edit) expect(screen.getByRole("button", { name: "Remove new.txt from this message" })).toBeInTheDocument();
+  });
 
   it.each([
     [2, "Inactive session"],

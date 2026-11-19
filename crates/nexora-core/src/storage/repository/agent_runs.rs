@@ -517,8 +517,7 @@ impl AgentRunRepository<'_> {
     /// `conversation_id` (foreign-key violation) or a `model` / `mode` value
     /// rejected by the table CHECK constraints.
     pub fn create_run(&self, conversation_id: Option<i64>, model: &str, mode: &str) -> Result<i64> {
-        let conn = self.conn()?;
-        Self::insert_run(&conn, conversation_id, model, mode)
+        self.transaction(|tx| Self::insert_run(tx, conversation_id, model, mode))
     }
 
     /// Insert a new run and its caller-owned state in a single transaction.
@@ -540,7 +539,7 @@ impl AgentRunRepository<'_> {
     }
 
     fn insert_run(
-        conn: &rusqlite::Connection,
+        conn: &rusqlite::Transaction<'_>,
         conversation_id: Option<i64>,
         model: &str,
         mode: &str,
@@ -549,7 +548,79 @@ impl AgentRunRepository<'_> {
             "INSERT INTO agent_runs (conversation_id, model, mode) VALUES (?1, ?2, ?3)",
             params![conversation_id, model, mode],
         )?;
-        Ok(conn.last_insert_rowid())
+        let run_id = conn.last_insert_rowid();
+        // Older draft builds keyed this setting to a reusable run ID. An
+        // orphaned key must never apply to the fresh owner of that ID.
+        conn.execute(
+            "DELETE FROM app_settings WHERE key = 'composer.no_shell.' || ?1",
+            [run_id],
+        )?;
+        Ok(run_id)
+    }
+
+    /// Restrict a conversation-owned run using its immutable start event ID.
+    /// The event identity is never reused, even when the run ID is recycled.
+    ///
+    /// # Errors
+    /// Returns an error if the start event is missing or the marker cannot be written.
+    pub fn mark_no_shell(tx: &rusqlite::Transaction<'_>, run_id: i64) -> Result<()> {
+        let event_id: i64 = tx.query_row(
+            "SELECT event_id FROM durable_run_events WHERE run_id = ?1 AND kind = 'run_started'",
+            [run_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('composer.no_shell.event.' || ?1, 'true')",
+            [event_id],
+        )?;
+        Ok(())
+    }
+
+    /// Read the recorded shell ceiling. Marker presence is restrictive even if
+    /// its value is malformed.
+    ///
+    /// # Errors
+    /// Returns an error if the policy lookup fails.
+    pub fn no_shell(&self, run_id: i64) -> Result<bool> {
+        let conn = self.read_conn()?;
+        Self::no_shell_in(&conn, run_id)
+    }
+
+    pub(super) fn no_shell_in(conn: &rusqlite::Connection, run_id: i64) -> Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM durable_run_events AS e JOIN app_settings AS s
+                    ON s.key = 'composer.no_shell.event.' || e.event_id
+                WHERE e.run_id = ?1 AND e.kind = 'run_started'
+            ) OR EXISTS (
+                SELECT 1 FROM agent_runs AS r JOIN app_settings AS s
+                    ON s.key = 'composer.no_shell.' || r.id
+                WHERE r.id = ?1
+            )",
+            [run_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Remove private policy markers before the conversation's start events
+    /// cascade. The caller performs both deletes in one transaction.
+    ///
+    /// # Errors
+    /// Returns an error if the marker deletion fails.
+    pub fn delete_conversation_policy_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        conversation_id: i64,
+    ) -> Result<()> {
+        tx.execute(
+            "DELETE FROM app_settings WHERE key IN (
+                SELECT 'composer.no_shell.event.' || event_id FROM durable_run_events
+                WHERE conversation_id = ?1 AND kind = 'run_started'
+                UNION ALL
+                SELECT 'composer.no_shell.' || id FROM agent_runs WHERE conversation_id = ?1
+            )",
+            [conversation_id],
+        )?;
+        Ok(())
     }
 
     /// Record continuation provenance linking `run_id` to its interrupted `parent_run_id`.
@@ -678,12 +749,31 @@ impl AgentRunRepository<'_> {
     /// Returns a [`DatabaseError`] if the read fails.
     pub fn read_run(&self, id: i64) -> Result<Option<AgentRun>> {
         let conn = self.read_conn()?;
-        let mut stmt = conn.prepare(
+        Self::read_run_from(&conn, id)
+    }
+
+    /// Read an interrupted run and its shell ceiling from one snapshot.
+    ///
+    /// # Errors
+    /// Returns a [`DatabaseError`] if either read fails.
+    pub fn read_run_with_no_shell(&self, id: i64) -> Result<Option<(AgentRun, bool)>> {
+        let mut conn = self.read_conn()?;
+        let tx = conn.transaction()?;
+        let Some(run) = Self::read_run_from(&tx, id)? else {
+            return Ok(None);
+        };
+        let restricted = Self::no_shell_in(&tx, id)?;
+        tx.commit()?;
+        Ok(Some((run, restricted)))
+    }
+
+    fn read_run_from(conn: &rusqlite::Connection, id: i64) -> Result<Option<AgentRun>> {
+        Ok(conn.query_row(
             "SELECT id, conversation_id, model, mode, status, started_at, finished_at, \
              total_steps, final_content, error, spent_micro_usd, limit_micro_usd, interrupted FROM agent_runs WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map([id], row_to_agent_run)?;
-        rows.next().transpose().map_err(DatabaseError::Sqlite)
+            [id],
+            row_to_agent_run,
+        ).optional()?)
     }
 
     /// List all runs ordered by `started_at` descending — the run history
@@ -773,9 +863,17 @@ impl AgentRunRepository<'_> {
     ///
     /// Returns a [`DatabaseError`] if the delete fails.
     pub fn delete_run(&self, id: i64) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM agent_runs WHERE id = ?1", [id])?;
-        Ok(())
+        self.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM app_settings WHERE key IN (
+                    SELECT 'composer.no_shell.event.' || event_id FROM durable_run_events
+                    WHERE run_id = ?1 AND kind = 'run_started'
+                ) OR key = 'composer.no_shell.' || ?1",
+                [id],
+            )?;
+            tx.execute("DELETE FROM agent_runs WHERE id = ?1", [id])?;
+            Ok(())
+        })
     }
 
     /// Append one step record to a run (DATABASE.md §7.9).

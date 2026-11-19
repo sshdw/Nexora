@@ -100,6 +100,7 @@ export interface ConversationViewProps {
   draft: string;
   /** Replace the composer draft (FR-007 "Use" insertion). */
   setDraft: (value: string) => void;
+  onDraftAccepted?: () => void;
   promptDraft?: ComposerPromptDraftStore;
   /** Effective workspace store, for the composer's workspace control
    *  (D3 / R6-03). */
@@ -124,6 +125,7 @@ export default function ConversationView({
   onMessageSent,
   draft,
   setDraft,
+  onDraftAccepted,
   promptDraft,
   workspace,
 }: ConversationViewProps) {
@@ -561,13 +563,18 @@ export default function ConversationView({
     [autonomy, runs]
   );
 
+  const clearAcceptedDraft = (submittedDraft: typeof chatDraftRef.current) => {
+    if (onDraftAccepted) onDraftAccepted();
+    else if (chatDraftRef.current === submittedDraft) setDraft("");
+  };
+
   const handleReview = async (view: PromptContextView) => {
     if (!ready || !selectedProvider || !selectedModel || sending || agentBusy || hasActiveRun) return false;
     const submittedDraft = chatDraftRef.current;
     const failure = await send("/review", selectedProvider, selectedModel, [], effectiveEffort,
       { contexts: [view.reference], review: true });
     if (failure !== null) return false;
-    if (draft.trim() === "/review" && submittedDraft === chatDraftRef.current) setDraft("");
+    if (draft.trim() === "/review") clearAcceptedDraft(submittedDraft);
     onMessageSent?.();
     return true;
   };
@@ -644,10 +651,8 @@ export default function ConversationView({
           attachmentIds,
           ...(promptContext.references ? [promptContext.references] : [])
         );
-        if (chatDraftRef.current === submittedDraft) {
-          setDraft("");
-          promptContext.clear();
-        }
+        clearAcceptedDraft(submittedDraft);
+        promptContext.consumeSelection();
         // User message persisted before spawn; refresh both histories.
         await Promise.all([refreshAttachments(), reloadAgent()]);
         onMessageSent?.();
@@ -677,12 +682,12 @@ export default function ConversationView({
       ...(promptContext.references ? [promptContext.references] : [])
     );
     // Admission can reject before the user message is persisted. Keep the
-    // draft for every failure, including provider requests, and clear only
-    // after success if this pane still owns the unchanged submitted draft.
+    // draft for every failure, including provider requests. On success the
+    // tab owns draft reconciliation even if this pane has unmounted.
     // History remains exclusively backend-owned (DATABASE.md §7.2).
-    if (failure === null && chatDraftRef.current === submittedDraft) {
-      setDraft("");
-      promptContext.clear();
+    if (failure === null) {
+      clearAcceptedDraft(submittedDraft);
+      promptContext.consumeSelection();
     }
     if (failure !== null && hasAutomaticSkills) await promptContext.refresh();
     // The backend is the source of truth: on success the drafts are now

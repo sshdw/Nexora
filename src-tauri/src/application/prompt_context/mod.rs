@@ -253,18 +253,12 @@ pub(crate) fn mark_run_no_shell(
     tx: &rusqlite::Transaction<'_>,
     run_id: i64,
 ) -> Result<(), DatabaseError> {
-    use crate::infrastructure::repository::settings::SettingsRepository;
-    SettingsRepository::create_in_transaction(
-        tx,
-        &format!("{RUN_SETTING_PREFIX}{run_id}"),
-        Some("true"),
-    )
+    crate::infrastructure::repository::agent_runs::AgentRunRepository::mark_no_shell(tx, run_id)
 }
 
+#[cfg(test)]
 pub(crate) fn run_no_shell(db: &Database, run_id: i64) -> Result<bool, DatabaseError> {
-    use crate::infrastructure::repository::settings::{SettingValue, SettingsRepository};
-    let value = SettingsRepository::new(db).read(&format!("{RUN_SETTING_PREFIX}{run_id}"))?;
-    Ok(!matches!(value, SettingValue::Missing))
+    crate::infrastructure::repository::agent_runs::AgentRunRepository::new(db).no_shell(run_id)
 }
 
 #[cfg(test)]

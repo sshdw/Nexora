@@ -126,7 +126,7 @@ function AppShell() {
   // other and switching tabs preserves in-progress input (tab state survives
   // conversation switch). The Prompt Library stages into the active pane's
   // draft (FR-007).
-  const [drafts, setDrafts] = useState<Record<number, string>>({});
+  const [drafts, setDrafts] = useState<Record<number, { text: string }>>({});
   const [promptDrafts, setPromptDrafts] = useState<Record<number, ComposerPromptDraft>>({});
   // Import/Export (FR-010, FR-011): the conversation being exported (opens the
   // export modal when set) and whether the import modal is shown.
@@ -174,18 +174,30 @@ function AppShell() {
     (() => void) | null
   >(null);
 
-  const draftFor = useCallback((id: number) => drafts[id] ?? "", [drafts]);
+  const draftFor = useCallback((id: number) => drafts[id]?.text ?? "", [drafts]);
   const setDraftFor = useCallback(
     (id: number) => (value: string) =>
       setDrafts((prev) =>
-        prev[id] === value ? prev : { ...prev, [id]: value }
+        prev[id]?.text === value ? prev : { ...prev, [id]: { text: value } }
       ),
     []
   );
 
+  const acceptDraftFor = (id: number) => {
+    const submitted = drafts[id];
+    return () => {
+      setDrafts((current) => submitted && current[id] === submitted
+        ? { ...current, [id]: { text: "" } }
+        : current);
+    };
+  };
+
   const promptDraftFor = (id: number): ComposerPromptDraftStore => ({
     value: promptDrafts[id],
-    update: (edit) => setPromptDrafts((current) => ({ ...current, [id]: edit(current[id]) })),
+    update: (edit) => setPromptDrafts((current) => {
+      const next = edit(current[id]);
+      return next && next !== current[id] ? { ...current, [id]: next } : current;
+    }),
   });
 
   // Model list + selection dispatch for the composer's model picker
@@ -262,7 +274,7 @@ function AppShell() {
     setDrafts((prev) => {
       const keys = Object.keys(prev);
       if (keys.every((key) => open.has(Number(key)))) return prev;
-      const next: Record<number, string> = {};
+      const next: typeof prev = {};
       for (const [key, value] of Object.entries(prev)) {
         if (open.has(Number(key))) next[Number(key)] = value;
       }
@@ -381,7 +393,7 @@ function AppShell() {
   // then return to the conversation so the staged text is visible.
   const handleUsePrompt = (content: string) => {
     if (tabs.activeId !== null) {
-      setDrafts((prev) => ({ ...prev, [tabs.activeId as number]: content }));
+      setDraftFor(tabs.activeId)(content);
     }
     router.closeLibrary();
   };
@@ -770,6 +782,7 @@ function AppShell() {
           conversation={activeConversation}
           draft={draftFor(activeConversation.id)}
           setDraft={setDraftFor(activeConversation.id)}
+          onDraftAccepted={acceptDraftFor(activeConversation.id)}
           promptDraft={promptDraftFor(activeConversation.id)}
           secondary={false}
           split
@@ -779,6 +792,7 @@ function AppShell() {
           conversation={splitConversation}
           draft={draftFor(splitConversation.id)}
           setDraft={setDraftFor(splitConversation.id)}
+          onDraftAccepted={acceptDraftFor(splitConversation.id)}
           promptDraft={promptDraftFor(splitConversation.id)}
           secondary
           split
@@ -790,6 +804,7 @@ function AppShell() {
         conversation={activeConversation}
         draft={draftFor(activeConversation.id)}
         setDraft={setDraftFor(activeConversation.id)}
+        onDraftAccepted={acceptDraftFor(activeConversation.id)}
         promptDraft={promptDraftFor(activeConversation.id)}
         secondary={false}
       />

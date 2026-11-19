@@ -30,7 +30,7 @@ export interface ComposerPromptDraft {
 
 export interface ComposerPromptDraftStore {
   value?: ComposerPromptDraft;
-  update: (edit: (current?: ComposerPromptDraft) => ComposerPromptDraft) => void;
+  update: (edit: (current?: ComposerPromptDraft) => ComposerPromptDraft | undefined) => void;
 }
 
 const emptyDraft = (workspaceRoot: string | null): ComposerPromptDraft =>
@@ -135,7 +135,7 @@ export function useComposerContext(
       ...current,
       explicit: [
         ...current.explicit.filter((skill) => skill.reference.source_id !== item.reference.source_id),
-        item,
+        { ...item },
       ],
     }));
     setSheet(null);
@@ -172,10 +172,27 @@ export function useComposerContext(
   function clear() {
     updateDraft(() => emptyDraft(workspaceRoot));
   }
+
+  function consumeSelection() {
+    if (!saved || saved.workspaceRoot !== workspaceRoot) return;
+    const consume = (current?: ComposerPromptDraft) => {
+      if (!current || current.workspaceRoot !== workspaceRoot) return current;
+      if (current === saved) return emptyDraft(workspaceRoot);
+      // A newly staged item has a fresh identity, including a re-selection.
+      return {
+        ...current,
+        explicit: current.explicit.filter((item) => !saved.explicit.includes(item)),
+        contexts: current.contexts.filter((item) => !saved.contexts.includes(item)),
+      };
+    };
+    if (store) store.update(consume);
+    else setLocal((current) => consume(current) ?? current);
+  }
+
   return {
     skills, skillError, refresh, selected, suggested, contexts, active, pending, references,
     sheet, setSheet, updateSkill, includeSkill, removeSkill, includeContext, clear,
-    removeContext,
+    removeContext, consumeSelection,
   };
 }
 

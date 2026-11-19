@@ -379,6 +379,38 @@ fn working_git_review_uses_tracked_safe_diff_and_blocks_external_object_store() 
 }
 
 #[test]
+fn working_git_review_reads_a_normal_packed_repository() {
+    let fixture = Fixture::new();
+    fixture.write("project/main.txt", "before\n");
+    let root = fixture.workspace();
+    let commit_id = commit_files(&root, &["main.txt"]);
+    let repo = git2::Repository::open(&root).unwrap();
+    let tree = repo.find_commit(commit_id).unwrap().tree().unwrap();
+    let objects = [
+        commit_id,
+        tree.id(),
+        tree.get_name("main.txt").unwrap().id(),
+    ];
+    let mut pack = repo.packbuilder().unwrap();
+    pack.insert_recursive(commit_id, None).unwrap();
+    let git_objects = root.join(".git/objects");
+    pack.write(&git_objects.join("pack"), 0).unwrap();
+    for id in objects {
+        let hex = id.to_string();
+        fs::remove_file(git_objects.join(&hex[..2]).join(&hex[2..])).unwrap();
+    }
+    fixture.write("project/main.txt", "after\n");
+    let app_data = fixture.app_data();
+    let context =
+        PromptContext::new(&fixture.db, &app_data, Some(&root), fixture.conversation).unwrap();
+    let diff = context
+        .preview(ContextSelector::Diff { path: None })
+        .unwrap();
+    assert!(diff.text.contains("-before\n+after"));
+    assert!(fs::read_dir(app_data).unwrap().next().is_none());
+}
+
+#[test]
 fn bounded_review_falls_back_to_a_single_tracked_file_in_large_repositories() {
     let fixture = Fixture::new();
     fixture.write("project/changed.txt", "first\n");
