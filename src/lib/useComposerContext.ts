@@ -36,6 +36,16 @@ export interface ComposerPromptDraftStore {
 const emptyDraft = (workspaceRoot: string | null): ComposerPromptDraft =>
   ({ workspaceRoot, explicit: [], contexts: [], excluded: [] });
 
+const noSkills: PromptSkill[] = [];
+
+function withoutSkill(draft: ComposerPromptDraft, id: string): ComposerPromptDraft {
+  return {
+    ...draft,
+    explicit: draft.explicit.filter((skill) => skill.reference.source_id !== id),
+    excluded: [...new Set([...draft.excluded, id])],
+  };
+}
+
 export function useComposerContext(
   conversationId: number,
   workspaceRoot: string | null,
@@ -43,8 +53,14 @@ export function useComposerContext(
   live: boolean,
   store?: ComposerPromptDraftStore
 ) {
-  const [skills, setSkills] = useState<PromptSkill[]>([]);
-  const [skillError, setSkillError] = useState(false);
+  const [discovery, setDiscovery] = useState<{
+    conversationId: number; workspaceRoot: string | null; skills: PromptSkill[]; failed: boolean;
+  } | null>(null);
+  const currentDiscovery = discovery?.conversationId === conversationId
+    && discovery.workspaceRoot === workspaceRoot ? discovery : null;
+  const skills = currentDiscovery?.skills ?? noSkills;
+  const skillError = currentDiscovery?.failed ?? false;
+  const skillsLoading = currentDiscovery === null;
   const [local, setLocal] = useState<ComposerPromptDraft>(() => emptyDraft(workspaceRoot));
   const saved = store ? store.value : local;
   const { explicit, contexts, excluded } = saved?.workspaceRoot === workspaceRoot
@@ -65,22 +81,20 @@ export function useComposerContext(
     try {
       const items = await listPromptSkills(conversationId);
       if (revision !== refreshRevision.current) return;
-      setSkills(Array.isArray(items) ? items : []);
-      setSkillError(false);
+      setDiscovery({ conversationId, workspaceRoot, skills: Array.isArray(items) ? items : [], failed: false });
     } catch {
       if (revision !== refreshRevision.current) return;
-      setSkills([]);
-      setSkillError(true);
+      setDiscovery({ conversationId, workspaceRoot, skills: noSkills, failed: true });
     }
-  }, [conversationId]);
+  }, [conversationId, workspaceRoot]);
 
   useEffect(() => {
     setSheet(null);
-    setSkills([]);
+    setDiscovery(null);
     setAutomatic(null);
     void refresh();
     return () => { refreshRevision.current += 1; };
-  }, [refresh, workspaceRoot]);
+  }, [refresh]);
 
   const automaticEnabled = skills.some((item) => item.auto_select);
   const needsMatch = !live && automaticEnabled && draft.trim() !== "" && !draft.startsWith("/");
@@ -124,10 +138,16 @@ export function useComposerContext(
     : undefined;
 
   function updateSkill(item: PromptSkill) {
-    setSkills((current) => current.map((skill) =>
-      skill.reference.source_id === item.reference.source_id ? item : skill
-    ));
-    if (!item.enabled || !item.trusted) removeSkill(item);
+    const id = item.reference.source_id;
+    setDiscovery((current) => {
+      if (current?.conversationId !== conversationId || current.workspaceRoot !== workspaceRoot) return current;
+      return { ...current, skills: current.skills.map((skill) => skill.reference.source_id === id ? item : skill) };
+    });
+    if (item.enabled && item.trusted) return;
+    const removeFromSameWorkspace = (current?: ComposerPromptDraft) =>
+      current?.workspaceRoot === workspaceRoot ? withoutSkill(current, id) : current;
+    if (store) store.update(removeFromSameWorkspace);
+    else setLocal((current) => removeFromSameWorkspace(current) ?? current);
   }
 
   function includeSkill(item: PromptSkill) {
@@ -142,12 +162,7 @@ export function useComposerContext(
   }
 
   function removeSkill(item: PromptSkill) {
-    const id = item.reference.source_id;
-    updateDraft((current) => ({
-      ...current,
-      explicit: current.explicit.filter((skill) => skill.reference.source_id !== id),
-      excluded: [...new Set([...current.excluded, id])],
-    }));
+    updateDraft((current) => withoutSkill(current, item.reference.source_id));
   }
 
   function includeContext(item: PromptContextView) {
@@ -190,7 +205,7 @@ export function useComposerContext(
   }
 
   return {
-    skills, skillError, refresh, selected, suggested, contexts, active, pending, references,
+    skills, skillError, skillsLoading, refresh, selected, suggested, contexts, active, pending, references,
     sheet, setSheet, updateSkill, includeSkill, removeSkill, includeContext, clear,
     removeContext, consumeSelection,
   };

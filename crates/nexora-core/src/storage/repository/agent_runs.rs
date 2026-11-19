@@ -69,6 +69,62 @@ pub struct AgentRun {
     pub limit_micro_usd: Option<u64>,
 }
 
+/// Conversation-owned source of a derived run, read with its inherited policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunSource {
+    /// The source run's row ID.
+    pub run_id: i64,
+    /// The owning conversation at the time of the snapshot.
+    pub conversation_id: i64,
+    /// Whether the source disallows shell tools.
+    pub no_shell: bool,
+    // A missing event is valid only for legacy rows. New rows get an event
+    // in their insert transaction, so they cannot reuse a legacy identity.
+    start_event_id: Option<i64>,
+}
+
+impl RunSource {
+    pub(super) fn read_in(
+        conn: &rusqlite::Connection,
+        run_id: i64,
+        conversation_id: i64,
+    ) -> Result<Option<Self>> {
+        let event = conn
+            .query_row(
+                "SELECT e.event_id FROM agent_runs AS r
+                 LEFT JOIN durable_run_events AS e
+                   ON e.run_id = r.id AND e.kind = 'run_started'
+                 WHERE r.id = ?1 AND r.conversation_id = ?2",
+                params![run_id, conversation_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()?;
+        event
+            .map(|start_event_id| {
+                Ok(Self {
+                    run_id,
+                    conversation_id,
+                    start_event_id,
+                    no_shell: AgentRunRepository::no_shell_in(conn, run_id)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Verify source ownership and the inherited policy at a write boundary.
+    ///
+    /// # Errors
+    /// Returns an error if the source has changed or the lookup fails.
+    pub fn verify_in(self, tx: &rusqlite::Transaction<'_>, conversation_id: i64) -> Result<()> {
+        if self.conversation_id != conversation_id
+            || Self::read_in(tx, self.run_id, conversation_id)? != Some(self)
+        {
+            return Err(SqliteError::QueryReturnedNoRows.into());
+        }
+        Ok(())
+    }
+}
+
 /// A single `agent_steps` row as persisted, mirroring the columns defined by
 /// DATABASE.md §7.9. It is a plain persistence record and carries no
 /// interpretation or business meaning; `kind` holds the column value
@@ -635,6 +691,27 @@ impl AgentRunRepository<'_> {
         conversation_id: i64,
     ) -> Result<()> {
         let conn = self.conn()?;
+        Self::insert_continuation(&conn, run_id, parent_run_id, conversation_id)
+    }
+
+    /// Record provenance inside the child run's creation transaction.
+    ///
+    /// # Errors
+    /// Returns a database error if the insert fails.
+    pub fn record_continuation_in(
+        tx: &rusqlite::Transaction<'_>,
+        run_id: i64,
+        source: RunSource,
+    ) -> Result<()> {
+        Self::insert_continuation(tx, run_id, source.run_id, source.conversation_id)
+    }
+
+    fn insert_continuation(
+        conn: &rusqlite::Connection,
+        run_id: i64,
+        parent_run_id: i64,
+        conversation_id: i64,
+    ) -> Result<()> {
         conn.execute(
             "INSERT OR IGNORE INTO run_continuations (run_id, parent_run_id, conversation_id, created_at) \
              VALUES (?1, ?2, ?3, (unixepoch()))",
@@ -752,19 +829,23 @@ impl AgentRunRepository<'_> {
         Self::read_run_from(&conn, id)
     }
 
-    /// Read an interrupted run and its shell ceiling from one snapshot.
+    /// Read a run and its conversation-owned source from one snapshot.
     ///
     /// # Errors
     /// Returns a [`DatabaseError`] if either read fails.
-    pub fn read_run_with_no_shell(&self, id: i64) -> Result<Option<(AgentRun, bool)>> {
+    pub fn read_run_with_source(&self, id: i64) -> Result<Option<(AgentRun, Option<RunSource>)>> {
         let mut conn = self.read_conn()?;
         let tx = conn.transaction()?;
         let Some(run) = Self::read_run_from(&tx, id)? else {
             return Ok(None);
         };
-        let restricted = Self::no_shell_in(&tx, id)?;
+        let source = run
+            .conversation_id
+            .map(|conversation_id| RunSource::read_in(&tx, id, conversation_id))
+            .transpose()?
+            .flatten();
         tx.commit()?;
-        Ok(Some((run, restricted)))
+        Ok(Some((run, source)))
     }
 
     fn read_run_from(conn: &rusqlite::Connection, id: i64) -> Result<Option<AgentRun>> {

@@ -56,6 +56,8 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
     ]),
     capabilities: [] as ConnectionModelCapabilities[],
     pendingTurn: null as Promise<void> | null,
+    pendingRevert: null as Promise<void> | null,
+    undoFixture: false,
   };
   const mockListen = vi.fn(async () => () => {});
   const mockInvoke = vi.fn(
@@ -130,11 +132,27 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
         case "list_tasks":
         case "list_permission_rules":
         case "list_run_checkpoints":
+          return state.undoFixture && args?.runId === 77
+            ? [{
+                id: 1, run_id: 77, turn_index: 0, file_path: "sample.txt",
+                pre_blob_sha256: "pre", post_blob_sha256: "post",
+                created_at: 1_700_000_010, reverted_at: null,
+              }]
+            : [];
+        case "revert_turn_checkpoints":
+          await state.pendingRevert;
+          return [];
         case "list_run_questions":
         case "list_work_queue":
         case "list_prompt_skills":
           return [];
         case "preview_prompt_context": {
+          if ((args?.selector as ContextSelector).kind === "diff") {
+            return {
+              reference: { selector: args?.selector, revision: "review-fixture" },
+              label: "Tracked diff", text: "A changed line", omitted: false,
+            };
+          }
           const selector = args?.selector as Extract<ContextSelector, { kind: "file" | "folder" }>;
           return {
             reference: { selector, revision: selector.path }, label: selector.path,
@@ -146,6 +164,24 @@ const { mockInvoke, mockListen, state } = vi.hoisted(() => {
           await state.pendingTurn;
           return { run_id: 11 };
         case "list_conversation_run_events":
+          if (state.undoFixture && args?.conversationId === 1 && (args?.afterEventId ?? 0) === 0) {
+            return {
+              events: [{
+                event_id: 1, conversation_id: 1, run_id: 77, kind: "run_finished",
+                step_id: null, schema_version: 1, created_at: 1_700_000_010,
+                payload: null, step: null,
+                terminal: {
+                  id: 77, conversation_id: 1, model: "gpt-5.2", mode: "semi_autonomous",
+                  status: "completed", started_at: 1_700_000_000, finished_at: 1_700_000_010,
+                  total_steps: 1, final_content: "Done", error: null,
+                  spent_micro_usd: 0, limit_micro_usd: null, interrupted: false,
+                },
+              }],
+              next_cursor: 1,
+              high_water_event_id: 1,
+              has_more: false,
+            };
+          }
           return {
             events: [],
             next_cursor: 0,
@@ -193,6 +229,8 @@ beforeEach(() => {
   mockInvoke.mockClear();
   mockListen.mockClear();
   state.pendingTurn = null;
+  state.pendingRevert = null;
+  state.undoFixture = false;
   window.localStorage.setItem("nexora.onboarding.completed", "1");
   rememberSession(1);
   state.settings = new Map<string, string | null>([
@@ -442,6 +480,66 @@ describe("App — Stage5 PR5A shell integration", () => {
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(edit ? "Revised " : "");
     expect(screen.queryByRole("button", { name: "Remove sent.txt from this message" })).toBeNull();
     if (edit) expect(screen.getByRole("button", { name: "Remove new.txt from this message" })).toBeInTheDocument();
+  });
+
+  it("keeps a pending review send with its tab across conversation remounts", async () => {
+    let accept!: () => void;
+    state.pendingTurn = new Promise((resolve) => { accept = resolve; });
+    render(<App />);
+    await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    fireEvent.click(await screen.findByText("Inactive session"));
+    fireEvent.click(screen.getByRole("tab", { name: "Test conversation" }));
+    const originalField = await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(originalField, { target: { value: "/review" } });
+    fireEvent.keyDown(originalField, { key: "Enter" });
+    const changedLine = await screen.findByText("A changed line");
+    fireEvent.click(within(changedLine.closest('[role="dialog"]') as HTMLElement)
+      .getByRole("button", { name: "Send for review" }));
+
+    fireEvent.keyDown(window, { key: "PageDown", ctrlKey: true });
+    await waitFor(() => expect(originalField).not.toBeInTheDocument());
+    fireEvent.keyDown(window, { key: "PageDown", ctrlKey: true });
+    const returnedField = screen.getByRole("textbox", { name: "Message" });
+    expect(returnedField).toHaveValue("/review");
+    expect(returnedField).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeDisabled();
+    expect(mockInvoke.mock.calls.filter(([command]) => command === "send_message")).toHaveLength(1);
+    await act(async () => { accept(); });
+    expect(returnedField).toBeEnabled();
+    expect(returnedField).toHaveValue("");
+  });
+
+  it("preserves an edited tab draft when a pending /undo revert finishes after cycling tabs", async () => {
+    let finishRevert!: () => void;
+    state.undoFixture = true;
+    state.pendingRevert = new Promise((resolve) => { finishRevert = resolve; });
+    render(<App />);
+    await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+    fireEvent.click(await screen.findByText("Inactive session"));
+    fireEvent.click(screen.getByRole("tab", { name: "Test conversation" }));
+    const originalField = await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      "list_conversation_run_events",
+      expect.objectContaining({ conversationId: 1 })
+    ));
+    fireEvent.change(originalField, { target: { value: "/undo" } });
+    fireEvent.keyDown(originalField, { key: "Enter" });
+    const confirmDialog = await screen.findByRole("dialog", { name: "Revert the latest saved turn?" });
+    fireEvent.click(within(confirmDialog).getByRole("button", { name: "Revert turn" }));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith(
+      "revert_turn_checkpoints",
+      expect.objectContaining({ runId: 77, turnIndex: 0 })
+    ));
+
+    fireEvent.keyDown(window, { key: "PageDown", ctrlKey: true });
+    await waitFor(() => expect(originalField).not.toBeInTheDocument());
+    fireEvent.keyDown(window, { key: "PageDown", ctrlKey: true });
+    const returnedField = await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(returnedField, { target: { value: "Edited draft while undo ran" } });
+    await act(async () => { finishRevert(); });
+    expect(returnedField).toHaveValue("Edited draft while undo ran");
   });
 
   it.each([

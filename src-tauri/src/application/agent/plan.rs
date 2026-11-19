@@ -22,6 +22,7 @@ use crate::infrastructure::repository::run_plans::{
 use super::registry::AgentRunRegistry;
 use super::service::{
     start_run_with_options, AgentRunError, AgentRunHost, AgentRunRequest, RunLaunchOptions,
+    RunLaunchSource,
 };
 
 /// Parsed user decision for a completed Plan run.
@@ -133,8 +134,8 @@ pub(crate) fn decide_run_plan(
     launch_target: Option<PlanLaunchTarget>,
 ) -> Result<DecidePlanResult, PlanDecisionError> {
     let repo = RunPlanRepository::new(db);
-    let (existing, inherited_no_shell) = repo
-        .read_by_run_with_no_shell(run_id)?
+    let (existing, source) = repo
+        .read_by_run_with_source(run_id)?
         .ok_or(PlanDecisionError::PlanNotFound)?;
 
     if existing.decision_status == PLAN_STATUS_NONE || existing.plan_content.is_none() {
@@ -147,7 +148,7 @@ pub(crate) fn decide_run_plan(
     match decision {
         PlanDecision::Rejected => {
             let updated = repo
-                .decide(run_id, PLAN_STATUS_REJECTED, None, None)?
+                .decide_for_source(source, PLAN_STATUS_REJECTED, None, None)?
                 .ok_or_else(|| {
                     PlanDecisionError::AlreadyDecided(PLAN_STATUS_REJECTED.to_string())
                 })?;
@@ -202,17 +203,16 @@ pub(crate) fn decide_run_plan(
                 target.preset,
                 RunLaunchOptions {
                     is_plan: false,
-                    continued_from_run_id: None,
                     extra_history: vec![approved_plan_msg],
                     persist_user_message,
                     attachment_ids: Vec::new(),
-                    inherited_no_shell,
+                    source: Some(RunLaunchSource::Plan(source)),
                     prompt_context: None,
                 },
             )?;
 
             let updated = repo
-                .decide(run_id, status, reply_opt, Some(launched_run_id))?
+                .decide_for_source(source, status, reply_opt, Some(launched_run_id))?
                 .unwrap_or(RunPlan {
                     decision_status: status.to_string(),
                     decision_reply: reply_opt.map(str::to_string),

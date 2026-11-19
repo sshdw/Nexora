@@ -2,7 +2,7 @@
 //! removes the standalone header and its actions. Split alone adds a quiet
 //! title badge; workspace selection remains in Composer.
 
-import ConversationView from "./ConversationView";
+import ConversationView, { type ConversationViewProps } from "./ConversationView";
 import ErrorBoundary from "./ErrorBoundary";
 import type { ConnectionModelCapabilities, Conversation } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
@@ -35,6 +35,7 @@ export interface ConversationPaneProps {
   setDraft: (value: string) => void;
   onDraftAccepted?: () => void;
   promptDraft?: ComposerPromptDraftStore;
+  reviewSend?: ConversationViewProps["reviewSend"];
   onOpenSettings: () => void;
   onMessageSent: () => void;
   /** Workspace store for the composer's control row (R6-03). */
@@ -87,6 +88,7 @@ export default function ConversationPane({
   setDraft,
   onDraftAccepted,
   promptDraft,
+  reviewSend,
   onOpenSettings,
   onMessageSent,
   workspace,
@@ -145,6 +147,7 @@ export default function ConversationPane({
             setDraft={setDraft}
             onDraftAccepted={onDraftAccepted}
             promptDraft={promptDraft}
+            reviewSend={reviewSend}
             workspace={workspace}
           />
         </ErrorBoundary>

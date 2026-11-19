@@ -287,6 +287,7 @@ export const en = {
   "prompt.skills": "Skills",
   "prompt.noSkills": "No skills found in personal or project folders.",
   "prompt.unavailable": "Could not load prompt context.",
+  "prompt.trustDeclined": "Skill trust was not confirmed.",
   "prompt.personal": "Personal",
   "prompt.project": "Project",
   "prompt.trust": "Trust this version",

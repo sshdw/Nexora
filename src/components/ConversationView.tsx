@@ -102,6 +102,7 @@ export interface ConversationViewProps {
   setDraft: (value: string) => void;
   onDraftAccepted?: () => void;
   promptDraft?: ComposerPromptDraftStore;
+  reviewSend?: { pending: boolean; begin: () => (() => void) | null };
   /** Effective workspace store, for the composer's workspace control
    *  (D3 / R6-03). */
   workspace: WorkspaceStore;
@@ -127,6 +128,7 @@ export default function ConversationView({
   setDraft,
   onDraftAccepted,
   promptDraft,
+  reviewSend,
   workspace,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
@@ -136,12 +138,22 @@ export default function ConversationView({
     messages,
     loading,
     error,
-    sending,
+    sending: chatSending,
     streamingText,
     streamingThinking,
     thinkingByMessageId = {},
     send,
+    reload: reloadChat,
   } = useConversation(conversationId);
+  const sending = chatSending || reviewSend?.pending === true;
+  const waitingForUnmountedReview = useRef(false);
+  useEffect(() => {
+    if (reviewSend?.pending && !chatSending) waitingForUnmountedReview.current = true;
+    if (!reviewSend?.pending && waitingForUnmountedReview.current) {
+      waitingForUnmountedReview.current = false;
+      void reloadChat({ silent: true });
+    }
+  }, [chatSending, reloadChat, reviewSend?.pending]);
   const {
     attachments,
     error: attachmentError,
@@ -570,13 +582,19 @@ export default function ConversationView({
 
   const handleReview = async (view: PromptContextView) => {
     if (!ready || !selectedProvider || !selectedModel || sending || agentBusy || hasActiveRun) return false;
+    const release = reviewSend?.begin();
+    if (release === null) return false;
     const submittedDraft = chatDraftRef.current;
-    const failure = await send("/review", selectedProvider, selectedModel, [], effectiveEffort,
-      { contexts: [view.reference], review: true });
-    if (failure !== null) return false;
-    if (draft.trim() === "/review") clearAcceptedDraft(submittedDraft);
-    onMessageSent?.();
-    return true;
+    try {
+      const failure = await send("/review", selectedProvider, selectedModel, [], effectiveEffort,
+        { contexts: [view.reference], review: true });
+      if (failure !== null) return false;
+      if (draft.trim() === "/review") clearAcceptedDraft(submittedDraft);
+      onMessageSent?.();
+      return true;
+    } finally {
+      release?.();
+    }
   };
 
   const handleUndo = async () => {
@@ -603,11 +621,12 @@ export default function ConversationView({
 
   const confirmUndo = async () => {
     if (!undo || undoBusy || hasActiveRun) return;
+    const submittedDraft = chatDraftRef.current;
     setUndoBusy(true);
     try {
       const outcome = await revertTurn(undo.runId, undo.turn, false);
       if (outcome.status === "reverted") {
-        if (draft.trim() === "/undo") setDraft("");
+        if (draft.trim() === "/undo") clearAcceptedDraft(submittedDraft);
       } else {
         setAgentError(outcome.message);
       }
@@ -628,8 +647,8 @@ export default function ConversationView({
       await handleUndo();
       return;
     }
-    if (content === "/review" && ready && !sending && !agentBusy && !hasActiveRun) {
-      promptContext.setSheet({ kind: "review" });
+    if (content === "/review") {
+      if (ready && !sending && !agentBusy && !hasActiveRun) promptContext.setSheet({ kind: "review" });
       return;
     }
     if (!canSend || !content || !selectedProvider || !selectedModel) return;

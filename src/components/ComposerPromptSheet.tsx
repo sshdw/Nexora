@@ -18,13 +18,14 @@ interface Props {
   conversationId: number;
   state: ComposerContextState;
   sheet: PromptSheet;
+  showNoShell?: boolean;
   onUseSkill: (name: string) => void;
   onIncludeContext: () => void;
   onReview?: (view: PromptContextView) => Promise<boolean>;
 }
 
 export default function ComposerPromptSheet({
-  conversationId, state, sheet, onUseSkill, onIncludeContext, onReview,
+  conversationId, state, sheet, showNoShell, onUseSkill, onIncludeContext, onReview,
 }: Props) {
   const { locale, t } = useStrings();
   const [path, setPath] = useState("");
@@ -68,7 +69,9 @@ export default function ComposerPromptSheet({
       setSkill({ ...skill, summary });
       state.updateSkill(summary);
     } catch (cause) {
-      setError(errorMessage(cause, t("prompt.unavailable")));
+      const trustDeclined = action === "trust" && typeof cause === "object" && cause !== null
+        && "kind" in cause && cause.kind === "confirmationRequired";
+      setError(trustDeclined ? t("prompt.trustDeclined") : errorMessage(cause, t("prompt.unavailable")));
     } finally {
       setBusy(false);
     }
@@ -106,12 +109,14 @@ export default function ComposerPromptSheet({
   return (
     <ModalShell title={title} busy={busy} onClose={close} sheet>
       <div className="nex-prompt-sheet">
+        {showNoShell && <p className="nex-prompt-sheet-note">{t("prompt.noShell")}</p>}
         {loading && <p role="status">{t("common.loading")}</p>}
         {error && <p role="alert">{error}</p>}
         {sheet.kind === "skills" && (
           <>
             {state.skillError && <p role="alert">{t("prompt.unavailable")}</p>}
-            {!state.skillError && state.skills.length === 0 && <p>{t("prompt.noSkills")}</p>}
+            {state.skillsLoading && <p role="status">{t("common.loading")}</p>}
+            {!state.skillsLoading && !state.skillError && state.skills.length === 0 && <p>{t("prompt.noSkills")}</p>}
             <ul className="nex-prompt-skills">
               {state.skills.map((item) => (
                 <li key={item.reference.source_id}>
@@ -134,7 +139,7 @@ export default function ComposerPromptSheet({
               <dt>SHA-256</dt>
               <dd><code>{summary.sha256}</code></dd>
             </dl>
-            <pre className="nex-prompt-preview" tabIndex={0}>{skill.text}</pre>
+            <pre className="nex-prompt-sheet-preview" tabIndex={0}>{skill.text}</pre>
             <div className="nex-prompt-actions">
               {!summary.trusted && <M3Button variant="secondary" loading={busy}
                 onClick={() => void changeSkill("trust")}>{t("prompt.trust")}</M3Button>}
@@ -164,14 +169,14 @@ export default function ComposerPromptSheet({
           }}>
             <label>
               {t(selectorKind === "diff" ? "prompt.diffPath" : "prompt.path")}
-              <input className="nex-prompt-field" value={path} disabled={busy || loading}
+              <input className="nex-prompt-sheet-field" value={path} disabled={busy || loading}
                 maxLength={1024}
                 onChange={(event) => { setPath(event.currentTarget.value); setPreview(null); }} />
             </label>
             {selectorKind === "symbol" && (
               <label>
                 {t("prompt.symbol")}
-                <input className="nex-prompt-field" value={symbol} disabled={busy}
+                <input className="nex-prompt-sheet-field" value={symbol} disabled={busy}
                   maxLength={96}
                   onChange={(event) => { setSymbol(event.currentTarget.value); setPreview(null); }} />
               </label>
@@ -186,7 +191,7 @@ export default function ComposerPromptSheet({
           <>
             <p><code>{preview.label}</code></p>
             {preview.omitted && <p role="status">{t(review ? "prompt.reviewPartial" : "prompt.omitted")}</p>}
-            <pre className="nex-prompt-preview" tabIndex={0}>{preview.text}</pre>
+            <pre className="nex-prompt-sheet-preview" tabIndex={0}>{preview.text}</pre>
             <div className="nex-prompt-actions">
               <M3Button variant="primary" loading={busy} onClick={() => {
                 if (!review) {

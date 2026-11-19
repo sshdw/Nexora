@@ -633,6 +633,10 @@ export default function Composer({
         fieldRef.current?.focus();
         return true;
       }
+      if (slashCommand && promptContext?.skillsLoading) {
+        setSlashOpen(true);
+        return true;
+      }
     }
     return false;
   };
@@ -664,6 +668,7 @@ export default function Composer({
           conversationId={conversationId}
           state={promptContext}
           sheet={sheet}
+          showNoShell={agentMode && promptContext.active}
           onReview={onReview}
           onUseSkill={(name) => {
             const invocation = /^\/([^\s]+)(?:[ \t]+([\s\S]*))?$/.exec(draft);
@@ -737,7 +742,7 @@ export default function Composer({
                   </li>
                 ))}
               </ul>
-              {agentMode && <p className="nex-prompt-inline-note">{t("prompt.noShell")}</p>}
+              {agentMode && !sheet && <p className="nex-prompt-inline-note">{t("prompt.noShell")}</p>}
             </div>
           )}
 
@@ -965,7 +970,9 @@ export default function Composer({
                   <PopoverHeader>
                     <PopoverTitle>{t("conv.slashMenuTitle")}</PopoverTitle>
                   </PopoverHeader>
-                  {slashItems.length === 0 ? (
+                  {slashItems.length === 0 && promptContext?.skillsLoading ? (
+                    <p role="status" className="nex-composer-trigger-empty">{t("common.loading")}</p>
+                  ) : slashItems.length === 0 ? (
                     <p className="nex-composer-trigger-empty">
                       {t("conv.slashEmpty")}
                     </p>

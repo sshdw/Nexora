@@ -3,6 +3,7 @@
 use rusqlite::{params, OptionalExtension, Row, Transaction};
 use serde::Serialize;
 
+use super::agent_runs::RunSource;
 use crate::storage::database::{now_secs, Database};
 use crate::storage::repository::{Repository, Result};
 
@@ -152,19 +153,19 @@ impl<'a> RunPlanRepository<'a> {
         Self::read_by_run_from(&conn, run_id)
     }
 
-    /// Read the plan and its originating run's shell ceiling together.
+    /// Read the plan and its originating run's stable ownership together.
     ///
     /// # Errors
     /// Returns an error if either read fails.
-    pub fn read_by_run_with_no_shell(&self, run_id: i64) -> Result<Option<(RunPlan, bool)>> {
+    pub fn read_by_run_with_source(&self, run_id: i64) -> Result<Option<(RunPlan, RunSource)>> {
         let mut conn = self.read_conn()?;
         let tx = conn.transaction()?;
         let Some(plan) = Self::read_by_run_from(&tx, run_id)? else {
             return Ok(None);
         };
-        let restricted = super::agent_runs::AgentRunRepository::no_shell_in(&tx, run_id)?;
+        let source = RunSource::read_in(&tx, run_id, plan.conversation_id)?;
         tx.commit()?;
-        Ok(Some((plan, restricted)))
+        Ok(source.map(|source| (plan, source)))
     }
 
     fn read_by_run_from(conn: &rusqlite::Connection, run_id: i64) -> Result<Option<RunPlan>> {
@@ -202,30 +203,81 @@ impl<'a> RunPlanRepository<'a> {
         decision_reply: Option<&str>,
         implemented_run_id: Option<i64>,
     ) -> Result<Option<RunPlan>> {
+        self.transaction(|tx| {
+            Self::decide_in(
+                tx,
+                run_id,
+                decision_status,
+                decision_reply,
+                implemented_run_id,
+            )
+        })
+    }
+
+    /// Apply a decision to the original Plan even if its row ID can be reused.
+    ///
+    /// # Errors
+    /// Returns an error when the source has changed or the update fails.
+    pub fn decide_for_source(
+        &self,
+        source: RunSource,
+        decision_status: &str,
+        decision_reply: Option<&str>,
+        implemented_run_id: Option<i64>,
+    ) -> Result<Option<RunPlan>> {
+        self.transaction(|tx| {
+            source.verify_in(tx, source.conversation_id)?;
+            Self::decide_in(
+                tx,
+                source.run_id,
+                decision_status,
+                decision_reply,
+                implemented_run_id,
+            )
+        })
+    }
+
+    /// Check Plan eligibility inside the implementation run's start transaction.
+    ///
+    /// # Errors
+    /// Returns an error when the Plan does not belong to this source or is no longer pending.
+    pub fn verify_pending_in(tx: &Transaction<'_>, source: RunSource) -> Result<()> {
+        tx.query_row(
+            "SELECT 1 FROM run_plans WHERE run_id = ?1 AND conversation_id = ?2
+             AND decision_status = 'pending' AND plan_content IS NOT NULL",
+            params![source.run_id, source.conversation_id],
+            |_| Ok(()),
+        )?;
+        Ok(())
+    }
+
+    fn decide_in(
+        tx: &Transaction<'_>,
+        run_id: i64,
+        decision_status: &str,
+        decision_reply: Option<&str>,
+        implemented_run_id: Option<i64>,
+    ) -> Result<Option<RunPlan>> {
         let now = now_secs();
-        let updated = self.transaction(|tx| {
-            let changed = tx.execute(
-                "UPDATE run_plans \
+        let changed = tx.execute(
+            "UPDATE run_plans \
                  SET decision_status = ?2, \
                      decision_reply = ?3, \
                      implemented_run_id = ?4, \
                      decided_at = ?5 \
                  WHERE run_id = ?1 AND decision_status = 'pending'",
-                params![
-                    run_id,
-                    decision_status,
-                    decision_reply,
-                    implemented_run_id,
-                    now
-                ],
-            )?;
-            if changed == 0 {
-                return Ok(None);
-            }
-            let sql = format!("SELECT {SELECT_COLUMNS} FROM run_plans WHERE run_id = ?1");
-            Ok(tx.query_row(&sql, [run_id], map_plan).optional()?)
-        })?;
-        Ok(updated)
+            params![
+                run_id,
+                decision_status,
+                decision_reply,
+                implemented_run_id,
+                now
+            ],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        Self::read_by_run_from(tx, run_id)
     }
 
     /// Attach the launched `implemented_run_id` to an already decided plan row.
@@ -260,6 +312,27 @@ mod tests {
             .create_run(Some(conv_id), "test-model", "supervised")
             .expect("create plan run");
         (conv_id, run_id)
+    }
+
+    #[test]
+    fn run_source_identity_changes_when_the_row_id_is_reused() {
+        let db = in_memory_database();
+        let (conversation_id, run_id) = seed_conversation_and_plan_run(&db);
+        let runs = AgentRunRepository::new(&db);
+        let (_, source) = runs.read_run_with_source(run_id).unwrap().unwrap();
+        let source = source.unwrap();
+        runs.delete_run(run_id).unwrap();
+        let replacement = runs
+            .create_run(Some(conversation_id), "test-model", "supervised")
+            .unwrap();
+        assert_eq!(replacement, run_id);
+        let (_, current) = runs.read_run_with_source(replacement).unwrap().unwrap();
+        assert_ne!(current, Some(source));
+        runs.transaction(|tx| {
+            assert!(source.verify_in(tx, conversation_id).is_err());
+            current.unwrap().verify_in(tx, conversation_id)
+        })
+        .unwrap();
     }
 
     #[test]

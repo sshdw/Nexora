@@ -885,7 +885,7 @@ impl<'a> AgentRunner<'a> {
         // Assembly budgets the full opening request. Hold the portion that
         // fits separately so neither compaction nor its structured extraction
         // can see selected text. It is added back only for live model calls.
-        let live_context = provider_request.and_then(|_| {
+        let mut live_context = provider_request.and_then(|_| {
             let current = messages.last_mut()?;
             current
                 .content
@@ -893,6 +893,7 @@ impl<'a> AgentRunner<'a> {
                 .then(|| current.content.split_off(user_request.len()))
                 .filter(|context| !context.is_empty())
         });
+        let mut reduced_live_context = false;
 
         loop {
             // ---- Step boundary: governance gates before the next LLM turn ----
@@ -1078,6 +1079,17 @@ impl<'a> AgentRunner<'a> {
                         &scope,
                         &mut record,
                     )?;
+                    if let Some(context) = live_context.as_mut() {
+                        let note = "\n[Selected prompt context was shortened to fit the model's context window.]";
+                        let keep = context.floor_char_boundary(context.len() / 2);
+                        if reduced_live_context || keep <= note.len() {
+                            live_context = None;
+                        } else {
+                            context.truncate(keep);
+                            context.push_str(note);
+                            reduced_live_context = true;
+                        }
+                    }
                     continue;
                 }
                 Err(ExecutorError::ContextLengthExceeded) => {
@@ -1477,6 +1489,33 @@ mod tests {
         assert!(error.contains("exhausted"), "got {error:?}");
         // Three terminal turns; the empty plan issues no summarizer calls.
         assert_eq!(fake.requests.borrow().len(), 3);
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn overflow_retries_reduce_live_context_and_keep_the_user_request() {
+        let ws = temp_workspace();
+        let fake = FakeExecutor::new(vec![
+            Err(ExecutorError::ContextLengthExceeded),
+            Err(ExecutorError::ContextLengthExceeded),
+            Ok(text_response("done")),
+        ]);
+        let goal = "Summarize the selected document";
+        AgentRunner::new(&fake, &ws)
+            .with_prompt_context(Some("A chapter of the guide. ".repeat(28)))
+            .run("openai", "m", "cred", goal)
+            .unwrap();
+
+        let requests = fake.requests.borrow();
+        assert_eq!(requests.len(), 3);
+        let user_messages: Vec<_> = requests
+            .iter()
+            .map(|request| request.messages.last().unwrap().content.as_str())
+            .collect();
+        assert!(user_messages.iter().all(|text| text.starts_with(goal)));
+        assert!(user_messages[0].len() > user_messages[1].len());
+        assert!(user_messages[1].contains("context was shortened"));
+        assert_eq!(user_messages[2], goal);
         let _ = fs::remove_dir_all(&ws);
     }
 

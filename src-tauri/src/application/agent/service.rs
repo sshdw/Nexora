@@ -59,7 +59,7 @@ use crate::application::execution::{
 use crate::application::routing::{RoutingService, TaskKind};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_runs::{
-    AgentRun, AgentRunRepository, AgentStep, NewConversationCompaction,
+    AgentRun, AgentRunRepository, AgentStep, NewConversationCompaction, RunSource,
 };
 use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::messages::MessageRepository;
@@ -347,8 +347,6 @@ pub(crate) struct AgentRunRequest {
 pub(crate) struct RunLaunchOptions {
     /// Enforce user-initiated read-only Plan mode (`AccessProfile::ReadOnly`).
     pub is_plan: bool,
-    /// Optional interrupted parent run id linked via `run_continuations`.
-    pub continued_from_run_id: Option<i64>,
     /// Additional prior messages injected after persisted conversation history
     /// (never persisted into `messages`).
     pub extra_history: Vec<AiMessage>,
@@ -359,20 +357,33 @@ pub(crate) struct RunLaunchOptions {
     pub attachment_ids: Vec<i64>,
     /// Exact server-admitted context included on this turn only.
     pub prompt_context: Option<String>,
-    /// Restriction carried by a continuation or an accepted Plan.
-    pub inherited_no_shell: bool,
+    /// Original owner of inherited history and tool restrictions.
+    pub source: Option<RunLaunchSource>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RunLaunchSource {
+    Continue(RunSource),
+    Plan(RunSource),
+}
+
+impl RunLaunchSource {
+    fn run(self) -> RunSource {
+        match self {
+            Self::Continue(source) | Self::Plan(source) => source,
+        }
+    }
 }
 
 impl Default for RunLaunchOptions {
     fn default() -> Self {
         Self {
             is_plan: false,
-            continued_from_run_id: None,
             extra_history: Vec::new(),
             persist_user_message: true,
             attachment_ids: Vec::new(),
             prompt_context: None,
-            inherited_no_shell: false,
+            source: None,
         }
     }
 }
@@ -756,8 +767,8 @@ pub(crate) fn continue_run(
         return Err(AgentRunError::WorkspaceProtected);
     }
     let repo = AgentRunRepository::new(db);
-    let (parent, inherited_no_shell) = repo
-        .read_run_with_no_shell(run_id)
+    let (parent, source) = repo
+        .read_run_with_source(run_id)
         .map_err(AgentRunError::Database)?
         .ok_or(AgentRunError::RunNotFound { run_id })?;
     if !parent.interrupted && parent.status != "interrupted" {
@@ -765,13 +776,11 @@ pub(crate) fn continue_run(
             status: parent.status,
         });
     }
-    let conversation_id = parent
-        .conversation_id
-        .ok_or(AgentRunError::ConversationNotFound { id: 0 })?;
+    let source = source.ok_or(AgentRunError::ConversationNotFound { id: 0 })?;
+    let conversation_id = source.conversation_id;
 
     let prior_steps = repo.list_steps(run_id).map_err(AgentRunError::Database)?;
     let q_repo = RunQuestionRepository::new(db);
-    let _ = q_repo.cancel_pending_for_run(run_id);
     let prior_questions: Vec<_> = q_repo
         .list_for_conversation(conversation_id)
         .map_err(AgentRunError::Database)?
@@ -813,11 +822,10 @@ pub(crate) fn continue_run(
         preset,
         RunLaunchOptions {
             is_plan,
-            continued_from_run_id: Some(run_id),
             extra_history: plan.extra_messages,
             persist_user_message: false,
             attachment_ids: Vec::new(),
-            inherited_no_shell,
+            source: Some(RunLaunchSource::Continue(source)),
             prompt_context: None,
         },
     )
@@ -1000,7 +1008,7 @@ fn start_run_claimed(
 
     // Prepare and link current attachments synchronously before spawning.
     // Current bytes are appended by the runner exactly once, after history.
-    let current_attachments = if options.persist_user_message {
+    let current_attachments = if options.persist_user_message && options.source.is_none() {
         ConversationService::new(db)
             .persist_user_message_with_attachments(
                 request.conversation_id,
@@ -1038,15 +1046,44 @@ fn start_run_claimed(
     ));
     let control = RunControl::new();
     let mode_column = mode_to_column(mode);
-    let prompt_no_shell = options.inherited_no_shell || options.prompt_context.is_some();
-    let run_id = if options.is_plan || prompt_no_shell {
-        // Continue relies on these markers to restore the original tool restrictions.
+    let prompt_no_shell = options.source.is_some_and(|source| source.run().no_shell)
+        || options.prompt_context.is_some();
+    let run_id = if options.is_plan || prompt_no_shell || options.source.is_some() {
         AgentRunRepository::new(db)
             .create_run_with(
                 Some(request.conversation_id),
                 &request.model,
                 mode_column,
                 |tx, run_id| {
+                    if let Some(source) = options.source {
+                        source.run().verify_in(tx, request.conversation_id)?;
+                        match source {
+                            RunLaunchSource::Continue(source) => {
+                                RunQuestionRepository::cancel_pending_for_run_in(
+                                    tx,
+                                    source.run_id,
+                                )?;
+                                AgentRunRepository::record_continuation_in(tx, run_id, source)?;
+                            }
+                            RunLaunchSource::Plan(source) => {
+                                RunPlanRepository::verify_pending_in(tx, source)?;
+                                if options.persist_user_message {
+                                    MessageRepository::create_in_transaction(
+                                        tx,
+                                        request.conversation_id,
+                                        "user",
+                                        &request.user_request,
+                                        None,
+                                        None,
+                                    )?;
+                                    ConversationRepository::touch_updated_at(
+                                        tx,
+                                        request.conversation_id,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
                     if prompt_no_shell {
                         super::super::prompt_context::mark_run_no_shell(tx, run_id)?;
                     }
@@ -1072,16 +1109,6 @@ fn start_run_claimed(
     } else {
         preset
     };
-
-    if let Some(parent_run_id) = options.continued_from_run_id {
-        if let Err(err) = AgentRunRepository::new(db).record_continuation(
-            run_id,
-            parent_run_id,
-            request.conversation_id,
-        ) {
-            log::warn!("agent run continuation link failed (run {run_id}): {err}");
-        }
-    }
 
     observe_transition(RunState::Queued, RunState::Running);
     registry.register(

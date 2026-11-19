@@ -1830,7 +1830,7 @@
   margin: 0;
 }
 
-.nex-prompt-preview {
+.nex-prompt-sheet-preview {
   max-block-size: 48vh;
   margin: 0;
   overflow: auto;
@@ -1850,6 +1850,7 @@
   margin: 0;
 }
 
+.nex-prompt-sheet-note,
 .nex-prompt-pin dt,
 .nex-prompt-skills span {
   color: var(--muted-foreground);
@@ -1870,7 +1871,7 @@
   justify-self: start;
 }
 
-.nex-prompt-field {
+.nex-prompt-sheet-field {
   min-width: 0;
   padding: var(--space-xs) var(--space-sm);
   border: 1px solid var(--border);

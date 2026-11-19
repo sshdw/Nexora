@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
-use git2::{ObjectType, Oid, Patch, Repository, Tree};
+use git2::{Index, IndexEntryExtendedFlag, ObjectType, Oid, Patch, Repository, Tree};
 
 use super::io::{bytes_at, open_absolute, path_label, relative_path};
 use super::workspace::{Workspace, MAX_FILE_BYTES};
@@ -299,6 +299,18 @@ pub(super) fn working_diff(
         .map_err(unavailable)?
         .ok_or(ContextError::ReadUnavailable)?;
     let snapshot = Snapshot::new(workspace, app_data)?;
+    let index = snapshot.index()?;
+    if index.as_ref().is_some_and(|index| {
+        index.iter().any(|entry| {
+            entry.mode == 0o040_000
+                || IndexEntryExtendedFlag::from_bits_retain(entry.flags_extended)
+                    .contains(IndexEntryExtendedFlag::SKIP_WORKTREE)
+        })
+    }) {
+        // Skipped paths are absent by design. This no-shell diff only
+        // interprets absence as deletion in a complete working tree.
+        return Err(ContextError::ReadUnavailable);
+    }
     let tree = if pin == "unborn" {
         None
     } else {
@@ -320,7 +332,7 @@ pub(super) fn working_diff(
         if let Some(tree) = tree.as_ref() {
             snapshot.collect_tree(workspace, tree, Path::new(""), &mut paths, &mut budget, 0)?;
         }
-        if let Some(index) = snapshot.index()? {
+        if let Some(index) = index.as_ref() {
             if index.len() > MAX_PATHS {
                 return Err(ContextError::DiffLimit);
             }
@@ -346,7 +358,14 @@ pub(super) fn working_diff(
     let mut emitted = 0;
     let mut omitted = false;
     for path in paths {
-        let combined = file_patch(workspace, &snapshot, tree.clone(), &path, file.is_some());
+        let combined = file_patch(
+            workspace,
+            &snapshot,
+            tree.clone(),
+            &path,
+            index.as_ref(),
+            file.is_some(),
+        );
         let patch = match combined {
             Ok(patch) => patch,
             Err(_) if file.is_none() => {
@@ -382,6 +401,7 @@ fn file_patch(
     snapshot: &Snapshot,
     tree: Option<Tree<'_>>,
     path: &Path,
+    index: Option<&Index>,
     verify_tracked: bool,
 ) -> Result<String, ContextError> {
     let old = tree
@@ -389,8 +409,7 @@ fn file_patch(
         .transpose()?
         .flatten();
     if verify_tracked && old.is_none() {
-        let tracked = snapshot
-            .index()?
+        let tracked = index
             .and_then(|index| index.get_path(path, 0))
             .is_some_and(|entry| matches!(entry.mode, 0o100_644 | 0o100_755));
         if !tracked {

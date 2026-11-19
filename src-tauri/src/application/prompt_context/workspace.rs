@@ -1,3 +1,5 @@
+use std::cell::Cell;
+use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -6,10 +8,11 @@ use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 
 use super::io::{
-    ignore_rules, open_absolute, open_relative, path_label, read_at, read_relative, relative_path,
+    ignore_rules, open_absolute, open_file_at, open_relative, path_label, refused, relative_path,
+    text_from_file,
 };
 use super::{digest, secret_free, ContextError};
-use crate::application::project_dir::{rules_verdict, IgnoreRules};
+use crate::application::project_dir::{rules_verdict_with_budget, IgnoreRules};
 
 pub(super) const MAX_FILE_BYTES: u64 = 16 * 1024;
 const MAX_FOLDER_ENTRIES: usize = 96;
@@ -17,6 +20,7 @@ const MAX_FOLDER_FILES: usize = 8;
 const MAX_FOLDER_DEPTH: usize = 2;
 const MAX_CONTEXT_BYTES: usize = 24 * 1024;
 const MAX_SYMBOL_LINES: usize = 150;
+const MAX_IGNORE_WORK: usize = 2_000_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -57,6 +61,7 @@ pub(super) struct Workspace<'a> {
     base: &'a Path,
     pub(super) dir: Dir,
     rules: IgnoreRules,
+    ignore_work: Cell<usize>,
 }
 
 impl<'a> Workspace<'a> {
@@ -66,7 +71,12 @@ impl<'a> Workspace<'a> {
         }
         let dir = open_absolute(base).map_err(|_| ContextError::ReadUnavailable)?;
         let rules = ignore_rules(&dir)?;
-        Ok(Self { base, dir, rules })
+        Ok(Self {
+            base,
+            dir,
+            rules,
+            ignore_work: Cell::new(MAX_IGNORE_WORK),
+        })
     }
 
     pub(super) fn allowed(&self, path: &Path, is_dir: bool) -> bool {
@@ -83,32 +93,78 @@ impl<'a> Workspace<'a> {
         {
             return false;
         }
-        !rules_verdict(&self.rules, &label, is_dir)
+        let mut work = self.ignore_work.get();
+        let verdict = rules_verdict_with_budget(&self.rules, &label, is_dir, &mut work);
+        self.ignore_work.set(work);
+        verdict == Some(false)
     }
 
     fn file(&self, name: &str) -> Result<String, ContextError> {
         let path = relative_path(name)?;
-        if !self.allowed(&path, false) {
-            return Err(ContextError::ReadUnavailable);
-        }
         self.read(&path).map_err(|_| ContextError::ReadUnavailable)
     }
 
     pub(super) fn read(&self, relative: &Path) -> io::Result<String> {
-        read_relative(&self.dir, relative, MAX_FILE_BYTES)
+        let parent = relative.parent().ok_or_else(refused)?;
+        let name = relative.file_name().ok_or_else(refused)?;
+        self.read_entry(&open_relative(&self.dir, parent)?, name, relative)
+    }
+
+    fn read_entry(&self, parent: &Dir, name: &OsStr, relative: &Path) -> io::Result<String> {
+        let file = open_file_at(parent, name)?;
+        #[cfg(windows)]
+        let (file, actual) = {
+            let _ = relative;
+            let file = file.into_std();
+            let actual = self.opened_path(&file)?;
+            (cap_std::fs::File::from_std(file), actual)
+        };
+        #[cfg(windows)]
+        let path = &actual;
+        #[cfg(not(windows))]
+        let path = relative;
+        if !self.allowed(path, false) {
+            return Err(refused());
+        }
+        text_from_file(file, MAX_FILE_BYTES)
+    }
+
+    #[cfg(windows)]
+    fn opened_path(&self, file: &std::fs::File) -> io::Result<PathBuf> {
+        let root = winx::file::get_file_path(&self.dir.try_clone()?.into_std_file())?;
+        // Compare handle-derived paths only. Continue reading the same handle.
+        winx::file::get_file_path(file)?
+            .strip_prefix(root)
+            .map(Path::to_path_buf)
+            .map_err(|_| refused())
+    }
+
+    fn allowed_directory(&self, dir: &Dir, relative: PathBuf) -> io::Result<PathBuf> {
+        #[cfg(not(windows))]
+        let _ = dir;
+        #[cfg(windows)]
+        let relative = if relative.as_os_str().is_empty() {
+            relative
+        } else {
+            self.opened_path(&dir.try_clone()?.into_std_file())?
+        };
+        if relative.as_os_str().is_empty() || self.allowed(&relative, true) {
+            Ok(relative)
+        } else {
+            Err(refused())
+        }
     }
 
     fn folder(&self, name: &str) -> Result<(String, String, bool), ContextError> {
         let path = if name == "." {
             PathBuf::new()
         } else {
-            let path = relative_path(name)?;
-            if !self.allowed(&path, true) {
-                return Err(ContextError::ReadUnavailable);
-            }
-            path
+            relative_path(name)?
         };
         let dir = open_relative(&self.dir, &path).map_err(|_| ContextError::ReadUnavailable)?;
+        let path = self
+            .allowed_directory(&dir, path)
+            .map_err(|_| ContextError::ReadUnavailable)?;
         let mut folder = Folder {
             workspace: self,
             raw: String::new(),
@@ -166,13 +222,16 @@ impl Folder<'_> {
                 if depth == MAX_FOLDER_DEPTH {
                     self.omitted = true;
                 } else if let Ok(child) = directory.open_dir_nofollow(&name) {
-                    self.collect(&child, &path, depth + 1);
+                    if let Ok(actual) = self.workspace.allowed_directory(&child, path) {
+                        self.collect(&child, &actual, depth + 1);
+                    }
                 }
                 continue;
             }
-            let (Some(label), Ok(text)) =
-                (path_label(&path), read_at(directory, &name, MAX_FILE_BYTES))
-            else {
+            let (Some(label), Ok(text)) = (
+                path_label(&path),
+                self.workspace.read_entry(directory, &name, &path),
+            ) else {
                 self.omitted = true;
                 continue;
             };
@@ -240,36 +299,40 @@ pub(super) fn resolve(
     selector: ContextSelector,
 ) -> Result<ContextView, ContextError> {
     let workspace = Workspace::open(base)?;
-    let (label, source_revision, text, omitted) = match &selector {
+    let result: Result<_, ContextError> = (|| match &selector {
         ContextSelector::File { path } => {
             let source = workspace.file(path)?;
             let text = secret_free(&source);
-            (path.clone(), digest(source.as_bytes()), text, false)
+            Ok((path.clone(), digest(source.as_bytes()), text, false))
         }
         ContextSelector::Folder { path } => {
             let (source, text, more) = workspace.folder(path)?;
-            (path.clone(), digest(source.as_bytes()), text, more)
+            Ok((path.clone(), digest(source.as_bytes()), text, more))
         }
         ContextSelector::Symbol { path, symbol } => {
             let source = workspace.file(path)?;
             let (text, more) = references(&source, symbol)?;
-            (
+            Ok((
                 format!("{path}#{symbol}"),
                 digest(source.as_bytes()),
                 text,
                 more,
-            )
+            ))
         }
         ContextSelector::Diff { path } => {
             let (text, more) = super::git::working_diff(&workspace, app_data, path.as_deref())?;
-            (
+            Ok((
                 path.clone().unwrap_or_else(|| "HEAD → working tree".into()),
                 digest(text.as_bytes()),
                 text,
                 more,
-            )
+            ))
         }
-    };
+    })();
+    if workspace.ignore_work.get() == 0 {
+        return Err(ContextError::Limit);
+    }
+    let (label, source_revision, text, omitted) = result?;
     let stable_root =
         crate::application::agent::tools::path_safety::path_to_comparable_string(base);
     let text = secret_free(&text);

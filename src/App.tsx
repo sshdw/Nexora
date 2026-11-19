@@ -128,6 +128,8 @@ function AppShell() {
   // draft (FR-007).
   const [drafts, setDrafts] = useState<Record<number, { text: string }>>({});
   const [promptDrafts, setPromptDrafts] = useState<Record<number, ComposerPromptDraft>>({});
+  const reviewingTabs = useRef(new Set<number>());
+  const [pendingReviews, setPendingReviews] = useState<ReadonlySet<number>>(new Set());
   // Import/Export (FR-010, FR-011): the conversation being exported (opens the
   // export modal when set) and whether the import modal is shown.
   const io = useImportExport();
@@ -198,6 +200,20 @@ function AppShell() {
       const next = edit(current[id]);
       return next && next !== current[id] ? { ...current, [id]: next } : current;
     }),
+  });
+
+  const reviewSendFor = (id: number) => ({
+    pending: pendingReviews.has(id),
+    begin: () => {
+      const pending = reviewingTabs.current;
+      if (pending.has(id)) return null;
+      pending.add(id);
+      setPendingReviews(new Set(pending));
+      return () => {
+        pending.delete(id);
+        setPendingReviews(new Set(pending));
+      };
+    },
   });
 
   // Model list + selection dispatch for the composer's model picker
@@ -784,6 +800,7 @@ function AppShell() {
           setDraft={setDraftFor(activeConversation.id)}
           onDraftAccepted={acceptDraftFor(activeConversation.id)}
           promptDraft={promptDraftFor(activeConversation.id)}
+          reviewSend={reviewSendFor(activeConversation.id)}
           secondary={false}
           split
         />
@@ -794,6 +811,7 @@ function AppShell() {
           setDraft={setDraftFor(splitConversation.id)}
           onDraftAccepted={acceptDraftFor(splitConversation.id)}
           promptDraft={promptDraftFor(splitConversation.id)}
+          reviewSend={reviewSendFor(splitConversation.id)}
           secondary
           split
         />
@@ -806,6 +824,7 @@ function AppShell() {
         setDraft={setDraftFor(activeConversation.id)}
         onDraftAccepted={acceptDraftFor(activeConversation.id)}
         promptDraft={promptDraftFor(activeConversation.id)}
+        reviewSend={reviewSendFor(activeConversation.id)}
         secondary={false}
       />
     );

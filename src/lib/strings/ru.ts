@@ -265,6 +265,7 @@ export const ru: Record<StringKey, string> = {
   "prompt.skills": "Навыки",
   "prompt.noSkills": "В личной папке и папке проекта нет навыков.",
   "prompt.unavailable": "Не удалось загрузить контекст запроса.",
+  "prompt.trustDeclined": "Доверие к навыку не подтверждено.",
   "prompt.personal": "Личные",
   "prompt.project": "Проект",
   "prompt.trust": "Доверять этой версии",

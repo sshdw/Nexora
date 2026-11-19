@@ -3,11 +3,11 @@ use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt, OpenOptionsSyncExt};
-use cap_std::fs::{Dir, OpenOptions};
+use cap_std::fs::{Dir, File, OpenOptions};
 
 use super::{ContextError, MAX_PATH_BYTES};
 
-fn refused() -> io::Error {
+pub(super) fn refused() -> io::Error {
     io::Error::other("context file access refused")
 }
 
@@ -75,12 +75,19 @@ pub(super) fn open_relative(root: &Dir, path: &Path) -> io::Result<Dir> {
 }
 
 pub(super) fn bytes_at(dir: &Dir, name: &OsStr, max_bytes: u64) -> io::Result<Vec<u8>> {
+    bytes_from_file(open_file_at(dir, name)?, max_bytes)
+}
+
+pub(super) fn open_file_at(dir: &Dir, name: &OsStr) -> io::Result<File> {
     if !dir.symlink_metadata(name)?.is_file() {
         return Err(refused());
     }
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    let file = dir.open_with(name, &options)?;
+    dir.open_with(name, &options)
+}
+
+fn bytes_from_file(file: File, max_bytes: u64) -> io::Result<Vec<u8>> {
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.nlink() != 1 || metadata.len() > max_bytes {
         return Err(refused());
@@ -94,7 +101,11 @@ pub(super) fn bytes_at(dir: &Dir, name: &OsStr, max_bytes: u64) -> io::Result<Ve
 }
 
 pub(super) fn read_at(dir: &Dir, name: &OsStr, max_bytes: u64) -> io::Result<String> {
-    let bytes = bytes_at(dir, name, max_bytes)?;
+    text_from_file(open_file_at(dir, name)?, max_bytes)
+}
+
+pub(super) fn text_from_file(file: File, max_bytes: u64) -> io::Result<String> {
+    let bytes = bytes_from_file(file, max_bytes)?;
     if bytes.contains(&0) {
         return Err(refused());
     }
@@ -106,7 +117,13 @@ pub(super) fn ignore_rules(
 ) -> Result<crate::application::project_dir::IgnoreRules, ContextError> {
     let config = Path::new(".nexora/.nexoraignore");
     match read_relative(root, config, 64 * 1024) {
-        Ok(rules) => Ok(crate::application::project_dir::parse_ignore_rules(&rules)),
+        Ok(rules) => {
+            let rules = crate::application::project_dir::parse_ignore_rules(&rules);
+            if rules.truncated {
+                return Err(ContextError::Limit);
+            }
+            Ok(rules)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Ok(crate::application::project_dir::IgnoreRules::default())
         }

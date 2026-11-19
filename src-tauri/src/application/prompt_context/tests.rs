@@ -334,6 +334,117 @@ fn commit_files(root: &Path, files: &[&str]) -> git2::Oid {
     .unwrap()
 }
 
+#[cfg(windows)]
+#[test]
+fn folder_preview_uses_the_opened_directory_spelling() {
+    let fixture = Fixture::new();
+    fixture.write("project/Docs/Guide.txt", "A guide");
+    let root = fixture.workspace();
+    let app = fixture.app_data();
+    let context = PromptContext::new(&fixture.db, &app, Some(&root), fixture.conversation).unwrap();
+    let view = context
+        .preview(ContextSelector::Folder {
+            path: "docs".into(),
+        })
+        .unwrap();
+    assert!(view.text.contains("Docs/Guide.txt"));
+}
+
+#[cfg(windows)]
+#[test]
+fn ignore_rules_block_alternate_case_file_symbol_and_folder() {
+    let fixture = Fixture::new();
+    fixture.write("project/.nexora/.nexoraignore", "Private/\nSecret.txt\n");
+    fixture.write("project/Private/Note.txt", "fn hidden_symbol() {}\n");
+    fixture.write("project/Secret.txt", "fn secret_symbol() {}\n");
+    let root = fixture.workspace();
+    let app = fixture.app_data();
+    let context = PromptContext::new(&fixture.db, &app, Some(&root), fixture.conversation).unwrap();
+
+    for selector in [
+        ContextSelector::File {
+            path: "secret.txt".into(),
+        },
+        ContextSelector::Symbol {
+            path: "secret.txt".into(),
+            symbol: "secret_symbol".into(),
+        },
+        ContextSelector::File {
+            path: "private/note.txt".into(),
+        },
+        ContextSelector::Symbol {
+            path: "private/note.txt".into(),
+            symbol: "hidden_symbol".into(),
+        },
+        ContextSelector::Folder {
+            path: "private".into(),
+        },
+    ] {
+        assert!(matches!(
+            context.preview(selector),
+            Err(ContextError::ReadUnavailable)
+        ));
+    }
+}
+
+#[test]
+fn ignore_rules_over_budget_fail_closed() {
+    use std::fmt::Write;
+    let fixture = Fixture::new();
+    fixture.write("project/src/app.rs", "fn main() {}\n");
+    let mut too_many_rules = String::new();
+    for i in 0..501 {
+        let _ = writeln!(too_many_rules, "ignored-{i}.txt");
+    }
+    fixture.write("project/.nexora/.nexoraignore", &too_many_rules);
+    let root = fixture.workspace();
+    let app = fixture.app_data();
+    let context = PromptContext::new(&fixture.db, &app, Some(&root), fixture.conversation).unwrap();
+    assert!(matches!(
+        context.preview(ContextSelector::File {
+            path: "src/app.rs".into(),
+        }),
+        Err(ContextError::Limit)
+    ));
+
+    // Adversarial globstar input within the 64 KiB cap must fail closed when
+    // the matcher work budget runs out rather than stalling or admitting.
+    let heavy_pattern = format!("{}target.rs\n", "**/".repeat(40));
+    let heavy_rules = heavy_pattern.repeat(450);
+    fixture.write("project/.nexora/.nexoraignore", &heavy_rules);
+    for i in 0..30 {
+        fixture.write(&format!("project/d/file_{i:02}.rs"), "fn main() {}\n");
+    }
+    assert!(matches!(
+        context.preview(ContextSelector::Folder { path: "d".into() }),
+        Err(ContextError::Limit)
+    ));
+}
+
+#[test]
+fn working_diff_refuses_an_index_with_skipped_paths() {
+    let fixture = Fixture::new();
+    fixture.write("project/guide.txt", "First edition");
+    let root = fixture.workspace();
+    commit_files(&root, &["guide.txt"]);
+    let repo = git2::Repository::open(&root).unwrap();
+    let mut index = repo.index().unwrap();
+    let mut entry = index.get_path(Path::new("guide.txt"), 0).unwrap();
+    entry.flags |= git2::IndexEntryFlag::EXTENDED.bits();
+    entry.flags_extended |= git2::IndexEntryExtendedFlag::SKIP_WORKTREE.bits();
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+
+    let app = fixture.app_data();
+    let context = PromptContext::new(&fixture.db, &app, Some(&root), fixture.conversation).unwrap();
+    for path in [None, Some("guide.txt".into())] {
+        assert!(matches!(
+            context.preview(ContextSelector::Diff { path }),
+            Err(ContextError::ReadUnavailable)
+        ));
+    }
+}
+
 #[test]
 fn working_git_review_uses_tracked_safe_diff_and_blocks_external_object_store() {
     let fixture = Fixture::new();
