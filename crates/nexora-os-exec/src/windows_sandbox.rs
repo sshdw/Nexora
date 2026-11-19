@@ -4,17 +4,16 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 
 use crate::sandbox::{
     collect_sanitized_env, ProbeSpec, SandboxPolicy, SandboxSpawnConfig, SandboxVerificationStatus,
 };
 use crate::windows::PlatformHandle;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::MutexGuard;
 use windows_sys::Win32::Foundation::{
     LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT, HLOCAL,
     INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT,
@@ -28,15 +27,15 @@ use windows_sys::Win32::Security::Isolation::{
 };
 use windows_sys::Win32::Security::{
     CopySid, CreateRestrictedToken, FreeSid, GetTokenInformation, SetTokenInformation,
-    TokenDefaultDacl, TokenGroups, ACL, DACL_SECURITY_INFORMATION, SECURITY_CAPABILITIES,
-    SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_GROUPS,
-    TOKEN_QUERY,
+    TokenDefaultDacl, TokenGroups, DACL_SECURITY_INFORMATION, SECURITY_CAPABILITIES,
+    SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL,
+    TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED,
-    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    PIPE_ACCESS_INBOUND, READ_CONTROL, WRITE_DAC,
+    FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, PIPE_ACCESS_INBOUND, READ_CONTROL, WRITE_DAC,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
@@ -63,11 +62,6 @@ use windows_sys::Win32::System::Threading::{
 
 pub(crate) const MECHANISM_NAME: &str = "windows-lpac-restricted-job";
 
-#[repr(C)]
-struct DefaultDacl {
-    dacl: *mut ACL,
-}
-
 const DISABLE_MAX_PRIVILEGE: u32 = 1;
 // LPAC performs capability access checks in addition to the restricted-token pass.
 // Filesystem confinement is AppContainer LPAC plus per-launch workspace capability ACLs.
@@ -75,17 +69,37 @@ const SYSTEM_READ_SID: &str = "S-1-1-0";
 const STILL_ACTIVE_CODE: u32 = 259;
 const WORKSPACE_ALLOW_MASK: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE;
 static WIN_SPAWN_LOCK: Mutex<()> = Mutex::new(());
-static SANDBOX_LEASE: Mutex<()> = Mutex::new(());
-struct ExclusiveLease(#[allow(dead_code)] MutexGuard<'static, ()>);
+// Thread-agnostic binary semaphore: unlike `MutexGuard` (which wraps Win32 `SRWLOCK`
+// and is `!Send`), `ExclusiveLease` can safely be moved to and dropped on any thread.
+static SANDBOX_LEASE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+struct ExclusiveLease;
 impl ExclusiveLease {
     fn acquire() -> Self {
-        let guard = SANDBOX_LEASE
+        let (lock, cvar) = &SANDBOX_LEASE;
+        let mut active = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Self(guard)
+        while *active {
+            active = cvar
+                .wait(active)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        *active = true;
+        Self
+    }
+}
+impl Drop for ExclusiveLease {
+    fn drop(&mut self) {
+        let (lock, cvar) = &SANDBOX_LEASE;
+        let mut active = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active = false;
+        cvar.notify_one();
     }
 }
 static CONTAINER_SEQ: AtomicU64 = AtomicU64::new(1);
+static CAP_SID_SEQ: AtomicU32 = AtomicU32::new(1);
 static PIPE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) struct RestrictedChild {
@@ -205,7 +219,8 @@ impl Drop for OwnedLocalSid {
 }
 
 struct AttributeList {
-    buffer: Vec<u8>,
+    // Pointer-aligned, fixed-size backing buffer required by `_PROC_THREAD_ATTRIBUTE_LIST`.
+    buffer: Box<[usize]>,
     initialized: bool,
 }
 
@@ -219,9 +234,10 @@ impl AttributeList {
         if size == 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut buffer = vec![0u8; size];
+        let words = size.div_ceil(std::mem::size_of::<usize>());
+        let mut buffer = vec![0usize; words].into_boxed_slice();
         let ptr = buffer.as_mut_ptr().cast::<c_void>();
-        // SAFETY: `buffer` has the exact size returned by `InitializeProcThreadAttributeList`.
+        // SAFETY: `buffer` is `usize`-aligned and at least `size` bytes wide.
         if unsafe { InitializeProcThreadAttributeList(ptr, count, 0, &raw mut size) } == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -302,7 +318,7 @@ pub(crate) fn spawn_sandboxed(
         canonicalize_no_prefix(&policy.workspace_root).map_err(|e| tag("canonicalize", &e))?;
     let mut profile = ContainerProfile::new().map_err(|e| tag("container", &e))?;
     let system_sid = OwnedLocalSid::from_str(SYSTEM_READ_SID)?;
-    let nonce = CONTAINER_SEQ.fetch_add(1, Ordering::Relaxed);
+    let nonce = CAP_SID_SEQ.fetch_add(1, Ordering::Relaxed);
     let cap_sid = OwnedLocalSid::from_str(&format!(
         "S-1-5-21-1314411346-{}-{nonce}-1",
         std::process::id()
@@ -327,6 +343,7 @@ pub(crate) fn spawn_sandboxed(
             unsafe { ConvertSidToStringSidW(profile.sid, &raw mut text) },
             0
         );
+        assert!(!text.is_null(), "ConvertSidToStringSidW returned null");
         let mut len = 0;
         while unsafe { *text.add(len) } != 0 {
             len += 1;
@@ -353,7 +370,8 @@ pub(crate) fn spawn_sandboxed(
     )
     .map_err(|e| tag("restricted_token", &e))?;
 
-    let raw_job = create_sandbox_job().map_err(|e| tag("create_job", &e))?;
+    let job_owned = create_sandbox_job().map_err(|e| tag("create_job", &e))?;
+    let raw_job = job_owned.into_raw_handle().cast::<c_void>();
     let job_guard = PlatformHandle::from_sandbox_job(raw_job);
     let job = raw_job;
 
@@ -378,11 +396,12 @@ pub(crate) fn spawn_sandboxed(
     for handle in [child_stdin_raw, child_stdout_raw, child_stderr_raw] {
         // SAFETY: Valid newly created pipe handles; enable inheritance for child only.
         if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) } == 0 {
-            // SAFETY: Close raw job handle on failure.
             return Err(io::Error::last_os_error());
         }
     }
 
+    // Declare every buffer referenced by `UpdateProcThreadAttribute` before `attr_list`
+    // so they are guaranteed to outlive `DeleteProcThreadAttributeList`.
     let mut inherited_handles = vec![child_stdin_raw];
     if !inherited_handles.contains(&child_stdout_raw) {
         inherited_handles.push(child_stdout_raw);
@@ -390,25 +409,21 @@ pub(crate) fn spawn_sandboxed(
     if !inherited_handles.contains(&child_stderr_raw) {
         inherited_handles.push(child_stderr_raw);
     }
-    let mut attr_list = match AttributeList::new(3) {
-        Ok(list) => list,
-        Err(err) => {
-            return Err(err);
-        }
-    };
-    attr_list.set_handle_list(&inherited_handles)?;
-
+    let inherited_handles = inherited_handles.into_boxed_slice();
     let capabilities = SECURITY_CAPABILITIES {
         AppContainerSid: profile.sid,
         Capabilities: std::ptr::null_mut(),
         CapabilityCount: 0,
         Reserved: 0,
     };
+    // LPAC excludes implicit ALL APPLICATION PACKAGES filesystem grants.
+    let opt_out = 1u32;
+
+    let mut attr_list = AttributeList::new(3)?;
+    attr_list.set_handle_list(&inherited_handles)?;
     attr_list
         .set(PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &capabilities)
         .map_err(|e| tag("security_capabilities", &e))?;
-    // LPAC excludes implicit ALL APPLICATION PACKAGES filesystem grants.
-    let opt_out = 1u32;
     attr_list
         .set(
             PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
@@ -475,7 +490,9 @@ pub(crate) fn spawn_sandboxed(
         | CREATE_UNICODE_ENVIRONMENT
         | EXTENDED_STARTUPINFO_PRESENT;
 
-    // SAFETY: All pointers (`restricted_token`, `cmdline`, `env_block`, `cwd_wide`, `si`, `pi`) remain valid for the duration of `CreateProcessAsUserW`.
+    // SAFETY: All pointers (`restricted_token`, `cmdline`, `env_block`, `cwd_wide`, `si`, `pi`)
+    // remain valid for the duration of `CreateProcessAsUserW`. Casting from `&si` preserves full
+    // `STARTUPINFOEXW` provenance for `EXTENDED_STARTUPINFO_PRESENT`.
     let created = unsafe {
         CreateProcessAsUserW(
             restricted_token.as_raw_handle().cast::<c_void>(),
@@ -487,10 +504,12 @@ pub(crate) fn spawn_sandboxed(
             flags,
             env_block.as_ptr().cast::<c_void>(),
             cwd_wide.as_ptr(),
-            std::ptr::from_ref(&si.StartupInfo).cast::<STARTUPINFOW>(),
+            std::ptr::from_ref(&si).cast::<STARTUPINFOW>(),
             std::ptr::from_mut(&mut pi),
         )
     };
+    // Release the attribute list immediately while all attribute value buffers are still live.
+    drop(attr_list);
     // Close parent copies of child pipe ends immediately so EOF propagates cleanly.
     drop(stdin_read);
     drop(stdout_write);
@@ -498,13 +517,11 @@ pub(crate) fn spawn_sandboxed(
 
     if created == 0 {
         let err = tag("CreateProcessAsUserW", &io::Error::last_os_error());
-        // SAFETY: `job` has not been wrapped in `PlatformHandle` yet.
         return Err(err);
     }
 
     // SAFETY: `pi.hProcess` and `pi.hThread` were returned by `CreateProcessAsUserW`.
     let proc_owned = unsafe { OwnedHandle::from_raw_handle(pi.hProcess.cast()) };
-    // SAFETY: Close `hThread` handle cleanly after wrapping/resuming below? Keep handle to resume directly!
     let thread_owned = unsafe { OwnedHandle::from_raw_handle(pi.hThread.cast()) };
 
     // SAFETY: `job` and `pi.hProcess` are valid open handles; process is suspended.
@@ -518,7 +535,11 @@ pub(crate) fn spawn_sandboxed(
 
     // SAFETY: exact suspended primary thread, already assigned to a non-breakaway job.
     if unsafe { ResumeThread(thread_owned.as_raw_handle().cast()) } == u32::MAX {
-        return Err(io::Error::last_os_error());
+        let err = io::Error::last_os_error();
+        unsafe {
+            let _ = TerminateProcess(proc_owned.as_raw_handle().cast(), 1);
+        }
+        return Err(err);
     }
     drop(thread_owned);
 
@@ -640,7 +661,10 @@ fn create_output_pipe_pair() -> io::Result<(OwnedHandle, OwnedHandle)> {
     }
     // SAFETY: `read_h` is a newly created pipe server handle.
     let read_owned = unsafe { OwnedHandle::from_raw_handle(read_h.cast()) };
-    let write_file = OpenOptions::new().write(true).open(&name)?;
+    let write_file = OpenOptions::new()
+        .access_mode(FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES)
+        .share_mode(0)
+        .open(&name)?;
     Ok((read_owned, OwnedHandle::from(write_file)))
 }
 
@@ -666,13 +690,18 @@ fn logon_sid(token: HANDLE) -> io::Result<Vec<u64>> {
     unsafe {
         GetTokenInformation(token, TokenGroups, std::ptr::null_mut(), 0, &raw mut size);
     }
+    if size == 0 {
+        return Err(io::Error::last_os_error());
+    }
     let mut storage = vec![0u64; (size as usize).div_ceil(8)];
+    let capacity = u32::try_from(storage.len() * std::mem::size_of::<u64>())
+        .map_err(|_| io::Error::other("token groups buffer size overflow"))?;
     if unsafe {
         GetTokenInformation(
             token,
             TokenGroups,
             storage.as_mut_ptr().cast(),
-            size,
+            capacity,
             &raw mut size,
         )
     } == 0
@@ -682,7 +711,11 @@ fn logon_sid(token: HANDLE) -> io::Result<Vec<u64>> {
     let groups = storage.as_ptr().cast::<TOKEN_GROUPS>();
     let count = unsafe { (*groups).GroupCount } as usize;
     let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
-    if offset + count * std::mem::size_of::<SID_AND_ATTRIBUTES>() > size as usize {
+    let entries_bytes = count
+        .checked_mul(std::mem::size_of::<SID_AND_ATTRIBUTES>())
+        .and_then(|bytes| offset.checked_add(bytes))
+        .ok_or_else(|| io::Error::other("invalid token groups size"))?;
+    if entries_bytes > size as usize || size as usize > storage.len() * std::mem::size_of::<u64>() {
         return Err(io::Error::other("invalid token groups"));
     }
     let entries = unsafe {
@@ -692,7 +725,7 @@ fn logon_sid(token: HANDLE) -> io::Result<Vec<u64>> {
         )
     };
     for entry in entries {
-        if entry.Attributes & 0xc000_0000 == 0xc000_0000 {
+        if entry.Attributes & 0xc000_0000 == 0xc000_0000 && !entry.Sid.is_null() {
             let mut sid = vec![0u64; 9];
             if unsafe { CopySid(72, sid.as_mut_ptr().cast(), entry.Sid) } != 0 {
                 return Ok(sid);
@@ -755,16 +788,16 @@ fn create_restricted_token(
     let mut dacl = std::ptr::null_mut();
     // SAFETY: SID and token are live, returned ACL is released after the kernel copies it.
     let result = unsafe { SetEntriesInAclW(3, entries.as_ptr(), std::ptr::null(), &raw mut dacl) };
-    if result != ERROR_SUCCESS {
+    if result != ERROR_SUCCESS || dacl.is_null() {
         return Err(io::Error::other("sandbox default ACL unavailable"));
     }
-    let info = DefaultDacl { dacl };
+    let info = TOKEN_DEFAULT_DACL { DefaultDacl: dacl };
     let result = unsafe {
         SetTokenInformation(
             token,
             TokenDefaultDacl,
             std::ptr::from_ref(&info).cast(),
-            u32::try_from(std::mem::size_of::<DefaultDacl>()).unwrap_or(0),
+            u32::try_from(std::mem::size_of::<TOKEN_DEFAULT_DACL>()).unwrap_or(0),
         )
     };
     unsafe {
@@ -779,12 +812,15 @@ fn create_restricted_token(
     Ok(owned)
 }
 
-fn create_sandbox_job() -> io::Result<HANDLE> {
+fn create_sandbox_job() -> io::Result<OwnedHandle> {
     // SAFETY: Anonymous Job Object.
     let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
     if job.is_null() || job == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: `job` is a newly created Job Object handle; `OwnedHandle` guarantees cleanup on error.
+    let job_owned = unsafe { OwnedHandle::from_raw_handle(job.cast()) };
+    let job_raw = job_owned.as_raw_handle().cast::<c_void>();
 
     // SAFETY: `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` is a plain C struct.
     let mut ext: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
@@ -792,18 +828,17 @@ fn create_sandbox_job() -> io::Result<HANDLE> {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
     let ext_len = u32::try_from(std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>())
         .map_err(|_| io::Error::other("JOBOBJECT_EXTENDED_LIMIT_INFORMATION overflow"))?;
-    // SAFETY: Valid `job` and initialized `ext`.
+    // SAFETY: Valid `job_raw` and initialized `ext`.
     if unsafe {
         SetInformationJobObject(
-            job,
+            job_raw,
             JobObjectExtendedLimitInformation,
             std::ptr::from_ref(&ext).cast::<c_void>(),
             ext_len,
         )
     } == 0
     {
-        let err = io::Error::last_os_error();
-        return Err(err);
+        return Err(io::Error::last_os_error());
     }
 
     let ui = JOBOBJECT_BASIC_UI_RESTRICTIONS {
@@ -818,21 +853,20 @@ fn create_sandbox_job() -> io::Result<HANDLE> {
     };
     let ui_len = u32::try_from(std::mem::size_of::<JOBOBJECT_BASIC_UI_RESTRICTIONS>())
         .map_err(|_| io::Error::other("JOBOBJECT_BASIC_UI_RESTRICTIONS overflow"))?;
-    // SAFETY: Valid `job` and initialized `ui`.
+    // SAFETY: Valid `job_raw` and initialized `ui`.
     if unsafe {
         SetInformationJobObject(
-            job,
+            job_raw,
             JobObjectBasicUIRestrictions,
             std::ptr::from_ref(&ui).cast::<c_void>(),
             ui_len,
         )
     } == 0
     {
-        let err = io::Error::last_os_error();
-        return Err(err);
+        return Err(io::Error::last_os_error());
     }
 
-    Ok(job)
+    Ok(job_owned)
 }
 
 // The unique profile and grants live until the entire child tree is terminated.
@@ -861,7 +895,7 @@ impl ContainerProfile {
         use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
         use windows_sys::Win32::Security::Isolation::GetAppContainerFolderPath;
         let mut text = std::ptr::null_mut();
-        if unsafe { ConvertSidToStringSidW(self.sid, &raw mut text) } == 0 {
+        if unsafe { ConvertSidToStringSidW(self.sid, &raw mut text) } == 0 || text.is_null() {
             return Err(io::Error::last_os_error());
         }
         let mut path = std::ptr::null_mut();
@@ -915,7 +949,13 @@ impl ContainerProfile {
                 &raw mut sid,
             )
         };
-        if result < 0 {
+        if result < 0 || sid.is_null() {
+            if result >= 0 {
+                // SAFETY: `name` was just registered above.
+                unsafe {
+                    DeleteAppContainerProfile(name.as_ptr());
+                }
+            }
             return Err(io::Error::other("AppContainer profile unavailable"));
         }
         Ok(Self {
@@ -930,7 +970,10 @@ impl Drop for ContainerProfile {
         // SAFETY: no live process remains when ProcessTreeChild releases this guard.
         unsafe {
             DeleteAppContainerProfile(self.name.as_ptr());
-            FreeSid(self.sid);
+            if !self.sid.is_null() {
+                FreeSid(self.sid);
+                self.sid = std::ptr::null_mut();
+            }
         }
         if let Some(root) = &self.cleanup_root {
             let _ = std::fs::remove_dir_all(root);
@@ -1087,7 +1130,9 @@ fn update_file_ace(file: &File, sid: *mut c_void, mask: u32, mode: i32) -> io::R
         if !new_dacl.is_null() {
             LocalFree(new_dacl as HLOCAL);
         }
-        LocalFree(sd as HLOCAL);
+        if !sd.is_null() {
+            LocalFree(sd as HLOCAL);
+        }
     }
     if result == ERROR_SUCCESS {
         Ok(())
@@ -1293,7 +1338,9 @@ mod tests {
             }
         }
         unsafe {
-            LocalFree(sd as HLOCAL);
+            if !sd.is_null() {
+                LocalFree(sd as HLOCAL);
+            }
         }
         result.sort();
         result
@@ -1407,10 +1454,12 @@ mod tests {
             let _ = tx.send(());
         });
         let err_pipe = child.take_stderr();
+        let (err_tx, err_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             if let Some(mut err) = err_pipe {
                 let _ = std::io::copy(&mut err, &mut std::io::sink());
             }
+            let _ = err_tx.send(());
         });
         let start = std::time::Instant::now();
         let status = loop {
@@ -1426,6 +1475,9 @@ mod tests {
         let _ = child.kill_tree();
         rx.recv_timeout(std::time::Duration::from_secs(2))
             .expect("stdout reader did not finish after child exit");
+        err_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("stderr reader did not finish after child exit");
         let stdout = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
         Some((status, stdout))
     }
@@ -1450,7 +1502,7 @@ mod tests {
         let Some((status, normal_out)) = run_sandboxed_capture(&mut normal, &config) else {
             return;
         };
-        assert!(status.success());
+        assert!(status.success(), "normal sandbox probe failed: {status}");
         assert!(!normal_out.contains("NX_SANDBOX_STORAGE="));
         assert!(!normal_out.contains("NX_SANDBOX_AC_STORAGE="));
         assert!(normal
@@ -1475,7 +1527,10 @@ mod tests {
                 "(echo x>\"%NX_SANDBOX_STORAGE%\\ls.txt\") 2>NUL & if exist \"%NX_SANDBOX_STORAGE%\\ls.txt\" (echo LS_ALLOWED) else (echo LS_BLOCKED) & (echo x>\"%NX_SANDBOX_AC_STORAGE%\\ac.txt\") 2>NUL & if exist \"%NX_SANDBOX_AC_STORAGE%\\ac.txt\" (echo AC_ALLOWED) else (echo AC_BLOCKED) & exit /b 0",
             ]);
         let (probe_status, probe_out) = run_sandboxed_capture(&mut probe_storage, &config).unwrap();
-        assert!(probe_status.success());
+        assert!(
+            probe_status.success(),
+            "storage sandbox probe failed: {probe_status}"
+        );
         assert!(probe_out.contains("LS_BLOCKED") && !probe_out.contains("LS_ALLOWED"));
         assert!(probe_out.contains("AC_BLOCKED") && !probe_out.contains("AC_ALLOWED"));
     }
@@ -1509,7 +1564,7 @@ mod tests {
                 .args(["/grant", "*S-1-1-0:(OI)(CI)F", "/Q"])
                 .status()
                 .expect("icacls available");
-            assert!(status.success());
+            assert!(status.success(), "icacls grant failed: {status}");
         }
 
         let mut policy = SandboxPolicy::for_workspace(&ws);
@@ -1624,7 +1679,10 @@ mod tests {
         else {
             return;
         };
-        assert!(status.success());
+        assert!(
+            status.success(),
+            "protected names sandbox probe failed: {status}"
+        );
         assert!(!ws.join(".env").exists());
         assert!(!ws.join(".git").exists());
         assert!(!ws.join(".nexora").exists());
@@ -1633,5 +1691,12 @@ mod tests {
         assert!(!src.join("moved.txt").exists());
         assert!(src.is_dir());
         assert_eq!(std::fs::read_to_string(&existing).unwrap().trim(), "after");
+
+        // Verify `ExclusiveLease` (inside `WindowsSandboxGuard`) can be acquired on one
+        // thread and safely released on a different thread without violating SRWLOCK affinity.
+        let lease = ExclusiveLease::acquire();
+        std::thread::spawn(move || drop(lease))
+            .join()
+            .expect("cross-thread ExclusiveLease drop must succeed");
     }
 }
