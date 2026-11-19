@@ -337,8 +337,10 @@ mod tests {
 
     impl TempDirGuard {
         fn new(prefix: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let unique = format!(
-                "{prefix}-{}-{}",
+                "{prefix}-{}-{}-{seq}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -733,10 +735,12 @@ mod tests {
             let _ = tx.send(());
         });
         let err = child.take_stderr();
+        let (err_tx, err_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             if let Some(mut err) = err {
                 let _ = std::io::copy(&mut err, &mut std::io::sink());
             }
+            let _ = err_tx.send(());
         });
         let start = Instant::now();
         let status = loop {
@@ -751,6 +755,7 @@ mod tests {
         };
         let _ = child.kill_tree();
         let _ = rx.recv_timeout(Duration::from_secs(2));
+        let _ = err_rx.recv_timeout(Duration::from_secs(2));
         let stdout = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
         assert!(status.success(), "sandboxed test script failed: {status:?}");
 
