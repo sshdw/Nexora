@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn deleted_conversation_is_removed_from_the_index() {
-        let db = test_db();
+        let db = crate::infrastructure::database::in_memory_database();
         let service = LocalSearchService::new(&db);
         insert_message(
             &db,
@@ -521,6 +521,11 @@ mod tests {
         );
         let deleted = create_conversation(&db, "Roadmap");
         insert_message(&db, deleted, "user", "parking proposal");
+        assert_eq!(service.search("parking").unwrap().message_matches.len(), 1);
+        assert_eq!(
+            service.search("roadmap").unwrap().conversations[0].id,
+            deleted
+        );
         ConversationRepository::new(&db)
             .delete(deleted)
             .expect("conversation deleted");

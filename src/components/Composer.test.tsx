@@ -328,9 +328,11 @@ describe("composer — context selectors", () => {
     fireEvent.keyDown(field, { key: "Enter" });
     let dialog = await screen.findByRole("dialog", { name: "@file" });
     fireEvent.keyDown(within(dialog).getByRole("textbox"), { key: "Escape" });
-    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await waitFor(() => {
+      expect(dialog).not.toBeInTheDocument();
+      expect(field).toHaveFocus();
+    });
     expect(field).toHaveValue(original);
-    expect(field).toHaveFocus();
     fireEvent.change(field, { target: { value: "Keep @fil and this", selectionStart: 9, selectionEnd: 9 } });
     fireEvent.keyDown(field, { key: "Enter" });
     dialog = await screen.findByRole("dialog", { name: "@file" });
@@ -339,8 +341,10 @@ describe("composer — context selectors", () => {
     expect(await within(dialog).findByText("Synthetic contents")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Include in message" }));
     expect(field).toHaveValue("Keep  and this");
-    expect(field).toHaveFocus();
-    expect(field.selectionStart).toBe(5);
+    await waitFor(() => {
+      expect(field).toHaveFocus();
+      expect(field.selectionStart).toBe(5);
+    });
     fireEvent.keyDown(field, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledOnce();
   });
