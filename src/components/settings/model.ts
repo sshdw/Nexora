@@ -41,6 +41,7 @@ export type SettingsSectionId =
   | "agent"
   | "workspace"
   | "credentials"
+  | "mcp"
   | "data"
   | "advanced";
 
@@ -50,6 +51,7 @@ export const SECTION_ORDER: readonly SettingsSectionId[] = [
   "agent",
   "workspace",
   "credentials",
+  "mcp",
   "data",
   "advanced",
 ];
@@ -60,6 +62,7 @@ export const SECTION_TITLES: Record<SettingsSectionId, StringKey> = {
   agent: "settings.sectionAgent",
   workspace: "settings.sectionWorkspace",
   credentials: "settings.sectionCredentials",
+  mcp: "settings.sectionMcp",
   data: "settings.sectionData",
   advanced: "settings.sectionAdvanced",
 };

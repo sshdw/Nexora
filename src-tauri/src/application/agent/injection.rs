@@ -28,7 +28,7 @@
 //! the CI log panel and agent step persistence both route persisted text
 //! through it, so there is exactly one pattern set to maintain.
 
-use super::permissions::is_known_tool;
+use super::permissions::{is_known_tool, is_mcp_tool};
 
 // ---------------------------------------------------------------------------
 // Envelope
@@ -59,7 +59,7 @@ pub(crate) const PRIOR_ACTIONS_LABEL: &str = "prior-actions";
 /// delimiting never rewrites untrusted text, it only frames it.
 #[must_use]
 pub(crate) fn envelope_tool_output(tool_name: &str, observation: &str) -> String {
-    let label = if is_known_tool(tool_name) {
+    let label = if is_known_tool(tool_name) || is_mcp_tool(tool_name) {
         tool_name
     } else {
         UNKNOWN_TOOL_LABEL

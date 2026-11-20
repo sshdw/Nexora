@@ -454,7 +454,8 @@ fn is_secret_redaction_key(key_lower: &str) -> bool {
 }
 
 fn is_secret_field_key(key_lower: &str) -> bool {
-    if is_secret_redaction_key(key_lower) {
+    if is_secret_redaction_key(key_lower) || matches!(key_lower, "token_url" | "authorization_url")
+    {
         return false;
     }
     config::is_secret_adjacent_key(key_lower)

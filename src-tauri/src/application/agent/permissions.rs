@@ -451,11 +451,19 @@ pub(crate) const KNOWN_TOOL_NAMES: &[&str] = &[
     "ask_user_question",
 ];
 
-/// Whether a tool name is one of the six native tools (unknown tools never
+/// Whether a tool name is one of the native tools (unknown tools never
 /// reach the store).
 #[must_use]
 pub(crate) fn is_known_tool(name: &str) -> bool {
     KNOWN_TOOL_NAMES.contains(&name)
+}
+
+/// Whether `name` is a syntactically valid namespaced MCP tool
+/// (`mcp__<server>__<tool>`). Runtime membership is additionally verified
+/// against the run's discovered MCP runtime before dispatch.
+#[must_use]
+pub(crate) fn is_mcp_tool(name: &str) -> bool {
+    crate::application::mcp::parse_mcp_tool_name(name).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -587,7 +595,7 @@ pub(crate) fn confirm_group_scope(
             expected: group.to_string(),
         });
     }
-    if pending_tool == "execute_command" || pending_tool == "*" {
+    if pending_tool == "execute_command" || pending_tool == "*" || is_mcp_tool(pending_tool) {
         return Err(GroupScopeError::ShellNeverPersists);
     }
     let Some(path_pattern) = group_path_pattern(Some(group)) else {

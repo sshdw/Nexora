@@ -27,9 +27,10 @@ pub(crate) use conversations::{
 };
 #[allow(unused_imports)]
 pub(crate) use setup::{
-    is_importable_setting, DeniedEntry, ImportedEntry, McpServerEntry, McpServerList,
-    SetupImportReport, SetupImportService, DENY_INVALID_RECORD, DENY_SECRET_VALUE,
-    DENY_UNSUPPORTED_VALUE, MAX_MCP_SERVERS, MCP_SERVERS_KEY, SETTINGS_VALUE_MAX_LEN,
+    is_importable_setting, DeniedEntry, ImportedEntry, McpOAuthConfig, McpServerEntry,
+    McpServerList, McpTransportKind, SetupImportReport, SetupImportService, DENY_INVALID_RECORD,
+    DENY_SECRET_VALUE, DENY_UNSUPPORTED_VALUE, MAX_MCP_SERVERS, MCP_SERVERS_KEY,
+    SETTINGS_VALUE_MAX_LEN,
 };
 
 use crate::infrastructure::database::DatabaseError;

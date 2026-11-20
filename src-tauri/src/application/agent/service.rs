@@ -1249,6 +1249,7 @@ fn spawn_run(
                             .flatten()
                         })
                     });
+                let mcp_cancel = control.token().clone();
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_plan(is_plan)
                     .with_control(control)
@@ -1267,6 +1268,13 @@ fn spawn_run(
                     .with_stream_deltas(true);
                 if let Some(plan_text) = active_plan_text {
                     runner = runner.with_active_plan(plan_text);
+                }
+                if !is_plan {
+                    if let Some(mcp_runtime) =
+                        crate::application::mcp::LiveMcpRuntime::discover(&db, &mcp_cancel)
+                    {
+                        runner = runner.with_mcp_runtime(Arc::new(mcp_runtime));
+                    }
                 }
                 match crate::application::project_dir::discover_instructions(&workspace_root, None)
                 {

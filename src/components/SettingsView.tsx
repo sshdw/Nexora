@@ -53,6 +53,7 @@ import ProviderSection from "./settings/ProviderSection";
 import AgentSection from "./settings/AgentSection";
 import WorkspaceSection from "./settings/WorkspaceSection";
 import CredentialsSection from "./settings/CredentialsSection";
+import McpSection from "./settings/McpSection";
 import DataSection from "./settings/DataSection";
 import AdvancedSection from "./settings/AdvancedSection";
 import {
@@ -228,9 +229,18 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     ],
   },
   {
-    group: "advanced",
+    group: "mcp",
     title: "MCP servers",
-    keywords: ["mcp", "servers", "tools", "model context protocol"],
+    keywords: [
+      "mcp",
+      "servers",
+      "tools",
+      "stdio",
+      "streamable http",
+      "oauth",
+      "pkce",
+      "model context protocol",
+    ],
   },
   {
     group: "advanced",
@@ -872,6 +882,13 @@ export default function SettingsView({
             }
             onConnect={(definition) => void handleConnect(definition)}
             onDisconnect={(definition) => void handleDisconnect(definition)}
+          />
+        );
+      case "mcp":
+        return (
+          <McpSection
+            key={id}
+            resolvedEntry={resolvedEntries?.[MCP_SERVERS_KEY]}
           />
         );
       case "data":

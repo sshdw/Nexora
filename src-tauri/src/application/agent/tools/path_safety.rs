@@ -423,6 +423,10 @@ pub(crate) fn tool_scope(
     tool: &str,
     args: &serde_json::Value,
 ) -> Result<PathBuf, ToolError> {
+    if crate::application::agent::permissions::is_mcp_tool(tool) {
+        check_private(workspace)?;
+        return Ok(canonical_root(workspace));
+    }
     let raw = match tool {
         "execute_command" => args.get("cwd").and_then(serde_json::Value::as_str),
         "search_files" => search_scope_arg(args),

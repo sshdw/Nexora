@@ -3111,6 +3111,80 @@ async function invoke(
         truncated_input: false,
       };
     }
+    case "mcp_list_servers": {
+      const raw = settings.get("mcp.servers");
+      if (!raw) return [];
+      try {
+        const list = JSON.parse(raw) as Record<string, unknown>[];
+        return Array.isArray(list)
+          ? list.map((item) => ({
+              transport: "stdio",
+              enabled: true,
+              command: "",
+              args: [],
+              env: {},
+              url: null,
+              oauth: null,
+              has_auth: false,
+              auth_kind: "none",
+              expires_at: null,
+              ...item,
+            }))
+          : [];
+      } catch {
+        return [];
+      }
+    }
+    case "mcp_upsert_server": {
+      const server = args.server as Record<string, unknown>;
+      const raw = settings.get("mcp.servers");
+      const list: Record<string, unknown>[] = raw ? JSON.parse(raw) : [];
+      const idx = list.findIndex((s) => s.name === server.name);
+      if (idx >= 0) list[idx] = server;
+      else list.push(server);
+      settings.set("mcp.servers", JSON.stringify(list));
+      return list.map((item) => ({
+        has_auth: false,
+        auth_kind: "none",
+        expires_at: null,
+        ...item,
+      }));
+    }
+    case "mcp_remove_server": {
+      const name = String(args.name ?? "");
+      const raw = settings.get("mcp.servers");
+      const list: Record<string, unknown>[] = raw ? JSON.parse(raw) : [];
+      const next = list.filter((s) => s.name !== name);
+      settings.set("mcp.servers", JSON.stringify(next));
+      return next.map((item) => ({
+        has_auth: false,
+        auth_kind: "none",
+        expires_at: null,
+        ...item,
+      }));
+    }
+    case "mcp_set_server_enabled": {
+      const name = String(args.name ?? "");
+      const enabled = Boolean(args.enabled);
+      const raw = settings.get("mcp.servers");
+      const list: Record<string, unknown>[] = raw ? JSON.parse(raw) : [];
+      const next = list.map((s) => (s.name === name ? { ...s, enabled } : s));
+      settings.set("mcp.servers", JSON.stringify(next));
+      return next.map((item) => ({
+        has_auth: false,
+        auth_kind: "none",
+        expires_at: null,
+        ...item,
+      }));
+    }
+    case "mcp_list_server_tools":
+      return [];
+    case "mcp_set_bearer_token":
+    case "mcp_clear_auth":
+      return null;
+    case "mcp_start_oauth":
+    case "mcp_refresh_oauth":
+      return { has_auth: true, auth_kind: "oauth", expires_at: null };
     case "docs_manifest": {
       // Static DEV-ONLY mirror of the backend `docs_manifest` command: the
       // migration spine mirrors MIGRATIONS v1..v11 (database.rs) — update

@@ -26,13 +26,19 @@ use super::prompts::{
 };
 
 /// Wrap one tool observation for context: the WS-C.2 envelope when the
-/// `injection` flag is on, the raw pre-2.0 shape when it is off.
+/// `injection` flag is on (and unconditionally for external MCP tools), or the
+/// raw pre-2.0 shape when it is off for native tools.
 fn observation_message(ctx: &DispatchCtx<'_>, call: &ToolCall, observation: &str) -> AiMessage {
-    if ctx.injection_enabled {
+    if ctx.injection_enabled || permissions::is_mcp_tool(&call.name) {
         tool_message(call, observation)
     } else {
         tool_message_raw(call, observation)
     }
+}
+
+fn is_dispatchable_tool(ctx: &DispatchCtx<'_>, name: &str) -> bool {
+    permissions::is_known_tool(name)
+        || (permissions::is_mcp_tool(name) && ctx.mcp_runtime.is_some_and(|rt| rt.has_tool(name)))
 }
 
 /// Read-only view of runner state for one dispatch batch.
@@ -75,6 +81,8 @@ pub(crate) struct DispatchCtx<'a> {
     pub turn_index: usize,
     /// Optional interactive question context for `ask_user_question`.
     pub question_ctx: Option<&'a QuestionRunContext>,
+    /// Optional run-scoped user-added MCP tool runtime (`M18` / `P26`).
+    pub mcp_runtime: Option<&'a dyn crate::application::mcp::McpToolRuntime>,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -210,7 +218,7 @@ fn dispatch_one(
     record: &mut Option<&mut ActiveRunRecord<'_>>,
     batch_groups: &[String],
 ) -> Result<(), AgentError> {
-    if !permissions::is_known_tool(&call.name) {
+    if !is_dispatchable_tool(ctx, &call.name) {
         let observation = super::tools::ToolError::UnknownTool(call.name.clone()).to_string();
         messages.push(observation_message(ctx, call, &observation));
         if let Some(rec) = record.as_mut() {
@@ -259,7 +267,7 @@ fn dispatch_one(
         }
         return Ok(());
     }
-    if permissions::is_known_tool(&call.name) {
+    if is_dispatchable_tool(ctx, &call.name) {
         let boundary = ctx.approval_gate.map_or_else(
             || {
                 super::access::AccessContext::fixed(super::access::AccessProfile::ReadOnly)
@@ -310,7 +318,7 @@ fn dispatch_one(
     // vocabulary (a known tool name, a canonical role name), so the denial
     // stays secret-free by construction.
     if let Some(role) = ctx.role {
-        if permissions::is_known_tool(&call.name) && !role.allows_tool(&call.name) {
+        if is_dispatchable_tool(ctx, &call.name) && !role.allows_tool(&call.name) {
             let observation = format!(
                 "Error: tool '{}' is not available to agent role '{}'",
                 call.name,
@@ -328,6 +336,21 @@ fn dispatch_one(
             }
             return Ok(());
         }
+    }
+    // M18 / Invariant 4 fail-closed gate: external MCP tools can NEVER execute
+    // without an active interactive ApprovalGate (never auto-approved).
+    if permissions::is_mcp_tool(&call.name) && ctx.approval_gate.is_none() {
+        messages.push(denied_tool_message(call));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                "Error: tool execution was denied by the user",
+                "denied",
+                None,
+                StepProvenance::system(),
+            );
+        }
+        return Ok(());
     }
     if call.name == "ask_user_question" {
         return dispatch_ask_user_question(ctx, call, messages, record);
@@ -550,11 +573,17 @@ fn handle_sticky_group_decision(
     if let Some(gate) = ctx.approval_gate {
         if let Some(sticky) = gate.group_decision(group_key) {
             let approved = matches!(sticky, ApprovalDecision::Approved);
-            // NEX-SEC-001: group consent for a previous shell call cannot
-            // authorize this call. Keep denials sticky, but let an approved
-            // shell reach the store and per-call consent path. Exact-call
-            // injection-hold consent is tracked separately by `hold_approved`.
-            if approved && RiskClass::classify(&call.name) == RiskClass::DangerousShell {
+            // NEX-SEC-001 / M18 Invariant 4: group consent for a previous shell
+            // or MCP call cannot authorize this call. Keep denials sticky, but
+            // let approved shell/MCP calls reach the store and per-call consent
+            // path. Exact-call injection-hold consent is tracked separately by
+            // `hold_approved`.
+            if approved
+                && matches!(
+                    RiskClass::classify(&call.name),
+                    RiskClass::DangerousShell | RiskClass::ExternalMcp
+                )
+            {
                 return false;
             }
             if let Some(rec) = record.as_mut() {
@@ -609,7 +638,7 @@ fn handle_permission_store_decision(
     _request_path: Option<&str>,
 ) -> StoreAction {
     // M1-core: persistent rules before the gate. Unknown tools skip the store.
-    if permissions::is_known_tool(&call.name) {
+    if is_dispatchable_tool(ctx, &call.name) {
         if let Some(store) = ctx.permission_store {
             if let Some(outcome) = store.decide_call(ctx.preset.as_str(), call, ctx.workspace_root)
             {
@@ -629,18 +658,20 @@ fn handle_permission_store_decision(
                         // NEX-AGENT-012: a stored `Allow` never upgrades
                         // autonomy. It authorizes execution only where the
                         // ladder already auto-executes — and never for the
-                        // shell (NEX-SEC-001 deny-floor: even a legacy shell
-                        // `allow` row must not pass). Elsewhere the call
-                        // falls through to the ladder park below, honestly
-                        // naming the considered rule.
+                        // shell or external MCP tools (NEX-SEC-001 / Invariant 4
+                        // deny-floor: even an `allow` row must not pass).
+                        // Elsewhere the call falls through to the ladder park
+                        // below, honestly naming the considered rule.
                         let ladder_auto = ctx
                             .approval_gate
                             .as_ref()
                             .is_some_and(|gate| !gate.needs_approval(call));
-                        let shell =
-                            matches!(RiskClass::classify(&call.name), RiskClass::DangerousShell);
+                        let never_auto = matches!(
+                            RiskClass::classify(&call.name),
+                            RiskClass::DangerousShell | RiskClass::ExternalMcp
+                        );
                         if ladder_auto
-                            && !shell
+                            && !never_auto
                             && !ctx
                                 .approval_gate
                                 .is_some_and(|gate| gate.has_current_consent(call))
@@ -967,6 +998,20 @@ fn execute_bound(
     call: &ToolCall,
     hook: Option<&mut CheckpointHook<'_>>,
 ) -> Result<String, super::tools::ToolError> {
+    if permissions::is_mcp_tool(&call.name) {
+        let Some(gate) = ctx.approval_gate else {
+            return Err(super::tools::ToolError::ConsentInvalidated);
+        };
+        let Some(runtime) = ctx.mcp_runtime else {
+            return Err(super::tools::ToolError::UnknownTool(call.name.clone()));
+        };
+        return gate.execute_authorized(call, ctx.workspace_root, |_target, started| {
+            started();
+            runtime
+                .call_tool(&call.name, &call.arguments, ctx.token)
+                .map_err(super::tools::ToolError::Io)
+        });
+    }
     if call.name == "execute_command" && ctx.sender.is_some() {
         let mut sink = |update: super::tools::CommandStreamUpdate| {
             let event = match update {
