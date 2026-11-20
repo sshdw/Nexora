@@ -17,6 +17,11 @@ pub(crate) const MCP_TOOL_PREFIX: &str = "mcp__";
 /// Maximum length of a namespaced MCP tool name (`mcp__<server>__<tool>`).
 pub(crate) const MAX_NAMESPACED_TOOL_LEN: usize = 128;
 
+/// Maximum length of an MCP server identifier segment (bounded so
+/// `mcp__<server>__<tool>` always fits within [`MAX_NAMESPACED_TOOL_LEN`] with
+/// room for the tool segment).
+pub(crate) const MAX_MCP_SERVER_NAME_LEN: usize = 64;
+
 /// Maximum length of a tool description exposed to the model.
 pub(crate) const MAX_TOOL_DESCRIPTION_LEN: usize = 512;
 
@@ -345,6 +350,14 @@ mod tests {
         assert!(parse_mcp_tool_name("mcp__srv__").is_none());
         assert!(parse_mcp_tool_name("mcp__srv__../evil").is_none());
         assert!(parse_mcp_tool_name("mcp__srv__bad name").is_none());
+        assert!(!is_valid_identifier_segment(""));
+        assert!(!is_valid_identifier_segment("my.server"));
+        assert!(!is_valid_identifier_segment("org/repo"));
+        assert!(!is_valid_identifier_segment("srv:1"));
+        assert!(!is_valid_identifier_segment("café"));
+        assert!(format_mcp_tool_name("my.server", "tool").is_none());
+        let max_server = "a".repeat(MAX_MCP_SERVER_NAME_LEN);
+        assert!(format_mcp_tool_name(&max_server, "ping").is_some());
     }
 
     #[test]

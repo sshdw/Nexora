@@ -108,8 +108,10 @@ const MAX_SOURCE_KEY_LEN: usize = 512;
 /// Maximum MCP servers accepted in one import document or one stored list.
 pub(crate) const MAX_MCP_SERVERS: usize = 32;
 
-/// Maximum characters in one MCP server name.
-const MAX_MCP_NAME_LEN: usize = 128;
+/// Maximum characters in one MCP server name (aligned with
+/// [`crate::application::mcp::jsonrpc::MAX_MCP_SERVER_NAME_LEN`] so valid
+/// server names never silently drop discovered tools in `format_mcp_tool_name`).
+const MAX_MCP_NAME_LEN: usize = crate::application::mcp::jsonrpc::MAX_MCP_SERVER_NAME_LEN;
 
 /// Maximum characters in one MCP server command.
 const MAX_MCP_COMMAND_LEN: usize = 1024;
@@ -305,14 +307,9 @@ impl McpServerEntry {
     /// secret-like material out of the settings store (the predicate returns
     /// only `bool`, so a detected secret can never echo).
     fn validate(&self) -> std::result::Result<(), &'static str> {
-        if self.name.is_empty()
-            || self.name.len() > MAX_MCP_NAME_LEN
-            || self.name.contains("..")
+        if self.name.len() > MAX_MCP_NAME_LEN
             || self.name.contains("__")
-            || self
-                .name
-                .chars()
-                .any(|c| c.is_control() || c.is_whitespace())
+            || !crate::application::mcp::jsonrpc::is_valid_identifier_segment(&self.name)
         {
             return Err(DENY_INVALID_RECORD);
         }
@@ -1409,6 +1406,61 @@ mod setup_import_tests {
         let list = McpServerList::from_json(&raw).expect("stored list validates");
         assert_eq!(list.servers.len(), 1);
         assert_eq!(list.servers[0].name, "fine");
+    }
+
+    #[test]
+    fn mcp_server_name_validation_aligns_with_tool_identifier_grammar() {
+        let db = setup_db();
+        let service = SetupImportService::new(&db);
+        let too_long = "a".repeat(MAX_MCP_NAME_LEN + 1);
+        let max_len = "s".repeat(MAX_MCP_NAME_LEN);
+        let mut servers = serde_json::Map::new();
+        for bad in [
+            "",
+            "my.server",
+            "org/repo",
+            "srv:1",
+            "bad name",
+            "bad__srv",
+            "café",
+            too_long.as_str(),
+        ] {
+            servers.insert(bad.to_string(), serde_json::json!({ "command": "mcp-bin" }));
+        }
+        servers.insert(
+            "good-srv_1".to_string(),
+            serde_json::json!({ "command": "mcp-bin" }),
+        );
+        servers.insert(max_len.clone(), serde_json::json!({ "command": "mcp-bin" }));
+        let json = serde_json::json!({ "mcpServers": servers }).to_string();
+
+        let report = service
+            .import_mcp(&json)
+            .expect("partial mcp import succeeds");
+
+        assert_eq!(report.imported.len(), 2);
+        assert_eq!(report.denied.len(), 8);
+        assert!(report
+            .denied
+            .iter()
+            .all(|d| d.reason == DENY_INVALID_RECORD));
+
+        let raw = SettingsService::new(&db)
+            .read(MCP_SERVERS_KEY)
+            .expect("read servers")
+            .expect("valid servers stored");
+        let list = McpServerList::from_json(&raw).expect("stored list validates");
+        assert_eq!(list.servers.len(), 2);
+        for server in &list.servers {
+            assert!(
+                crate::application::mcp::jsonrpc::format_mcp_tool_name(&server.name, "search")
+                    .is_some(),
+                "every validated MCP server name must format cleanly into mcp__<server>__<tool>: {}",
+                server.name
+            );
+        }
+        assert!(list.servers.iter().any(|s| s.name == "good-srv_1"));
+        assert!(list.servers.iter().any(|s| s.name == max_len));
     }
 
     #[test]

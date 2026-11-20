@@ -33,7 +33,7 @@ use crate::application::import::{
 };
 use crate::application::settings::SettingsService;
 use crate::infrastructure::database::{Database, DatabaseError};
-use crate::infrastructure::providers::credentials::KeyringBackend;
+use crate::infrastructure::providers::credentials::{CredentialBackend, KeyringBackend};
 
 pub(crate) use jsonrpc::{descriptor_to_tool_definition, parse_mcp_tool_name, McpToolDescriptor};
 pub(crate) use oauth::{
@@ -199,31 +199,67 @@ impl<'a> McpService<'a> {
 
     /// List all configured user-added MCP servers with secret-free auth status.
     pub(crate) fn list_servers(&self) -> Result<Vec<McpServerView>, McpError> {
+        self.list_servers_with(&KeyringBackend)
+    }
+
+    pub(crate) fn list_servers_with(
+        &self,
+        backend: &dyn CredentialBackend,
+    ) -> Result<Vec<McpServerView>, McpError> {
         let list = self.load_list()?;
         Ok(list
             .servers
             .into_iter()
             .map(|entry| {
-                let auth = McpCredentialStore::status(&entry.name);
+                let auth = McpCredentialStore::status_with(backend, &entry.name);
                 McpServerView::from_entry(entry, auth)
             })
             .collect())
     }
 
     /// Add or update a user-added MCP server in Personal settings.
+    ///
+    /// When overwriting an existing server by `name`, clears stored OS keyring
+    /// credentials whenever `url`, `transport`, or `oauth` changed so reusing a
+    /// server name for a new endpoint never leaks the previous token.
     pub(crate) fn upsert_server(
         &self,
         entry: McpServerEntry,
     ) -> Result<Vec<McpServerView>, McpError> {
+        self.upsert_server_with(&KeyringBackend, entry)
+    }
+
+    pub(crate) fn upsert_server_with(
+        &self,
+        backend: &dyn CredentialBackend,
+        entry: McpServerEntry,
+    ) -> Result<Vec<McpServerView>, McpError> {
         entry.validate_entry().map_err(McpError::InvalidConfig)?;
         let mut list = self.load_list()?;
+        let mut clear_credentials_for: Option<String> = None;
         if let Some(existing) = list.servers.iter_mut().find(|s| s.name == entry.name) {
+            if existing.url != entry.url
+                || existing.transport != entry.transport
+                || existing.oauth != entry.oauth
+            {
+                clear_credentials_for = Some(entry.name.clone());
+            }
             *existing = entry;
         } else {
             list.servers.push(entry);
         }
-        self.save_list(&list)?;
-        self.list_servers()
+        let json = list
+            .to_json()
+            .map_err(|_| McpError::InvalidConfig("MCP server configuration failed validation"))?;
+        if let Some(name) = clear_credentials_for {
+            if let Err(err) = McpCredentialStore::remove_with(backend, &name) {
+                if McpCredentialStore::status_with(backend, &name).has_auth {
+                    return Err(err);
+                }
+            }
+        }
+        SettingsService::new(self.db).write(MCP_SERVERS_KEY, Some(&json))?;
+        self.list_servers_with(backend)
     }
 
     /// Remove a user-added MCP server and delete its keyring credentials.
@@ -664,5 +700,196 @@ mod tests {
             oauth: None,
         };
         assert!(svc.upsert_server(bad).is_err());
+    }
+
+    #[derive(Default)]
+    struct MemoryKeyring {
+        entries: std::sync::Mutex<HashMap<(String, String), String>>,
+    }
+
+    impl CredentialBackend for MemoryKeyring {
+        fn set_password(&self, service: &str, key: &str, credential: &str) -> keyring::Result<()> {
+            self.entries.lock().unwrap().insert(
+                (service.to_string(), key.to_string()),
+                credential.to_string(),
+            );
+            Ok(())
+        }
+
+        fn get_password(&self, service: &str, key: &str) -> keyring::Result<String> {
+            self.entries
+                .lock()
+                .unwrap()
+                .get(&(service.to_string(), key.to_string()))
+                .cloned()
+                .ok_or(keyring::Error::NoEntry)
+        }
+
+        fn delete_credential(&self, service: &str, key: &str) -> keyring::Result<()> {
+            self.entries
+                .lock()
+                .unwrap()
+                .remove(&(service.to_string(), key.to_string()))
+                .map(|_| ())
+                .ok_or(keyring::Error::NoEntry)
+        }
+    }
+
+    fn sample_http_entry(name: &str, url: &str, oauth: Option<McpOAuthConfig>) -> McpServerEntry {
+        McpServerEntry {
+            name: name.to_string(),
+            transport: McpTransportKind::StreamableHttp,
+            enabled: true,
+            command: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: Some(url.to_string()),
+            oauth,
+        }
+    }
+
+    fn sample_oauth(client_id: &str) -> McpOAuthConfig {
+        McpOAuthConfig {
+            authorization_url: "https://auth.example.com/authorize".to_string(),
+            token_url: "https://auth.example.com/token".to_string(),
+            client_id: client_id.to_string(),
+            scopes: vec!["tools:read".to_string()],
+        }
+    }
+
+    #[test]
+    fn upsert_clears_credentials_when_url_transport_or_oauth_changes() {
+        let db = in_memory_database();
+        let svc = McpService::new(&db);
+        let keyring = MemoryKeyring::default();
+
+        let original = sample_http_entry("remote-api", "https://one.example.com/mcp", None);
+        svc.upsert_server_with(&keyring, original.clone())
+            .expect("insert initial server");
+        McpCredentialStore::store_bearer_with(&keyring, "remote-api", "tok-initial")
+            .expect("store bearer");
+
+        // Updating non-auth metadata (enabled) keeps the stored credential intact.
+        let mut toggled = original;
+        toggled.enabled = false;
+        let views = svc
+            .upsert_server_with(&keyring, toggled)
+            .expect("toggle enabled via upsert");
+        assert!(views[0].has_auth);
+        assert_eq!(
+            McpCredentialStore::load_record_with(&keyring, "remote-api")
+                .unwrap()
+                .map(|r| r.access_token),
+            Some("tok-initial".to_string())
+        );
+
+        // Changing endpoint URL clears stored credentials so the old token cannot leak.
+        let moved_url = sample_http_entry("remote-api", "https://two.example.com/mcp", None);
+        let views = svc
+            .upsert_server_with(&keyring, moved_url)
+            .expect("update url");
+        assert!(!views[0].has_auth);
+        assert!(McpCredentialStore::load_record_with(&keyring, "remote-api")
+            .unwrap()
+            .is_none());
+
+        // Changing OAuth config (None -> Some, or different client_id) clears stored credentials.
+        McpCredentialStore::store_bearer_with(&keyring, "remote-api", "tok-before-oauth")
+            .expect("store bearer");
+        let with_oauth = sample_http_entry(
+            "remote-api",
+            "https://two.example.com/mcp",
+            Some(sample_oauth("client-a")),
+        );
+        let views = svc
+            .upsert_server_with(&keyring, with_oauth)
+            .expect("add oauth");
+        assert!(!views[0].has_auth);
+        assert!(McpCredentialStore::load_record_with(&keyring, "remote-api")
+            .unwrap()
+            .is_none());
+
+        McpCredentialStore::store_bearer_with(&keyring, "remote-api", "tok-client-a")
+            .expect("store bearer");
+        let changed_oauth = sample_http_entry(
+            "remote-api",
+            "https://two.example.com/mcp",
+            Some(sample_oauth("client-b")),
+        );
+        let views = svc
+            .upsert_server_with(&keyring, changed_oauth)
+            .expect("change oauth client");
+        assert!(!views[0].has_auth);
+        assert!(McpCredentialStore::load_record_with(&keyring, "remote-api")
+            .unwrap()
+            .is_none());
+
+        // Changing transport (StreamableHttp -> Stdio) clears stored credentials.
+        McpCredentialStore::store_bearer_with(&keyring, "remote-api", "tok-before-stdio")
+            .expect("store bearer");
+        let switched_transport = McpServerEntry {
+            name: "remote-api".to_string(),
+            transport: McpTransportKind::Stdio,
+            enabled: true,
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "demo-mcp".to_string()],
+            env: BTreeMap::new(),
+            url: None,
+            oauth: None,
+        };
+        let views = svc
+            .upsert_server_with(&keyring, switched_transport)
+            .expect("switch to stdio");
+        assert!(!views[0].has_auth);
+        assert!(McpCredentialStore::load_record_with(&keyring, "remote-api")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn upsert_rejects_non_identifier_and_oversized_server_names() {
+        let db = in_memory_database();
+        let svc = McpService::new(&db);
+        let keyring = MemoryKeyring::default();
+        let too_long = "a".repeat(jsonrpc::MAX_MCP_SERVER_NAME_LEN + 1);
+        for bad_name in [
+            "",
+            "my.server",
+            "org/repo",
+            "srv:1",
+            "bad__srv",
+            "bad name",
+            too_long.as_str(),
+        ] {
+            let entry = McpServerEntry {
+                name: bad_name.to_string(),
+                transport: McpTransportKind::Stdio,
+                enabled: true,
+                command: "npx".to_string(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                url: None,
+                oauth: None,
+            };
+            assert!(
+                svc.upsert_server_with(&keyring, entry).is_err(),
+                "expected invalid server name to be rejected: {bad_name:?}"
+            );
+        }
+
+        let max_valid = "s".repeat(jsonrpc::MAX_MCP_SERVER_NAME_LEN);
+        let entry = McpServerEntry {
+            name: max_valid.clone(),
+            transport: McpTransportKind::Stdio,
+            enabled: true,
+            command: "npx".to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            url: None,
+            oauth: None,
+        };
+        svc.upsert_server_with(&keyring, entry)
+            .expect("max-length identifier server name accepted");
+        assert!(jsonrpc::format_mcp_tool_name(&max_valid, "ping").is_some());
     }
 }

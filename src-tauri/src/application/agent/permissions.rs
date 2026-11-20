@@ -466,6 +466,21 @@ pub(crate) fn is_mcp_tool(name: &str) -> bool {
     crate::application::mcp::parse_mcp_tool_name(name).is_some()
 }
 
+/// Whether `tool_pattern` targets an MCP tool or MCP namespace wildcard
+/// (`mcp__*` or a valid `mcp__<server>__<tool>`).
+#[must_use]
+pub(crate) fn is_mcp_tool_pattern(tool_pattern: &str) -> bool {
+    is_mcp_tool(tool_pattern)
+        || tool_pattern.starts_with(crate::application::mcp::jsonrpc::MCP_TOOL_PREFIX)
+}
+
+/// Whether persistent `allow` rules are forbidden for `tool_pattern`
+/// (`execute_command`, wildcard `*`, or any MCP tool / `mcp__*` pattern).
+#[must_use]
+pub(crate) fn is_persistent_allow_forbidden(tool_pattern: &str) -> bool {
+    tool_pattern == "execute_command" || tool_pattern == "*" || is_mcp_tool_pattern(tool_pattern)
+}
+
 // ---------------------------------------------------------------------------
 // Persistence helpers (used by the commands layer + service bridge).
 //
@@ -595,7 +610,7 @@ pub(crate) fn confirm_group_scope(
             expected: group.to_string(),
         });
     }
-    if pending_tool == "execute_command" || pending_tool == "*" || is_mcp_tool(pending_tool) {
+    if is_persistent_allow_forbidden(pending_tool) {
         return Err(GroupScopeError::ShellNeverPersists);
     }
     let Some(path_pattern) = group_path_pattern(Some(group)) else {
@@ -614,11 +629,11 @@ pub(crate) fn confirm_group_scope(
 /// Best-effort insert of a confirmed group-allow rule (`effect='allow'`,
 /// `priority=200`). Returns `true` when the row persisted. Failures (e.g. a
 /// duplicate row) report `false`: the session-sticky verdict already governs
-/// this run. Shell scopes never persist (defence in depth alongside
+/// this run. Shell and MCP scopes never persist (defence in depth alongside
 /// [`confirm_group_scope`]).
 #[must_use]
 pub(crate) fn insert_group_allow_rule(db: &Database, scope: &ConfirmedGroupScope) -> bool {
-    if scope.tool_name == "execute_command" || scope.tool_name == "*" {
+    if is_persistent_allow_forbidden(&scope.tool_name) {
         return false;
     }
     insert_rule(
@@ -1246,6 +1261,36 @@ mod tests {
                 .all(|rule| !(rule.tool_pattern == "execute_command"
                     && rule.effect == RuleEffect::Allow)),
             "no shell-allow row may exist after a blocked insert, got {rules:?}"
+        );
+    }
+
+    #[test]
+    fn group_scope_confirm_and_insert_never_whitelist_mcp_tools() {
+        let db = crate::infrastructure::database::in_memory_database();
+        for tool in ["mcp__github__search", "mcp__*", "mcp__github__*"] {
+            let key = format!("coding:{tool}:*");
+            assert_eq!(
+                confirm_group_scope(tool, Some(&key), &key),
+                Err(GroupScopeError::ShellNeverPersists),
+                "confirm_group_scope must reject MCP tool {tool}"
+            );
+            let blocked = ConfirmedGroupScope {
+                preset: "coding".to_string(),
+                tool_name: tool.to_string(),
+                path_pattern: "*".to_string(),
+                group_key: key,
+            };
+            assert!(
+                !insert_group_allow_rule(&db, &blocked),
+                "insert_group_allow_rule must never persist MCP tool {tool}"
+            );
+        }
+        let rules = list_rules(&db).expect("list rules");
+        assert!(
+            rules
+                .iter()
+                .all(|rule| !is_mcp_tool_pattern(&rule.tool_pattern)),
+            "no MCP allow row may exist after blocked inserts, got {rules:?}"
         );
     }
 
