@@ -196,6 +196,8 @@ pub(crate) struct AgentRunner<'a> {
     is_plan: bool,
     /// Active approved plan text (if any) preserved across compaction (`M16`).
     active_plan: Option<String>,
+    /// Optional run-scoped user-added MCP tool runtime (`M18` / `P26`).
+    mcp_runtime: Option<Arc<dyn crate::application::mcp::McpToolRuntime>>,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4 / M16).
@@ -266,7 +268,18 @@ impl<'a> AgentRunner<'a> {
             question_ctx: None,
             is_plan: false,
             active_plan: None,
+            mcp_runtime: None,
         }
+    }
+
+    /// Attach a run-scoped user-added MCP tool runtime (`M18` / `P26`).
+    #[must_use]
+    pub(crate) fn with_mcp_runtime(
+        mut self,
+        runtime: Arc<dyn crate::application::mcp::McpToolRuntime>,
+    ) -> Self {
+        self.mcp_runtime = Some(runtime);
+        self
     }
 
     /// Attach an active plan summary so compaction explicitly preserves it (`M16`).
@@ -792,8 +805,16 @@ impl<'a> AgentRunner<'a> {
         mut record: Option<&mut ActiveRunRecord<'_>>,
         spent_micro_usd: &mut u64,
     ) -> Result<String, AgentError> {
-        let tools: Arc<Vec<ToolDefinition>> =
-            Arc::new(ToolRegistry::definitions_for_run(self.preset, self.is_plan));
+        let mcp_defs = self
+            .mcp_runtime
+            .as_ref()
+            .map(|rt| rt.definitions())
+            .unwrap_or_default();
+        let tools: Arc<Vec<ToolDefinition>> = Arc::new(ToolRegistry::definitions_for_run_with_mcp(
+            self.preset,
+            self.is_plan,
+            &mcp_defs,
+        ));
         // A control never cancelled the plan: when the runner has no attached
         // control it dispatches tools through a never-firing token so the
         // undisputed Task 3.1 behaviour is preserved exactly.
@@ -1220,6 +1241,7 @@ impl<'a> AgentRunner<'a> {
                 checkpoints: self.checkpoint_ctx.as_ref(),
                 turn_index: steps_taken.saturating_sub(1),
                 question_ctx: self.question_ctx.as_ref(),
+                mcp_runtime: self.mcp_runtime.as_deref(),
             };
             let dispatch_outcome =
                 dispatch::dispatch_tool_calls(&ctx, &tool_calls, &mut messages, &mut record);

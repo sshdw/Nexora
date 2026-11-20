@@ -465,3 +465,63 @@
   font-size: var(--type-size-body-small);
   color: var(--color-on-surface);
 }
+
+/* ---- Stage 9 (M18 / P26): User-added MCP servers & OAuth ---- */
+.nex-mcp-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.nex-mcp-endpoint {
+  font-family: var(--type-family-mono, monospace);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+  word-break: break-all;
+}
+
+.nex-mcp-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  margin: var(--space-xs) 0 0;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-container-low);
+  font-size: var(--type-size-body-small);
+}
+
+.nex-mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-large);
+  background: var(--color-surface-container-low);
+}
+
+.nex-mcp-textarea {
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--type-family-mono, monospace);
+}
+
+.nex-mcp-oauth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  padding-left: var(--space-md);
+  border-left: 1px solid var(--color-outline-variant);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-mcp-form,
+  .nex-mcp-tools-list {
+    transition: none;
+    animation: none;
+  }
+}

@@ -51,11 +51,33 @@ impl ToolRegistry {
 
     /// Tool definitions exposed to the model for a specific run preset and plan mode.
     pub(crate) fn definitions_for_run(preset: RunPreset, is_plan: bool) -> Vec<ToolDefinition> {
+        Self::definitions_for_run_with_mcp(preset, is_plan, &[])
+    }
+
+    /// Tool definitions exposed to the model for a specific run preset, plan
+    /// mode, and discovered user-added MCP tools (`mcp__<server>__<tool>`).
+    ///
+    /// Plan mode (`is_plan`) is strictly read-only workspace access and NEVER
+    /// exposes external MCP tools. Only valid namespaced MCP tool names that do
+    /// not collide with native tools are appended.
+    pub(crate) fn definitions_for_run_with_mcp(
+        preset: RunPreset,
+        is_plan: bool,
+        mcp_tools: &[ToolDefinition],
+    ) -> Vec<ToolDefinition> {
         if is_plan {
-            Self::definitions_for_read_only()
-        } else {
-            Self::definitions_for_preset(preset)
+            return Self::definitions_for_read_only();
         }
+        let mut defs = Self::definitions_for_preset(preset);
+        for mcp_def in mcp_tools {
+            if crate::application::agent::permissions::is_mcp_tool(&mcp_def.name)
+                && !crate::application::agent::permissions::is_known_tool(&mcp_def.name)
+                && !defs.iter().any(|existing| existing.name == mcp_def.name)
+            {
+                defs.push(mcp_def.clone());
+            }
+        }
+        defs
     }
 }
 

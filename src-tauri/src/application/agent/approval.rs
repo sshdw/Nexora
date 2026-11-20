@@ -48,6 +48,11 @@ pub(crate) enum RiskClass {
     /// statically classified, so the shell always requires explicit user
     /// consent — even in `FullAutonomous`.
     DangerousShell,
+    /// User-added MCP tools (`mcp__<server>__<tool>`): external processes or
+    /// remote HTTP endpoints whose side effects cannot be statically bounded
+    /// (Invariant 4). ALWAYS requires explicit per-call user consent — NEVER
+    /// auto-approved in any autonomy mode or via sticky/stored rules.
+    ExternalMcp,
 }
 
 impl RiskClass {
@@ -57,6 +62,7 @@ impl RiskClass {
         match name {
             "read_file" | "list_directory" | "search_files" | "ask_user_question" => Self::ReadOnly,
             "execute_command" => Self::DangerousShell,
+            other if super::permissions::is_mcp_tool(other) => Self::ExternalMcp,
             _ => Self::Mutating,
         }
     }
@@ -677,11 +683,14 @@ impl ApprovalGate {
         match mode {
             AutonomyMode::Supervised => true,
             AutonomyMode::SemiAutonomous => {
-                matches!(risk, RiskClass::Mutating | RiskClass::DangerousShell)
+                matches!(
+                    risk,
+                    RiskClass::Mutating | RiskClass::DangerousShell | RiskClass::ExternalMcp
+                )
             }
             AutonomyMode::FullAutonomous => match risk {
                 RiskClass::ReadOnly => false,
-                RiskClass::DangerousShell => true,
+                RiskClass::DangerousShell | RiskClass::ExternalMcp => true,
                 RiskClass::Mutating => {
                     !(self.access.allows(call)
                         && self.access.profile() == AccessProfile::Standard

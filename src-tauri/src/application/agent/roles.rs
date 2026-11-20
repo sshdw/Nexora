@@ -118,6 +118,9 @@ impl AgentRole {
     /// Whether `tool` is inside this role's subset.
     #[must_use]
     pub(crate) fn allows_tool(self, tool: &str) -> bool {
+        if matches!(self, Self::Executor) && super::permissions::is_mcp_tool(tool) {
+            return true;
+        }
         self.allowed_tools().contains(&tool)
     }
 

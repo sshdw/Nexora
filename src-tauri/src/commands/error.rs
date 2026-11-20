@@ -36,6 +36,7 @@ use crate::application::execution::RequestError;
 use crate::application::export::ExportError;
 use crate::application::github::GitHubError;
 use crate::application::import::ImportError;
+use crate::application::mcp::McpError;
 use crate::application::privacy::PrivacyError;
 use crate::application::project_dir::ProjectDirError;
 use crate::application::prompts::PromptLibraryError;
@@ -564,6 +565,30 @@ impl From<CheckpointError> for CommandError {
             CheckpointError::Io(_) => {
                 Self::new(ErrorKind::Io, "the checkpoint file operation failed")
             }
+        }
+    }
+}
+
+impl From<McpError> for CommandError {
+    fn from(err: McpError) -> Self {
+        match err {
+            McpError::NotFound(_) => Self::new(ErrorKind::NotFound, err.to_string()),
+            McpError::InvalidConfig(_) | McpError::InvalidUrl(_) => {
+                Self::new(ErrorKind::InvalidInput, err.to_string())
+            }
+            McpError::KeyringUnavailable => Self::new(ErrorKind::Credential, err.to_string()),
+            McpError::Database(inner) => Self::from(inner),
+            McpError::Transport(_)
+            | McpError::Protocol(_)
+            | McpError::JsonRpcError { .. }
+            | McpError::HttpStatus { .. }
+            | McpError::Unauthorized
+            | McpError::Timeout
+            | McpError::Cancelled
+            | McpError::ResponseTooLarge
+            | McpError::OAuthStateMismatch
+            | McpError::OAuthTimeout
+            | McpError::OAuthFailed(_) => Self::new(ErrorKind::Request, err.to_string()),
         }
     }
 }

@@ -108,8 +108,10 @@ const MAX_SOURCE_KEY_LEN: usize = 512;
 /// Maximum MCP servers accepted in one import document or one stored list.
 pub(crate) const MAX_MCP_SERVERS: usize = 32;
 
-/// Maximum characters in one MCP server name.
-const MAX_MCP_NAME_LEN: usize = 128;
+/// Maximum characters in one MCP server name (aligned with
+/// [`crate::application::mcp::jsonrpc::MAX_MCP_SERVER_NAME_LEN`] so valid
+/// server names never silently drop discovered tools in `format_mcp_tool_name`).
+const MAX_MCP_NAME_LEN: usize = crate::application::mcp::jsonrpc::MAX_MCP_SERVER_NAME_LEN;
 
 /// Maximum characters in one MCP server command.
 const MAX_MCP_COMMAND_LEN: usize = 1024;
@@ -225,48 +227,120 @@ pub(crate) struct SetupImportReport {
     pub denied: Vec<DeniedEntry>,
 }
 
-/// One validated MCP server: a command to launch plus its arguments and
-/// environment. Identifiers and plain configuration only — secret-like
-/// environment material is denied at validation, never stored.
+/// Transport kind for a user-added MCP server. Defaults to `stdio` for full
+/// backward compatibility with legacy entries that omit `transport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum McpTransportKind {
+    #[default]
+    Stdio,
+    StreamableHttp,
+}
+
+/// Optional OAuth 2.1 + PKCE (`S256`) public-client configuration for a
+/// `streamable_http` MCP server. Contains endpoints and public identifiers
+/// only — NEVER client secrets or tokens (those live exclusively in the OS
+/// keyring).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct McpOAuthConfig {
+    /// OAuth 2.1 authorization endpoint (`https://` or explicit localhost).
+    pub authorization_url: String,
+    /// OAuth 2.1 token exchange/refresh endpoint (`https://` or explicit localhost).
+    pub token_url: String,
+    /// Public OAuth client identifier.
+    pub client_id: String,
+    /// Optional OAuth scopes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+const MAX_MCP_OAUTH_CLIENT_ID_LEN: usize = 256;
+const MAX_MCP_OAUTH_SCOPES: usize = 32;
+const MAX_MCP_OAUTH_SCOPE_LEN: usize = 128;
+
+const fn default_mcp_enabled() -> bool {
+    true
+}
+
+/// One validated user-added MCP server: either a local `stdio` process
+/// (`command` + `args` + non-secret `env`) or a remote `streamable_http`
+/// endpoint (`url` + optional `oauth`). Secret-like material is denied at
+/// validation and never stored in settings. Auto-approve fields are forbidden
+/// (Invariant 4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct McpServerEntry {
     /// Server name (the `mcpServers` object key).
     pub name: String,
-    /// Executable command for the server.
+    /// Transport type (`stdio` by default for backward compatibility).
+    #[serde(default)]
+    pub transport: McpTransportKind,
+    /// Whether this server is enabled for agent tool discovery (`true` by default).
+    #[serde(default = "default_mcp_enabled")]
+    pub enabled: bool,
+    /// Executable command for `stdio` servers.
+    #[serde(default)]
     pub command: String,
-    /// Command arguments, verbatim.
+    /// Command arguments for `stdio` servers, verbatim.
     #[serde(default)]
     pub args: Vec<String>,
-    /// Environment variables, names to values (non-secret only).
+    /// Environment variables for `stdio` servers (non-secret only).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// Endpoint URL for `streamable_http` servers (`https://` or explicit localhost).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Optional OAuth 2.1 + PKCE configuration for `streamable_http` servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthConfig>,
 }
 
 impl McpServerEntry {
+    /// Validate one server record, returning a fixed-vocabulary denial
+    /// reason on the first problem.
+    pub(crate) fn validate_entry(&self) -> std::result::Result<(), &'static str> {
+        self.validate()
+    }
+
     /// Validate one server record, returning a fixed-vocabulary denial
     /// reason on the first problem. Structural bounds keep the record
     /// storable; the [`contains_secret`] scan over every field keeps
     /// secret-like material out of the settings store (the predicate returns
     /// only `bool`, so a detected secret can never echo).
     fn validate(&self) -> std::result::Result<(), &'static str> {
-        if self.name.is_empty()
-            || self.name.len() > MAX_MCP_NAME_LEN
-            || self.name.contains("..")
-            || self.name.chars().any(char::is_control)
+        if self.name.len() > MAX_MCP_NAME_LEN
+            || self.name.contains("__")
+            || !crate::application::mcp::jsonrpc::is_valid_identifier_segment(&self.name)
         {
             return Err(DENY_INVALID_RECORD);
         }
-        if contains_secret(&self.name) || contains_secret(&self.command) {
+        if contains_secret(&self.name) {
             return Err(DENY_SECRET_VALUE);
         }
-        if self.command.is_empty() || self.command.len() > MAX_MCP_COMMAND_LEN {
+
+        match self.transport {
+            McpTransportKind::Stdio => self.validate_stdio(),
+            McpTransportKind::StreamableHttp => self.validate_streamable_http(),
+        }
+    }
+
+    fn validate_stdio(&self) -> std::result::Result<(), &'static str> {
+        if self.url.is_some() || self.oauth.is_some() {
+            return Err(DENY_INVALID_RECORD);
+        }
+        if contains_secret(&self.command) {
+            return Err(DENY_SECRET_VALUE);
+        }
+        if self.command.is_empty()
+            || self.command.len() > MAX_MCP_COMMAND_LEN
+            || self.command.chars().any(char::is_control)
+        {
             return Err(DENY_INVALID_RECORD);
         }
         if self.args.len() > MAX_MCP_ARGS {
             return Err(DENY_INVALID_RECORD);
         }
         for arg in &self.args {
-            if arg.len() > MAX_MCP_ARG_LEN {
+            if arg.len() > MAX_MCP_ARG_LEN || arg.contains('\0') {
                 return Err(DENY_INVALID_RECORD);
             }
             if contains_secret(arg) {
@@ -279,11 +353,12 @@ impl McpServerEntry {
         for (name, value) in &self.env {
             if name.is_empty()
                 || name.len() > MAX_MCP_ENV_NAME_LEN
+                || name.contains('=')
                 || name.chars().any(char::is_control)
             {
                 return Err(DENY_INVALID_RECORD);
             }
-            if value.len() > MAX_MCP_ENV_VALUE_LEN {
+            if value.len() > MAX_MCP_ENV_VALUE_LEN || value.contains('\0') {
                 return Err(DENY_INVALID_RECORD);
             }
             if contains_secret(name) || contains_secret(value) {
@@ -292,6 +367,81 @@ impl McpServerEntry {
         }
         Ok(())
     }
+
+    fn validate_streamable_http(&self) -> std::result::Result<(), &'static str> {
+        if !self.command.is_empty() || !self.args.is_empty() || !self.env.is_empty() {
+            return Err(DENY_INVALID_RECORD);
+        }
+        let Some(url) = self.url.as_deref() else {
+            return Err(DENY_INVALID_RECORD);
+        };
+        if contains_secret(url) {
+            return Err(DENY_SECRET_VALUE);
+        }
+        if crate::application::mcp::url_safety::validate_mcp_url(url).is_err() {
+            return Err(DENY_INVALID_RECORD);
+        }
+        if let Some(oauth) = &self.oauth {
+            if contains_secret(&oauth.authorization_url)
+                || contains_secret(&oauth.token_url)
+                || contains_secret(&oauth.client_id)
+            {
+                return Err(DENY_SECRET_VALUE);
+            }
+            if crate::application::mcp::url_safety::validate_mcp_url(&oauth.authorization_url)
+                .is_err()
+                || crate::application::mcp::url_safety::validate_mcp_url(&oauth.token_url).is_err()
+            {
+                return Err(DENY_INVALID_RECORD);
+            }
+            if oauth.client_id.trim().is_empty()
+                || oauth.client_id.len() > MAX_MCP_OAUTH_CLIENT_ID_LEN
+                || oauth.client_id.chars().any(char::is_control)
+            {
+                return Err(DENY_INVALID_RECORD);
+            }
+            if oauth.scopes.len() > MAX_MCP_OAUTH_SCOPES {
+                return Err(DENY_INVALID_RECORD);
+            }
+            for scope in &oauth.scopes {
+                if scope.trim().is_empty()
+                    || scope.len() > MAX_MCP_OAUTH_SCOPE_LEN
+                    || scope.chars().any(char::is_control)
+                {
+                    return Err(DENY_INVALID_RECORD);
+                }
+                if contains_secret(scope) {
+                    return Err(DENY_SECRET_VALUE);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// True when a raw JSON object contains any forbidden auto-approve flag
+/// (Invariant 4 defense in depth).
+fn raw_mcp_object_has_auto_approve(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    obj.iter().any(|(k, v)| {
+        let low = k.trim().to_ascii_lowercase();
+        matches!(
+            low.as_str(),
+            "auto_approve"
+                | "autoapprove"
+                | "always_allow"
+                | "alwaysallow"
+                | "auto_execute"
+                | "autoexecute"
+                | "trusted"
+        ) && match v {
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::String(s) => !matches!(s.trim(), "" | "false" | "0" | "off"),
+            serde_json::Value::Array(a) => !a.is_empty(),
+            serde_json::Value::Number(n) => n.as_u64() != Some(0),
+            serde_json::Value::Null => false,
+            serde_json::Value::Object(_) => true,
+        }
+    })
 }
 
 /// The validated MCP server list stored under [`MCP_SERVERS_KEY`]: a JSON
@@ -321,6 +471,16 @@ impl McpServerList {
             raw.len() <= SETTINGS_VALUE_MAX_LEN,
             "stored MCP server list exceeds the settings value limit",
         )?;
+        let raw_items: Vec<serde_json::Value> =
+            serde_json::from_str(raw).map_err(classify_error)?;
+        for item in &raw_items {
+            if let Some(obj) = item.as_object() {
+                ensure_valid(
+                    !raw_mcp_object_has_auto_approve(obj),
+                    "MCP server configuration cannot enable auto-approve",
+                )?;
+            }
+        }
         let servers: Vec<McpServerEntry> = serde_json::from_str(raw).map_err(classify_error)?;
         let list = Self { servers };
         list.validate()?;
@@ -565,32 +725,84 @@ fn parse_mcp_entry(
     def: &serde_json::Value,
 ) -> std::result::Result<McpServerEntry, &'static str> {
     let object = def.as_object().ok_or(DENY_INVALID_RECORD)?;
-    let command = object
-        .get("command")
-        .and_then(serde_json::Value::as_str)
-        .ok_or(DENY_INVALID_RECORD)?;
-    let mut args = Vec::new();
-    if let Some(raw_args) = object.get("args") {
-        let list = raw_args.as_array().ok_or(DENY_INVALID_RECORD)?;
-        for arg in list {
-            args.push(arg.as_str().ok_or(DENY_INVALID_RECORD)?.to_string());
-        }
+    if raw_mcp_object_has_auto_approve(object) {
+        return Err(DENY_INVALID_RECORD);
     }
-    let mut env = BTreeMap::new();
-    if let Some(raw_env) = object.get("env") {
-        let map = raw_env.as_object().ok_or(DENY_INVALID_RECORD)?;
-        for (key, val) in map {
-            env.insert(
-                key.clone(),
-                val.as_str().ok_or(DENY_INVALID_RECORD)?.to_string(),
-            );
+    let enabled = match object.get("enabled") {
+        None => true,
+        Some(v) => v.as_bool().ok_or(DENY_INVALID_RECORD)?,
+    };
+    let explicit_transport = match object.get("transport").and_then(serde_json::Value::as_str) {
+        None => None,
+        Some("stdio") => Some(McpTransportKind::Stdio),
+        Some("streamable_http") => Some(McpTransportKind::StreamableHttp),
+        Some(_) => return Err(DENY_INVALID_RECORD),
+    };
+    let url = match object.get("url") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(v.as_str().ok_or(DENY_INVALID_RECORD)?.to_string()),
+    };
+    let transport = explicit_transport.unwrap_or_else(|| {
+        if url.is_some() && object.get("command").is_none() {
+            McpTransportKind::StreamableHttp
+        } else {
+            McpTransportKind::Stdio
         }
-    }
-    let entry = McpServerEntry {
-        name: name.to_string(),
-        command: command.to_string(),
-        args,
-        env,
+    });
+
+    let entry = match transport {
+        McpTransportKind::Stdio => {
+            let command = object
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(DENY_INVALID_RECORD)?;
+            let mut args = Vec::new();
+            if let Some(raw_args) = object.get("args") {
+                let list = raw_args.as_array().ok_or(DENY_INVALID_RECORD)?;
+                for arg in list {
+                    args.push(arg.as_str().ok_or(DENY_INVALID_RECORD)?.to_string());
+                }
+            }
+            let mut env = BTreeMap::new();
+            if let Some(raw_env) = object.get("env") {
+                let map = raw_env.as_object().ok_or(DENY_INVALID_RECORD)?;
+                for (key, val) in map {
+                    env.insert(
+                        key.clone(),
+                        val.as_str().ok_or(DENY_INVALID_RECORD)?.to_string(),
+                    );
+                }
+            }
+            McpServerEntry {
+                name: name.to_string(),
+                transport: McpTransportKind::Stdio,
+                enabled,
+                command: command.to_string(),
+                args,
+                env,
+                url: None,
+                oauth: None,
+            }
+        }
+        McpTransportKind::StreamableHttp => {
+            let oauth = match object.get("oauth") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(raw_oauth) => Some(
+                    serde_json::from_value::<McpOAuthConfig>(raw_oauth.clone())
+                        .map_err(|_| DENY_INVALID_RECORD)?,
+                ),
+            };
+            McpServerEntry {
+                name: name.to_string(),
+                transport: McpTransportKind::StreamableHttp,
+                enabled,
+                command: String::new(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+                url,
+                oauth,
+            }
+        }
     };
     entry.validate()?;
     Ok(entry)
@@ -1197,6 +1409,61 @@ mod setup_import_tests {
     }
 
     #[test]
+    fn mcp_server_name_validation_aligns_with_tool_identifier_grammar() {
+        let db = setup_db();
+        let service = SetupImportService::new(&db);
+        let too_long = "a".repeat(MAX_MCP_NAME_LEN + 1);
+        let max_len = "s".repeat(MAX_MCP_NAME_LEN);
+        let mut servers = serde_json::Map::new();
+        for bad in [
+            "",
+            "my.server",
+            "org/repo",
+            "srv:1",
+            "bad name",
+            "bad__srv",
+            "café",
+            too_long.as_str(),
+        ] {
+            servers.insert(bad.to_string(), serde_json::json!({ "command": "mcp-bin" }));
+        }
+        servers.insert(
+            "good-srv_1".to_string(),
+            serde_json::json!({ "command": "mcp-bin" }),
+        );
+        servers.insert(max_len.clone(), serde_json::json!({ "command": "mcp-bin" }));
+        let json = serde_json::json!({ "mcpServers": servers }).to_string();
+
+        let report = service
+            .import_mcp(&json)
+            .expect("partial mcp import succeeds");
+
+        assert_eq!(report.imported.len(), 2);
+        assert_eq!(report.denied.len(), 8);
+        assert!(report
+            .denied
+            .iter()
+            .all(|d| d.reason == DENY_INVALID_RECORD));
+
+        let raw = SettingsService::new(&db)
+            .read(MCP_SERVERS_KEY)
+            .expect("read servers")
+            .expect("valid servers stored");
+        let list = McpServerList::from_json(&raw).expect("stored list validates");
+        assert_eq!(list.servers.len(), 2);
+        for server in &list.servers {
+            assert!(
+                crate::application::mcp::jsonrpc::format_mcp_tool_name(&server.name, "search")
+                    .is_some(),
+                "every validated MCP server name must format cleanly into mcp__<server>__<tool>: {}",
+                server.name
+            );
+        }
+        assert!(list.servers.iter().any(|s| s.name == "good-srv_1"));
+        assert!(list.servers.iter().any(|s| s.name == max_len));
+    }
+
+    #[test]
     fn mcp_oversize_document_is_denied_before_any_write() {
         let db = setup_db();
         let service = SetupImportService::new(&db);
@@ -1270,9 +1537,13 @@ mod setup_import_tests {
         let mcp = McpServerList {
             servers: vec![McpServerEntry {
                 name: "github".to_string(),
+                transport: McpTransportKind::Stdio,
+                enabled: true,
                 command: "npx".to_string(),
                 args: vec!["-y".to_string()],
                 env: BTreeMap::from([("PORT".to_string(), "8080".to_string())]),
+                url: None,
+                oauth: None,
             }],
         };
         settings

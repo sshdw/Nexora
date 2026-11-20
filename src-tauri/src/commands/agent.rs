@@ -1014,6 +1014,12 @@ fn validate_new_rule(
             "persistent allow is not available for shell commands",
         ));
     }
+    if effect == "allow" && permissions::is_mcp_tool_pattern(tool_pattern) {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "persistent allow is not available for MCP tools",
+        ));
+    }
     Ok(())
 }
 
@@ -1876,6 +1882,25 @@ mod tests {
             .expect("write_file rule persisted via confirmed group scope");
         assert_eq!(persisted.effect, RuleEffect::Allow);
         assert_eq!(persisted.priority, 200);
+    }
+
+    #[test]
+    fn mcp_tools_never_get_persistent_allow() {
+        for pattern in ["mcp__github__search", "mcp__*", "mcp__github__*"] {
+            let err = validate_new_rule("coding", pattern, Some("*"), "allow")
+                .expect_err("MCP persistent allow must be rejected");
+            assert_eq!(err.kind, ErrorKind::InvalidInput);
+            assert!(safe_message(&err));
+            assert!(
+                !err.message.contains(pattern),
+                "rejection must use fixed vocabulary without echoing pattern"
+            );
+        }
+        // Deny and ask rules remain valid for MCP tools.
+        validate_new_rule("coding", "mcp__github__search", Some("*"), "deny")
+            .expect("MCP deny rule valid");
+        validate_new_rule("coding", "mcp__github__search", Some("*"), "ask")
+            .expect("MCP ask rule valid");
     }
 
     #[test]
