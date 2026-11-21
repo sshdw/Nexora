@@ -783,6 +783,8 @@ dependencies = [
  "nexora-core",
  "rpassword",
  "rusqlite",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
