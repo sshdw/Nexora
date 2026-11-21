@@ -21,7 +21,7 @@
 //! already on screen, and a button saying "write a message" next to the
 //! box that takes a message is the duplication THEME §6 rejects.
 
-import M3Button from "./M3Button";
+import Button from "./Button";
 import { useStrings } from "../lib/useLocale";
 
 export interface EmptyStateProps {
@@ -45,9 +45,9 @@ export default function EmptyState({
       <p className="nex-empty-text">{description ?? t("empty.text")}</p>
       {actionLabel && onAction && (
         <div className="nex-empty-actions">
-          <M3Button variant="primary" onClick={onAction}>
+          <Button variant="primary" onClick={onAction}>
             {actionLabel}
-          </M3Button>
+          </Button>
         </div>
       )}
     </section>

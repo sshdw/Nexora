@@ -1,8 +1,7 @@
 //! Common button (library primitive) — #230 Phase 0.
 //!
-//! The canonical button, now a thin adapter over the vendored
-//! `ui/button` (NEXORA-DESIGN-SYSTEM.md §3: "Button (`M3Button` →
-//! migrate to `ui/button`)"): this module owns only the Nexora
+//! The canonical button, a thin adapter over the vendored `ui/button`
+//! (NEXORA-DESIGN-SYSTEM.md §3): this module owns only the Nexora
 //! variant vocabulary, the loading state and the block/filled
 //! modifiers, while `ui/button` owns the paint — every colour
 //! resolves to a shadcn token in src/index.css, so the button is on
@@ -28,20 +27,20 @@
 
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 
-import { Button } from "./ui/button";
+import { Button as UiButton } from "./ui/button";
 import { Spinner } from "./ui/spinner";
 
 /** Variant mapping (contract button canon): primary = filled action
  * (one per region) · secondary = tonal container action · quiet =
  * text-only action · destructive = error-toned action (text at rest;
  * filled only at the confirm step via `filled`). */
-export type M3ButtonVariant = "primary" | "secondary" | "quiet" | "destructive";
+export type ButtonVariant = "primary" | "secondary" | "quiet" | "destructive";
 
-export interface M3ButtonProps extends Omit<
+export interface ButtonProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
   "children"
 > {
-  variant?: M3ButtonVariant;
+  variant?: ButtonVariant;
   size?: "md" | "sm";
   /** Busy work in flight: disables the control, announces aria-busy and
    * shows the inline spinner beside the label. Reduced motion: the spin
@@ -58,7 +57,7 @@ export interface M3ButtonProps extends Omit<
 }
 
 const VARIANT: Record<
-  M3ButtonVariant,
+  ButtonVariant,
   "default" | "secondary" | "ghost" | "destructive"
 > = {
   primary: "default",
@@ -67,7 +66,7 @@ const VARIANT: Record<
   destructive: "destructive",
 };
 
-export default function M3Button({
+export default function Button({
   variant = "quiet",
   size = "md",
   loading = false,
@@ -79,7 +78,7 @@ export default function M3Button({
   children,
   type = "button",
   ...rest
-}: M3ButtonProps) {
+}: ButtonProps) {
   const busy = disabled || loading;
   // `expressive` is accepted for API compatibility and deliberately has
   // no effect: the press feedback it used to add is now the base
@@ -89,7 +88,7 @@ export default function M3Button({
   void expressive;
   if (import.meta.env.DEV && filled && variant !== "destructive") {
     console.warn(
-      `[M3Button] "filled" is ignored for variant "${variant}" (only "destructive" supports it).`
+      `[Button] "filled" is ignored for variant "${variant}" (only "destructive" supports it).`
     );
   }
   const classes = [
@@ -102,7 +101,7 @@ export default function M3Button({
     .filter(Boolean)
     .join(" ");
   return (
-    <Button
+    <UiButton
       type={type}
       variant={VARIANT[variant]}
       size={size === "sm" ? "sm" : "default"}
@@ -113,6 +112,6 @@ export default function M3Button({
     >
       {loading && <Spinner data-icon="inline-start" aria-hidden="true" />}
       {children}
-    </Button>
+    </UiButton>
   );
 }

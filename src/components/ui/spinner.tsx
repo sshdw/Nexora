@@ -10,7 +10,7 @@
 
    The spinner member of the #230 Phase 0 primitive set (issue #230
    "primitive set (button/input/badge/separator/skeleton/spinner)").
-   Used by M3Button's loading state and the M3LoadingIndicator.
+   Used by Button's loading state and the LoadingIndicator.
 
    Divergences:
      1. `lucide-react` is a DROPPED dep — the glyph is the repo's

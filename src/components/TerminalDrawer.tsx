@@ -8,8 +8,8 @@ import {
   type TerminalOutputEvent,
 } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3IconButton from "./M3IconButton";
+import Button from "./Button";
+import IconButton from "./IconButton";
 import {
   CheckIcon,
   CloseIcon,
@@ -347,17 +347,17 @@ export default function TerminalDrawer({
           )}
         </div>
         <div className="nex-terminal-drawer-actions">
-          <M3IconButton
+          <IconButton
             size="sm"
             label={t("term.clear")}
             disabled={running || (!stdout && !stderr && !explanation && !errorMsg)}
             onClick={handleClear}
           >
             <TrashIcon size={16} />
-          </M3IconButton>
-          <M3IconButton size="sm" label={t("term.close")} onClick={onClose}>
+          </IconButton>
+          <IconButton size="sm" label={t("term.close")} onClick={onClose}>
             <CloseIcon size={16} />
-          </M3IconButton>
+          </IconButton>
         </div>
       </header>
 
@@ -382,7 +382,7 @@ export default function TerminalDrawer({
           onChange={(e) => setCwd(e.target.value)}
         />
         {running ? (
-          <M3Button
+          <Button
             type="button"
             variant="secondary"
             size="sm"
@@ -390,19 +390,19 @@ export default function TerminalDrawer({
           >
             <StopIcon size={16} />
             {t("term.stop")}
-          </M3Button>
+          </Button>
         ) : (
-          <M3Button
+          <Button
             type="submit"
             variant="primary"
             size="sm"
             disabled={!command.trim()}
           >
             {t("term.run")}
-          </M3Button>
+          </Button>
         )}
         {canExplain && (
-          <M3Button
+          <Button
             type="button"
             variant="quiet"
             size="sm"
@@ -410,7 +410,7 @@ export default function TerminalDrawer({
             onClick={() => void handleExplain()}
           >
             {explaining ? t("term.explaining") : t("term.explain")}
-          </M3Button>
+          </Button>
         )}
       </form>
 
@@ -462,7 +462,7 @@ export default function TerminalDrawer({
                 <span className="nex-terminal-drawer-explain-label">
                   {t("term.suggestedFix")}
                 </span>
-                <M3Button
+                <Button
                   type="button"
                   variant="quiet"
                   size="sm"
@@ -470,7 +470,7 @@ export default function TerminalDrawer({
                 >
                   {copied && <CheckIcon size={16} />}
                   {copied ? t("term.copied") : t("term.copyFix")}
-                </M3Button>
+                </Button>
               </div>
               <pre className="nex-terminal-drawer-fix">
                 {explanation.suggested_fix}

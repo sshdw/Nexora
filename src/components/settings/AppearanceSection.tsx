@@ -5,7 +5,7 @@ import type { Locale } from "../../lib/strings";
 import type { ResolvedSettingEntry } from "../../lib/tauri";
 import type { AppearanceStore, Theme } from "../../lib/useAppearance";
 import { useStrings } from "../../lib/useLocale";
-import M3SegmentedGroup from "../M3SegmentedGroup";
+import SegmentedGroup from "../SegmentedGroup";
 import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface AppearanceSectionProps {
@@ -44,7 +44,7 @@ export default function AppearanceSection({
           </span>
           <SettingSourceBadge entry={resolvedEntries?.["appearance.theme"]} />
         </div>
-        <M3SegmentedGroup
+        <SegmentedGroup
           labelledBy="theme-label"
           value={displayedTheme}
           onChange={handleThemeChange}
@@ -59,7 +59,7 @@ export default function AppearanceSection({
         <span className="nex-settings-label" id="language-label">
           {t("settings.languageLabel")}
         </span>
-        <M3SegmentedGroup
+        <SegmentedGroup
           labelledBy="language-label"
           value={locale}
           onChange={onLocaleChange}

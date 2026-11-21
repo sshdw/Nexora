@@ -5,7 +5,7 @@ import { memo, useId, useState } from "react";
 import type { SubagentView } from "../../lib/useAgentRun";
 import { tr } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
+import Button from "../Button";
 
 export interface SubagentCardProps {
   runId: number;
@@ -108,7 +108,7 @@ function SubagentCard({ runId, subagent, onKillSubagent }: SubagentCardProps) {
 
         {isRunning && onKillSubagent && (
           <div className="nex-subagent-actions">
-            <M3Button
+            <Button
               variant="quiet"
               size="sm"
               aria-label={tr(locale, "agent.subagentStopAria", {
@@ -117,7 +117,7 @@ function SubagentCard({ runId, subagent, onKillSubagent }: SubagentCardProps) {
               onClick={() => onKillSubagent(runId, subagent.subagent_id)}
             >
               {t("agent.subagentStop")}
-            </M3Button>
+            </Button>
           </div>
         )}
       </div>

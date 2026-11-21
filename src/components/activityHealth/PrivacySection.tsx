@@ -11,8 +11,8 @@ import { useMemo, useState } from "react";
 
 import type { LedgerExport, PrivacyStatus, WipeResult } from "../../lib/tauri";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
-import M3LoadingIndicator from "../M3LoadingIndicator";
+import Button from "../Button";
+import LoadingIndicator from "../LoadingIndicator";
 import { ledgerKindLabel, surfaceStateLabel, toMessage } from "./format";
 
 export interface PrivacySectionProps {
@@ -109,7 +109,7 @@ export default function PrivacySection({
           {error}
         </p>
       ) : status === null ? (
-        <M3LoadingIndicator label={t("privacy.loading")} />
+        <LoadingIndicator label={t("privacy.loading")} />
       ) : (
         <>
           <h3 className="nex-activity-section-title">
@@ -159,44 +159,44 @@ export default function PrivacySection({
             </span>
           </div>
           <div className="nex-activity-row-meta">
-            <M3Button variant="quiet" size="sm" onClick={onCopy}>
+            <Button variant="quiet" size="sm" onClick={onCopy}>
               {t("privacy.copy")}
-            </M3Button>
-            <M3Button variant="quiet" size="sm" onClick={onDownload}>
+            </Button>
+            <Button variant="quiet" size="sm" onClick={onDownload}>
               {t("privacy.download")}
-            </M3Button>
+            </Button>
             {copied && <span>{t("privacy.copied")}</span>}
             {copyFailed && <span role="alert">{t("common.copyFailed")}</span>}
             {!copied && !copyFailed && <span>{t("privacy.copyHint")}</span>}
           </div>
           <div className="nex-activity-row-meta">
             {wipeArmed ? (
-              <M3Button
+              <Button
                 variant="quiet"
                 size="sm"
                 onClick={() => void onWipeConfirm()}
                 disabled={wipeBusy}
               >
                 {t("privacy.wipeConfirm")}
-              </M3Button>
+              </Button>
             ) : (
-              <M3Button
+              <Button
                 variant="quiet"
                 size="sm"
                 onClick={() => void onWipeConfirm()}
                 disabled={wipeBusy}
               >
                 {t("privacy.wipe")}
-              </M3Button>
+              </Button>
             )}
             {wipeArmed && (
-              <M3Button
+              <Button
                 variant="quiet"
                 size="sm"
                 onClick={() => setWipeArmed(false)}
               >
                 {t("common.cancel")}
-              </M3Button>
+              </Button>
             )}
             {wiped !== null && !wipeArmed && (
               <span>{t("privacy.wiped", { n: wiped })}</span>

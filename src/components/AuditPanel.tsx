@@ -41,8 +41,8 @@ import { useCallback, useState } from "react";
 import type { AuditFinding, DepEntry, TestDraft } from "../lib/tauri";
 import { useAudit } from "../lib/useAudit";
 import { useStrings, type Strings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
 import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
 export interface AuditPanelProps {
@@ -170,9 +170,9 @@ function FindingRow({
       </div>
       <pre className="nex-agent-terminal-stdout">{finding.excerpt}</pre>
       <div>
-        <M3Button variant="quiet" onClick={() => onFileIssue(finding)}>
+        <Button variant="quiet" onClick={() => onFileIssue(finding)}>
           {t("issue.fileIssue")}
-        </M3Button>
+        </Button>
       </div>
     </li>
   );
@@ -205,9 +205,9 @@ function DraftRow({
         {t("testgen.draftNote")}
       </p>
       <div>
-        <M3Button variant="quiet" onClick={onCopy}>
+        <Button variant="quiet" onClick={onCopy}>
           {copied ? t("testgen.copied") : t("testgen.copy")}
-        </M3Button>
+        </Button>
       </div>
     </li>
   );
@@ -271,7 +271,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <p className="nex-vcs-subtitle">{t("audit.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button
+          <Button
             variant="quiet"
             onClick={() => void audit.run()}
             disabled={running}
@@ -281,10 +281,10 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
               : report
                 ? t("audit.rerun")
                 : t("audit.run")}
-          </M3Button>
-          <M3Button variant="quiet" onClick={onClose}>
+          </Button>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
@@ -302,7 +302,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {issueNotice}
           </p>
         )}
-        {running && <M3LoadingIndicator label={t("audit.running")} />}
+        {running && <LoadingIndicator label={t("audit.running")} />}
         {!running && !report && !error && (
           <p className="nex-agent-empty">{t("audit.emptyText")}</p>
         )}
@@ -406,7 +406,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {t("testgen.hint")}
           </p>
           <div>
-            <M3Button
+            <Button
               variant="quiet"
               onClick={() => void audit.generate()}
               disabled={draftsRunning}
@@ -416,7 +416,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                 : drafts
                   ? t("testgen.regenerate")
                   : t("testgen.generate")}
-            </M3Button>
+            </Button>
           </div>
           {draftsError && (
             <div className="nex-composer-error nex-fade-in" role="alert">
@@ -424,7 +424,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             </div>
           )}
           {draftsRunning && (
-            <M3LoadingIndicator label={t("testgen.generating")} />
+            <LoadingIndicator label={t("testgen.generating")} />
           )}
           {!draftsRunning && drafts && (
             <>
@@ -471,7 +471,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {t("dep.hint")}
           </p>
           <div>
-            <M3Button
+            <Button
               variant="quiet"
               onClick={() => void audit.loadDeps()}
               disabled={depsRunning}
@@ -481,14 +481,14 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
                 : deps
                   ? t("dep.reload")
                   : t("dep.load")}
-            </M3Button>
+            </Button>
           </div>
           {depsError && (
             <div className="nex-composer-error nex-fade-in" role="alert">
               {depsError}
             </div>
           )}
-          {depsRunning && <M3LoadingIndicator label={t("dep.loading")} />}
+          {depsRunning && <LoadingIndicator label={t("dep.loading")} />}
           {!depsRunning && deps && (
             <>
               {deps.cargo_total === 0 && deps.npm_total === 0 ? (
@@ -589,7 +589,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             {t("refactor.confirmLabel")}
           </label>
           <div>
-            <M3Button
+            <Button
               variant="quiet"
               onClick={() =>
                 void audit.applyRemoval(
@@ -602,7 +602,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
               disabled={applyRunning}
             >
               {applyRunning ? t("refactor.applying") : t("refactor.apply")}
-            </M3Button>
+            </Button>
           </div>
           {applyError && (
             <div className="nex-composer-error nex-fade-in" role="alert">
@@ -610,7 +610,7 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             </div>
           )}
           {applyRunning && (
-            <M3LoadingIndicator label={t("refactor.applying")} />
+            <LoadingIndicator label={t("refactor.applying")} />
           )}
           {!applyRunning && applyResult && (
             <>

@@ -16,7 +16,7 @@ import {
   type ProvidersStore,
 } from "../../lib/useProviders";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
+import Button from "../Button";
 import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface ProviderSectionProps {
@@ -335,7 +335,7 @@ export default function ProviderSection({
             </div>
 
             <div className="nex-capabilities-actions">
-              <M3Button
+              <Button
                 variant="secondary"
                 disabled={store.compatSaving}
                 onClick={handleSaveCompat}
@@ -343,7 +343,7 @@ export default function ProviderSection({
                 {store.compatSaving
                   ? t("settings.compatSaving")
                   : t("settings.compatSave")}
-              </M3Button>
+              </Button>
             </div>
           </div>
         </div>
@@ -383,14 +383,14 @@ export default function ProviderSection({
           store.refreshModelMetadata &&
           !(activeModelId && activeCapabilities) && (
             <div className="nex-capabilities-actions">
-              <M3Button
+              <Button
                 variant="quiet"
                 onClick={() =>
                   void store.refreshModelMetadata(selectedDefinition.name)
                 }
               >
                 {t("settings.capabilitiesRefreshMeta")}
-              </M3Button>
+              </Button>
             </div>
           )}
       </div>
@@ -431,14 +431,14 @@ export default function ProviderSection({
                 entry={resolvedEntries?.["provider.capability_overrides"]}
               />
               {store.refreshModelMetadata && (
-                <M3Button
+                <Button
                   variant="quiet"
                   onClick={() =>
                     void store.refreshModelMetadata(selectedDefinition.name)
                   }
                 >
                   {t("settings.capabilitiesRefreshMeta")}
-                </M3Button>
+                </Button>
               )}
             </div>
 
@@ -505,19 +505,19 @@ export default function ProviderSection({
             </div>
 
             <div className="nex-capabilities-actions">
-              <M3Button
+              <Button
                 variant="secondary"
                 onClick={() => void handleSaveOverride()}
               >
                 {t("settings.capabilitiesSaveOverride")}
-              </M3Button>
+              </Button>
               {activeCapabilities.has_manual_override && (
-                <M3Button
+                <Button
                   variant="quiet"
                   onClick={() => void handleClearOverride()}
                 >
                   {t("settings.capabilitiesClearOverride")}
-                </M3Button>
+                </Button>
               )}
             </div>
           </div>

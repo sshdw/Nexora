@@ -113,7 +113,7 @@ describe("Sidebar rail entries", () => {
 // deleted terminal row kept their keys only as long as the row existed, so
 // the labels below are pinned here as the contract.
 //
-// Every entry names the row's ACCESSIBLE NAME (the M3RailItem `label`, which
+// Every entry names the row's ACCESSIBLE NAME (the RailItem `label`, which
 // sets aria-label), not a label only visible after an expand click: the
 // workspace-roots panel is gated behind an `open` state initialised to false,
 // so "Add folder…" would be null even if the row came back. "Workspace
@@ -234,7 +234,7 @@ describe("Sidebar migrated surface (#230 Phase 1)", () => {
       .replace(/\/\*[\s\S]*?\*\//g, " ")
       .replace(/^\s*\/\/.*$/gm, " ");
     expect(itemJsx).toContain("trailing={");
-    const railJsx = readRepoFile("src/components/M3RailItem.tsx")
+    const railJsx = readRepoFile("src/components/RailItem.tsx")
       .replace(/\/\/![\s\S]*?^\/\//m, " ")
       .replace(/^\s*\/\/.*$/gm, " ");
     // The label box: the only truncating element, and it can shrink.

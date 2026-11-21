@@ -389,7 +389,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     group: "Option navigation",
     scope: "Focused segmented group (automatic activation)",
     description: "Move and select option",
-    source: "M3SegmentedGroup.tsx:83-93 (segment onKeyDown)",
+    source: "SegmentedGroup.tsx:83-93 (segment onKeyDown)",
   },
   {
     id: "segmented.edges",
@@ -397,7 +397,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     group: "Option navigation",
     scope: "Focused segmented group",
     description: "First / last option",
-    source: "M3SegmentedGroup.tsx:94-101 (segment onKeyDown)",
+    source: "SegmentedGroup.tsx:94-101 (segment onKeyDown)",
   },
   {
     id: "tabstrip.move",
@@ -421,7 +421,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     group: "Option navigation",
     scope: "Focused toolbar",
     description: "Move between toolbar items",
-    source: "M3Toolbar.tsx:80-113 (toolbar onKeyDown)",
+    source: "Toolbar.tsx:80-113 (toolbar onKeyDown)",
   },
   {
     id: "toolbar.edges",
@@ -429,7 +429,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     group: "Option navigation",
     scope: "Focused toolbar",
     description: "First / last toolbar item",
-    source: "M3Toolbar.tsx:107-112 (toolbar onKeyDown)",
+    source: "Toolbar.tsx:107-112 (toolbar onKeyDown)",
   },
   {
     id: "toolbar.dismiss",
@@ -437,7 +437,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     group: "Option navigation",
     scope: "Floating toolbar only (docked toolbars stay)",
     description: "Dismiss the selection-context toolbar",
-    source: "M3Toolbar.tsx:74-78 (toolbar onKeyDown)",
+    source: "Toolbar.tsx:74-78 (toolbar onKeyDown)",
   },
   {
     id: "palette.navigate",
@@ -486,7 +486,7 @@ export const SHORTCUTS: readonly ShortcutEntry[] = [
     group: "Dialogs",
     scope: "Focused button (native behaviour, no custom handler)",
     description: "Activate button",
-    source: "M3Button.tsx:9 (native <button> semantics)",
+    source: "Button.tsx:9 (native <button> semantics)",
   },
 ];
 

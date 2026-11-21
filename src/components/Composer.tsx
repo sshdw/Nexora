@@ -76,9 +76,9 @@ import { useStrings } from "../lib/useLocale";
 import AccessProfileControl from "./AccessProfileControl";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 import ContextRing from "./ContextRing";
-import M3Button from "./M3Button";
-import M3IconButton from "./M3IconButton";
-import M3SegmentedGroup from "./M3SegmentedGroup";
+import NexoraButton from "./Button";
+import IconButton from "./IconButton";
+import SegmentedGroup from "./SegmentedGroup";
 import ModelPicker, { type ModelConnectionGroup } from "./ModelPicker";
 import Tooltip from "./Tooltip";
 import WorkspaceContextRow from "./WorkspaceContextRow";
@@ -703,7 +703,7 @@ export default function Composer({
                       </span>
                     )}
                   </span>
-                  <M3IconButton
+                  <IconButton
                     label={t("conv.removeFile", { name: attachment.file_name })}
                     size="sm"
                     className="nex-chip-remove"
@@ -711,7 +711,7 @@ export default function Composer({
                     onClick={() => void onRemoveAttachment(attachment.id)}
                   >
                     <CloseIcon />
-                  </M3IconButton>
+                  </IconButton>
                 </li>
               ))}
             </ul>
@@ -726,9 +726,9 @@ export default function Composer({
                       onClick={() => promptContext.setSheet({ kind: "skill", skill })}>
                       <code>/{skill.name}</code>
                     </button>
-                    <M3IconButton size="sm" className="nex-chip-remove" disabled={busy}
+                    <IconButton size="sm" className="nex-chip-remove" disabled={busy}
                       label={t("prompt.remove", { name: skill.name })}
-                      onClick={() => promptContext.removeSkill(skill)}><CloseIcon /></M3IconButton>
+                      onClick={() => promptContext.removeSkill(skill)}><CloseIcon /></IconButton>
                   </li>
                 ))}
                 {promptContext.contexts.map((context) => (
@@ -736,9 +736,9 @@ export default function Composer({
                     <span className="nex-chip-name" title={context.label}>
                       <code>@{context.reference.selector.kind} {context.label}</code>
                     </span>
-                    <M3IconButton size="sm" className="nex-chip-remove" disabled={busy}
+                    <IconButton size="sm" className="nex-chip-remove" disabled={busy}
                       label={t("prompt.remove", { name: context.label })}
-                      onClick={() => promptContext.removeContext(context)}><CloseIcon /></M3IconButton>
+                      onClick={() => promptContext.removeContext(context)}><CloseIcon /></IconButton>
                   </li>
                 ))}
               </ul>
@@ -1086,7 +1086,7 @@ export default function Composer({
                 a preference pair, and the old checkbox (a role
                 nobody could arrow through) is gone. */}
             <span title={t("conv.agentToggleTitle")}>
-              <M3SegmentedGroup
+              <SegmentedGroup
                 className="nex-composer-pills"
                 label={t("conv.agentModeAria")}
                 semantics="radio"
@@ -1192,7 +1192,7 @@ export default function Composer({
                     <p className="nex-settings-label">
                       {t("access.legacyAutonomy")}
                     </p>
-                    <M3SegmentedGroup
+                    <SegmentedGroup
                       className="nex-composer-autonomy"
                       label={t("conv.autonomyAria")}
                       semantics="radio"
@@ -1340,9 +1340,9 @@ export default function Composer({
             <span className="nex-composer-shortcut">
               {t("conv.hintSetup")}{" "}
             </span>
-            <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
+            <NexoraButton variant="quiet" size="sm" onClick={onOpenSettings}>
               {t("conv.openSettings")}
-            </M3Button>
+            </NexoraButton>
           </p>
         )}
       </div>

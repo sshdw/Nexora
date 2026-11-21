@@ -13,7 +13,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { Button } from "./ui/button";
 import Tooltip from "./Tooltip";
 
-export interface M3IconButtonProps extends Omit<
+export interface IconButtonProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
   "children"
 > {
@@ -29,7 +29,7 @@ export interface M3IconButtonProps extends Omit<
 
 const SIZE = { sm: "icon-sm", md: "icon", lg: "icon-lg" } as const;
 
-export default function M3IconButton({
+export default function IconButton({
   label,
   size = "md",
   danger = false,
@@ -38,7 +38,7 @@ export default function M3IconButton({
   children,
   type = "button",
   ...rest
-}: M3IconButtonProps) {
+}: IconButtonProps) {
   const classes = [
     danger ? "hover:text-destructive focus-visible:text-destructive" : "",
     className,

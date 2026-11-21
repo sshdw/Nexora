@@ -24,7 +24,7 @@ import { Component } from "react";
 import type { ErrorInfo, ReactNode } from "react";
 
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
+import Button from "./Button";
 
 export interface ErrorBoundaryProps {
   children: ReactNode;
@@ -52,9 +52,9 @@ function BoundaryFallback({
   const card = (
     <div className="nex-error-boundary" role="alert">
       <p className="nex-error-boundary-text">{t("err.boundaryBody")}</p>
-      <M3Button variant="quiet" onClick={onRetry}>
+      <Button variant="quiet" onClick={onRetry}>
         {t("common.retry")}
-      </M3Button>
+      </Button>
     </div>
   );
   if (!root) return card;

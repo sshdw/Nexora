@@ -7,8 +7,8 @@ import { useMemo } from "react";
 import type { ActivityFeed, Conversation } from "../../lib/tauri";
 import { formatRelativeTime } from "../../lib/format";
 import { useStrings } from "../../lib/useLocale";
-import M3LoadingIndicator from "../M3LoadingIndicator";
-import M3SegmentedGroup from "../M3SegmentedGroup";
+import LoadingIndicator from "../LoadingIndicator";
+import SegmentedGroup from "../SegmentedGroup";
 import { formatMicroUsd, runStatusLabel } from "./format";
 import type { ActivityKind } from "./tabs";
 
@@ -122,7 +122,7 @@ export default function ActivityTab({
   return (
     <section aria-label={t("activity.feedAria")}>
       <div className="nex-activity-filter">
-        <M3SegmentedGroup<ActivityKind>
+        <SegmentedGroup<ActivityKind>
           label={t("activity.filterLabel")}
           options={[
             { value: "all", label: t("activity.filterAll") },
@@ -135,7 +135,7 @@ export default function ActivityTab({
         />
       </div>
       {loading ? (
-        <M3LoadingIndicator label={t("activity.loadingActivity")} />
+        <LoadingIndicator label={t("activity.loadingActivity")} />
       ) : error !== null ? (
         <p className="nex-activity-error" role="alert">
           {error}

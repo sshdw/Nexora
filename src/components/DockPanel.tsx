@@ -26,7 +26,7 @@ import type { ReactNode } from "react";
 
 import { useStrings } from "../lib/useLocale";
 import ErrorBoundary from "./ErrorBoundary";
-import M3IconButton from "./M3IconButton";
+import IconButton from "./IconButton";
 import { CloseIcon } from "./icons";
 
 export type DockPanelId = "sessions" | "activity" | "settings";
@@ -128,14 +128,14 @@ export default function DockPanel({
         {meta !== undefined && (
           <span className="nex-dock-panel-meta">{meta}</span>
         )}
-        <M3IconButton
+        <IconButton
           label={t("common.close")}
           size="sm"
           className="nex-dock-panel-close"
           onClick={onClose}
         >
           <CloseIcon />
-        </M3IconButton>
+        </IconButton>
       </header>
       <div className="nex-dock-panel-body">
         {/* ADD-05: one panel crashing degrades to the boundary strip inside

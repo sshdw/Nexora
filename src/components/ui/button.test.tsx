@@ -221,7 +221,7 @@ describe("press token — reduced motion", () => {
 });
 
 describe("press token — on the rendered control", () => {
-  it("reaches every adapter variant, so M3Button and M3IconButton inherit it", () => {
+  it("reaches every adapter variant, so Button and IconButton inherit it", () => {
     for (const variant of [
       "default",
       "secondary",

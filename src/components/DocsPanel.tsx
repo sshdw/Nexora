@@ -38,8 +38,8 @@ import {
   type DocsManifest,
 } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
 
 export interface DocsPanelProps {
   onClose: () => void;
@@ -205,9 +205,9 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
           <p className="nex-vcs-subtitle">{t("docs.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={onClose}>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
@@ -225,14 +225,14 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
         />
         <nav aria-label={t("docs.group")}>
           {DOC_SECTIONS.filter(showSection).map((id) => (
-            <M3Button
+            <Button
               key={id}
               variant="quiet"
               onClick={() => setSection(id)}
               aria-current={section === id ? "true" : undefined}
             >
               {t(sectionTitle(id))}
-            </M3Button>
+            </Button>
           ))}
         </nav>
 
@@ -312,7 +312,7 @@ export default function DocsPanel({ onClose }: DocsPanelProps) {
                     )
                   )}
                 </ul>
-                {loading && <M3LoadingIndicator label={t("common.loading")} />}
+                {loading && <LoadingIndicator label={t("common.loading")} />}
                 {error && (
                   <div className="nex-composer-error nex-fade-in" role="alert">
                     {error}

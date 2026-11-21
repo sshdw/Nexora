@@ -5,7 +5,7 @@ import type {
 } from "../lib/tauri";
 import type { ComposerContextState, PromptSheet } from "../lib/useComposerContext";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
+import Button from "./Button";
 import ModalShell from "./Modal";
 
 function errorMessage(error: unknown, fallback: string) {
@@ -120,9 +120,9 @@ export default function ComposerPromptSheet({
             <ul className="nex-prompt-skills">
               {state.skills.map((item) => (
                 <li key={item.reference.source_id}>
-                  <M3Button variant="quiet" onClick={() => state.setSheet({ kind: "skill", skill: item })}>
+                  <Button variant="quiet" onClick={() => state.setSheet({ kind: "skill", skill: item })}>
                     <code>/{item.name}</code>
-                  </M3Button>
+                  </Button>
                   <span>{t(item.scope === "personal" ? "prompt.personal" : "prompt.project")}</span>
                 </li>
               ))}
@@ -141,11 +141,11 @@ export default function ComposerPromptSheet({
             </dl>
             <pre className="nex-prompt-sheet-preview" tabIndex={0}>{skill.text}</pre>
             <div className="nex-prompt-actions">
-              {!summary.trusted && <M3Button variant="secondary" loading={busy}
-                onClick={() => void changeSkill("trust")}>{t("prompt.trust")}</M3Button>}
-              <M3Button disabled={busy} onClick={() => void changeSkill(summary.enabled ? "disable" : "enable")}>
+              {!summary.trusted && <Button variant="secondary" loading={busy}
+                onClick={() => void changeSkill("trust")}>{t("prompt.trust")}</Button>}
+              <Button disabled={busy} onClick={() => void changeSkill(summary.enabled ? "disable" : "enable")}>
                 {t(summary.enabled ? "prompt.disable" : "prompt.enable")}
-              </M3Button>
+              </Button>
               {summary.enabled && summary.trusted && (
                 <label className="nex-prompt-toggle">
                   <input type="checkbox" checked={summary.auto_select} disabled={busy}
@@ -154,10 +154,10 @@ export default function ComposerPromptSheet({
                   {t("prompt.autoSelect")}
                 </label>
               )}
-              <M3Button variant="primary" disabled={busy || !summary.enabled || !summary.trusted}
+              <Button variant="primary" disabled={busy || !summary.enabled || !summary.trusted}
                 onClick={() => { state.includeSkill(summary); onUseSkill(summary.name); }}>
                 {t("prompt.include")}
-              </M3Button>
+              </Button>
             </div>
           </>
         )}
@@ -181,10 +181,10 @@ export default function ComposerPromptSheet({
                   onChange={(event) => { setSymbol(event.currentTarget.value); setPreview(null); }} />
               </label>
             )}
-            <M3Button type="submit" variant="secondary" loading={busy}
+            <Button type="submit" variant="secondary" loading={busy}
               disabled={loading || (selectorKind !== "diff" && !path.trim()) || (selectorKind === "symbol" && !symbol.trim())}>
               {t("prompt.preview")}
-            </M3Button>
+            </Button>
           </form>
         )}
         {preview && (
@@ -193,7 +193,7 @@ export default function ComposerPromptSheet({
             {preview.omitted && <p role="status">{t(review ? "prompt.reviewPartial" : "prompt.omitted")}</p>}
             <pre className="nex-prompt-sheet-preview" tabIndex={0}>{preview.text}</pre>
             <div className="nex-prompt-actions">
-              <M3Button variant="primary" loading={busy} onClick={() => {
+              <Button variant="primary" loading={busy} onClick={() => {
                 if (!review) {
                   state.includeContext(preview);
                   onIncludeContext();
@@ -205,17 +205,17 @@ export default function ComposerPromptSheet({
                   if (sent) close();
                   else setError(t("prompt.reviewFailed"));
                 }).finally(() => setBusy(false));
-              }}>{t(review ? "prompt.sendReview" : "prompt.include")}</M3Button>
+              }}>{t(review ? "prompt.sendReview" : "prompt.include")}</Button>
             </div>
           </>
         )}
         <div className="nex-prompt-actions">
           {sheet.kind === "skill" && (
-            <M3Button disabled={busy} onClick={() => state.setSheet({ kind: "skills" })}>
+            <Button disabled={busy} onClick={() => state.setSheet({ kind: "skills" })}>
               {t("prompt.skills")}
-            </M3Button>
+            </Button>
           )}
-          <M3Button disabled={busy} onClick={close}>{t("common.close")}</M3Button>
+          <Button disabled={busy} onClick={close}>{t("common.close")}</Button>
         </div>
       </div>
     </ModalShell>

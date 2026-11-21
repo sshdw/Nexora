@@ -5,7 +5,7 @@
 //! prompt the `clearApplicationData` wrapper raises (NEX-SEC-004).
 
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
+import Button from "../Button";
 
 export interface DataSectionProps {
   /** Whether the clear-all call is in flight. */
@@ -36,14 +36,14 @@ export default function DataSection({
           <span className="nex-settings-label">{t("settings.transfer")}</span>
           <div className="nex-provider-actions">
             {onExportActive && (
-              <M3Button variant="primary" size="sm" onClick={onExportActive}>
+              <Button variant="primary" size="sm" onClick={onExportActive}>
                 {t("settings.exportActive")}
-              </M3Button>
+              </Button>
             )}
             {onOpenImport && (
-              <M3Button variant="quiet" size="sm" onClick={onOpenImport}>
+              <Button variant="quiet" size="sm" onClick={onOpenImport}>
                 {t("settings.importBtn")}
-              </M3Button>
+              </Button>
             )}
           </div>
         </div>
@@ -52,13 +52,13 @@ export default function DataSection({
       <div className="nex-danger-zone">
         <h4 className="nex-danger-title">{t("settings.dangerTitle")}</h4>
         <p className="nex-danger-text">{t("settings.dangerText")}</p>
-        <M3Button
+        <Button
           variant="destructive"
           loading={clearing}
           onClick={onClearData}
         >
           {clearing ? t("settings.clearing") : t("settings.clearBtn")}
-        </M3Button>
+        </Button>
         {clearError && (
           <p className="nex-settings-error nex-fade-in" role="alert">
             {clearError}

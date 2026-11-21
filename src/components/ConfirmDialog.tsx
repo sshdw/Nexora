@@ -8,7 +8,7 @@
 //! intensification happens only at the confirm step (NEXORA
 //! ADAPTATION), never as idle styling.
 
-import M3Button from "./M3Button";
+import Button from "./Button";
 import ModalShell from "./Modal";
 import { useStrings } from "../lib/useLocale";
 
@@ -40,17 +40,17 @@ export default function ConfirmDialog({
         <p className="nex-io-hint">{body}</p>
       </div>
       <div className="nex-dialog-actions">
-        <M3Button variant="quiet" onClick={onCancel} disabled={busy}>
+        <Button variant="quiet" onClick={onCancel} disabled={busy}>
           {cancelLabel ?? t("common.cancel")}
-        </M3Button>
-        <M3Button
+        </Button>
+        <Button
           variant={danger ? "destructive" : "primary"}
           filled={danger}
           loading={busy}
           onClick={onConfirm}
         >
           {confirmLabel}
-        </M3Button>
+        </Button>
       </div>
     </ModalShell>
   );

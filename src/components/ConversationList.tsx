@@ -1,7 +1,7 @@
 import type { CommandError, Conversation } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import ConversationItem from "./ConversationItem";
-import M3Button from "./M3Button";
+import Button from "./Button";
 import { Skeleton } from "./ui/skeleton";
 
 export interface ConversationListProps {
@@ -81,9 +81,9 @@ export default function ConversationList({
           className="mt-3 flex flex-col items-start gap-2 rounded-md border border-border p-2"
         >
           <span className="text-xs text-destructive">{error.message}</span>
-          <M3Button variant="quiet" size="sm" onClick={onRetry}>
+          <Button variant="quiet" size="sm" onClick={onRetry}>
             {t("common.retry")}
-          </M3Button>
+          </Button>
         </div>
       </nav>
     );

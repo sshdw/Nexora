@@ -1,4 +1,4 @@
-import M3RailItem from "./M3RailItem";
+import RailItem from "./RailItem";
 import { BookIcon } from "./icons";
 import { useStrings } from "../lib/useLocale";
 
@@ -9,7 +9,7 @@ export interface PromptLibraryEntryProps {
 }
 
 // Navigation entry point for the Prompt Library screen (Phase 10.4 — FR-007),
-// on the shared M3RailItem row primitive with its .is-active pill/tone
+// on the shared RailItem row primitive with its .is-active pill/tone
 // emphasis.
 // `aria-current` (not `aria-pressed`): this is a navigation destination.
 // Unrendered since #219 (the nav trim) — the panel, this entry and its hooks
@@ -20,13 +20,13 @@ export default function PromptLibraryEntry({
 }: PromptLibraryEntryProps) {
   const { t } = useStrings();
   return (
-    <M3RailItem
+    <RailItem
       label={t("nav.library")}
       icon={<BookIcon />}
       active={active}
       onClick={onClick}
     >
       {t("nav.library")}
-    </M3RailItem>
+    </RailItem>
   );
 }

@@ -25,7 +25,7 @@ import { useEffect, useState } from "react";
 import { isCustomModelId, type ProvidersStore } from "../lib/useProviders";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
+import Button from "./Button";
 import ModalShell from "./Modal";
 
 export interface OnboardingFlowProps {
@@ -233,7 +233,7 @@ export default function OnboardingFlow({
                     onChange={(event) => setApiKey(event.target.value)}
                   />
                   <div className="nex-onboarding-inline">
-                    <M3Button
+                    <Button
                       variant="secondary"
                       size="sm"
                       type="submit"
@@ -243,7 +243,7 @@ export default function OnboardingFlow({
                       {activeProvider?.credentialed
                         ? t("onboarding.updateKey")
                         : t("onboarding.connect")}
-                    </M3Button>
+                    </Button>
                     {(connectDone || activeProvider?.available) && (
                       <span className="nex-onboarding-status" role="status">
                         {t("onboarding.connectedStatus", {
@@ -286,7 +286,7 @@ export default function OnboardingFlow({
                   : (workspace.root ?? t("onboarding.wsNone"))}
               </p>
               <div className="nex-onboarding-inline">
-                <M3Button
+                <Button
                   variant="secondary"
                   size="sm"
                   loading={workspace.saving}
@@ -294,7 +294,7 @@ export default function OnboardingFlow({
                   onClick={() => void workspace.pickFolder()}
                 >
                   {t("onboarding.chooseFolder")}
-                </M3Button>
+                </Button>
               </div>
               {workspace.error && (
                 <p className="nex-settings-error nex-fade-in" role="alert">
@@ -381,32 +381,32 @@ export default function OnboardingFlow({
 
         <div className="nex-onboarding-actions">
           {step > 0 ? (
-            <M3Button variant="quiet" size="sm" onClick={back}>
+            <Button variant="quiet" size="sm" onClick={back}>
               {t("onboarding.back")}
-            </M3Button>
+            </Button>
           ) : (
-            <M3Button variant="quiet" size="sm" onClick={onClose}>
+            <Button variant="quiet" size="sm" onClick={onClose}>
               {t("onboarding.notNow")}
-            </M3Button>
+            </Button>
           )}
           <span className="nex-onboarding-spacer" aria-hidden="true" />
           {step < STEP_TITLES.length - 1 ? (
             <>
-              <M3Button variant="quiet" size="sm" onClick={next}>
+              <Button variant="quiet" size="sm" onClick={next}>
                 {t("onboarding.skipStep")}
-              </M3Button>
-              <M3Button variant="primary" size="sm" onClick={next}>
+              </Button>
+              <Button variant="primary" size="sm" onClick={next}>
                 {t("onboarding.continue")}
-              </M3Button>
+              </Button>
             </>
           ) : (
             <>
-              <M3Button variant="quiet" size="sm" onClick={onOpenSettings}>
+              <Button variant="quiet" size="sm" onClick={onOpenSettings}>
                 {t("onboarding.openSettings")}
-              </M3Button>
-              <M3Button variant="primary" size="sm" onClick={onClose}>
+              </Button>
+              <Button variant="primary" size="sm" onClick={onClose}>
                 {t("onboarding.getStarted")}
-              </M3Button>
+              </Button>
             </>
           )}
         </div>

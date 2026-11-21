@@ -26,7 +26,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 import { cn } from "../lib/utils";
 
-export interface M3RailItemProps extends Omit<
+export interface RailItemProps extends Omit<
   ButtonHTMLAttributes<HTMLButtonElement>,
   "children"
 > {
@@ -44,7 +44,7 @@ export interface M3RailItemProps extends Omit<
   children?: ReactNode;
 }
 
-export default function M3RailItem({
+export default function RailItem({
   label,
   icon,
   activeIcon,
@@ -54,13 +54,13 @@ export default function M3RailItem({
   trailing,
   type = "button",
   ...rest
-}: M3RailItemProps) {
+}: RailItemProps) {
   const iconNode = active && activeIcon ? activeIcon : icon;
   return (
     <button
       type={type}
       className={cn(
-        "relative flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors outline-none",
+        "relative flex h-8 w-full items-center gap-2 rounded-md px-2 text-sm transition-colors outline-none motion-reduce:transition-none",
         "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         active
           ? "bg-accent font-medium text-foreground"

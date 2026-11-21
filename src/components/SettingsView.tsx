@@ -45,9 +45,9 @@ import {
   type ProvidersStore,
 } from "../lib/useProviders";
 import { SPEND_LIMIT_KEY, type SpendLimitStore } from "../lib/useSpendLimit";
-import M3Button from "./M3Button";
-import M3RailItem from "./M3RailItem";
-import M3SegmentedGroup from "./M3SegmentedGroup";
+import Button from "./Button";
+import RailItem from "./RailItem";
+import SegmentedGroup from "./SegmentedGroup";
 import AppearanceSection from "./settings/AppearanceSection";
 import ProviderSection from "./settings/ProviderSection";
 import AgentSection from "./settings/AgentSection";
@@ -926,9 +926,9 @@ export default function SettingsView({
           <h2 className="nex-settings-title">{t("settings.title")}</h2>
           <p className="nex-settings-subtitle">{t("settings.subtitle")}</p>
         </div>
-        <M3Button variant="quiet" onClick={onClose}>
+        <Button variant="quiet" onClick={onClose}>
           {t("common.backToConversations")}
-        </M3Button>
+        </Button>
       </header>
 
       <div className="nex-settings-layout">
@@ -958,7 +958,7 @@ export default function SettingsView({
             )}
           </div>
           {SECTION_ORDER.map((id) => (
-            <M3RailItem
+            <RailItem
               key={id}
               label={t(SECTION_TITLES[id])}
               active={section === id}
@@ -966,16 +966,16 @@ export default function SettingsView({
               onClick={() => handleNavSelect(id)}
             >
               {t(SECTION_TITLES[id])}
-            </M3RailItem>
+            </RailItem>
           ))}
           {onReplayOnboarding && (
             <div className="nex-settings-replay">
-              <M3RailItem
+              <RailItem
                 label={t("settings.replayLabel")}
                 onClick={onReplayOnboarding}
               >
                 {t("settings.replayText")}
-              </M3RailItem>
+              </RailItem>
             </div>
           )}
         </nav>
@@ -987,7 +987,7 @@ export default function SettingsView({
                 <span className="nex-settings-label" id="save-scope-label">
                   {t("settings.saveScopeLabel")}
                 </span>
-                <M3SegmentedGroup
+                <SegmentedGroup
                   labelledBy="save-scope-label"
                   indicator={false}
                   value={saveScope}

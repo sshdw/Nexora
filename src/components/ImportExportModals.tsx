@@ -7,7 +7,7 @@
 //! commands. Export is read-only against stored data; import is atomic in
 //! the backend, so a failed import leaves no partial rows.
 
-import M3Button from "./M3Button";
+import Button from "./Button";
 import ModalShell from "./Modal";
 import { useStrings } from "../lib/useLocale";
 import type { ImportExportStore } from "../lib/useImportExport";
@@ -50,16 +50,16 @@ export function ExportModal({
         </p>
       </div>
       <div className="nex-dialog-actions">
-        <M3Button variant="quiet" onClick={onClose} disabled={busy}>
+        <Button variant="quiet" onClick={onClose} disabled={busy}>
           {exportSucceeded ? t("common.done") : t("common.cancel")}
-        </M3Button>
-        <M3Button variant="primary" loading={busy} onClick={runExport}>
+        </Button>
+        <Button variant="primary" loading={busy} onClick={runExport}>
           {busy
             ? t("io.exporting")
             : exportSucceeded
               ? t("io.exportAgain")
               : t("io.chooseLocation")}
-        </M3Button>
+        </Button>
       </div>
     </ModalShell>
   );
@@ -99,12 +99,12 @@ export function ImportModal({ store, onImported, onClose }: ImportModalProps) {
         <p className="nex-io-hint">{t("io.importHint")}</p>
       </div>
       <div className="nex-dialog-actions">
-        <M3Button variant="quiet" onClick={onClose} disabled={busy}>
+        <Button variant="quiet" onClick={onClose} disabled={busy}>
           {importedId !== null ? t("common.done") : t("common.cancel")}
-        </M3Button>
-        <M3Button variant="primary" loading={busy} onClick={runImport}>
+        </Button>
+        <Button variant="primary" loading={busy} onClick={runImport}>
           {busy ? t("io.importing") : t("io.chooseFile")}
-        </M3Button>
+        </Button>
       </div>
     </ModalShell>
   );
