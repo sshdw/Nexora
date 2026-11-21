@@ -62,10 +62,7 @@ use serde::{Deserialize, Serialize};
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
 
 /// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
-pub(crate) const PROVIDER_NAME: &str = "anthropic";
-
-/// User-facing provider label.
-pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Anthropic";
+pub(crate) const PROVIDER_NAME: &str = nexora_core::catalog::anthropic::PROVIDER_NAME;
 
 /// `anthropic-version` header value required by the Messages API. This is the
 /// only GA version string published by Anthropic; an unrecognized version is
@@ -91,39 +88,8 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 /// is the provider default consumed as `models[0]` by the selection surface
 /// (`claude-3-5-sonnet-20240620`, the previous sole entry, was retired
 /// October 28, 2025).
-pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-    // Default: best cost/quality balance, 200k enforced context (conservative default).
-    "claude-sonnet-5",
-    // Fast/cheap tier.
-    "claude-haiku-4-5-20251001",
-    // Best-quality flagship tier.
-    "claude-opus-4-8",
-];
-
-/// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
-///
-/// Hardcoded estimates in abstract micro-USD units (1 USD = `1_000_000`
-/// micro-USD), matching `RunBudget`.
-/// These are planning estimates — not live provider pricing, never fetched
-/// over the network — and only cover the native [`SUPPORTED_MODELS`] IDs.
-/// Unknown IDs yield `None` from [`rate_for_model`]: callers fall back to
-/// the policy default, never a guessed rate.
-pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
-    ("claude-sonnet-5", 3_000_000, 15_000_000),
-    ("claude-haiku-4-5-20251001", 1_000_000, 5_000_000),
-    ("claude-opus-4-8", 15_000_000, 75_000_000),
-];
-
-/// Look up the estimated rate for a native Anthropic model ID.
-///
-/// Returns `None` for unknown IDs — never a guessed rate.
-#[must_use]
-pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
-    MODEL_RATES
-        .iter()
-        .find(|(name, _, _)| *name == model)
-        .map(|(_, input, output)| (*input, *output))
-}
+#[cfg(test)]
+pub(crate) const SUPPORTED_MODELS: &[&str] = nexora_core::catalog::anthropic::SUPPORTED_MODELS;
 
 /// Concrete [`ProviderExecutor`] for Anthropic.
 ///
