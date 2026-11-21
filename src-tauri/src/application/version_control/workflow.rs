@@ -225,14 +225,17 @@ pub(crate) fn git_pull(
             .find_reference(&local_ref_name)
             .map_err(|_| VersionControlError::GitFailed)?;
         let target_oid = fetch_commit.id();
+        let commit_obj = repo
+            .find_object(target_oid, Some(git2::ObjectType::Commit))
+            .map_err(|_| VersionControlError::GitFailed)?;
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.safe();
+        repo.checkout_tree(&commit_obj, Some(&mut checkout))
+            .map_err(|_| VersionControlError::GitFailed)?;
         local_ref
             .set_target(target_oid, "fast-forward pull")
             .map_err(|_| VersionControlError::GitFailed)?;
         repo.set_head(&local_ref_name)
-            .map_err(|_| VersionControlError::GitFailed)?;
-        let mut checkout = git2::build::CheckoutBuilder::new();
-        checkout.safe();
-        repo.checkout_head(Some(&mut checkout))
             .map_err(|_| VersionControlError::GitFailed)?;
         return Ok(GitPullResult {
             status: "fast_forward".to_string(),
@@ -588,7 +591,8 @@ pub(crate) fn git_stash_push(
 ///
 /// # Errors
 ///
-/// Returns [`VersionControlError::Unconfirmed`] or
+/// Returns [`VersionControlError::MergeInProgress`],
+/// [`VersionControlError::Unconfirmed`], or
 /// [`VersionControlError::GitFailed`].
 pub(crate) fn git_stash_pop(
     workspace_root: &Path,
@@ -597,6 +601,9 @@ pub(crate) fn git_stash_pop(
     confirmations: &ConfirmationRegistry,
 ) -> Result<GitStashPopResult, VersionControlError> {
     let (_, mut repo) = open_workspace_repo(workspace_root)?;
+    if is_merge_in_progress(&repo) || !read_conflicts(&repo)?.is_empty() {
+        return Err(VersionControlError::MergeInProgress);
+    }
     require_confirmation(confirmations, confirmation_id, OP_GIT_STASH_POP)?;
 
     let mut apply_opts = git2::StashApplyOptions::new();

@@ -1724,4 +1724,148 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn pull_fast_forward_dirty_workdir_leaves_head_and_ref_unchanged() {
+        use crate::application::confirmations::OP_GIT_PULL;
+
+        let (bare_dir, dir_a, dir_b, repo_a, repo_b, branch) = setup_cloned_pair();
+
+        // Push a fast-forward commit from repo_a.
+        commit_file(
+            &repo_a,
+            "shared.txt",
+            b"line1\nline2-remote\n",
+            "remote update",
+        );
+        push_branch_to_origin(&repo_a, &branch);
+
+        let local_ref_name = format!("refs/heads/{branch}");
+        let before_head_oid = repo_b
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("head commit")
+            .id();
+        let before_ref_oid = repo_b
+            .find_reference(&local_ref_name)
+            .expect("local ref")
+            .target()
+            .expect("local ref target");
+
+        // Dirty the file that fast-forward would overwrite.
+        std::fs::write(dir_b.join("shared.txt"), b"dirty local edits\n").expect("dirty file");
+
+        let confirmations = ConfirmationRegistry::new();
+        let err = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect_err("dirty fast-forward must fail");
+        assert_eq!(err, VersionControlError::GitFailed);
+
+        let after_head_oid = repo_b
+            .head()
+            .expect("head after")
+            .peel_to_commit()
+            .expect("head commit after")
+            .id();
+        let after_ref_oid = repo_b
+            .find_reference(&local_ref_name)
+            .expect("local ref after")
+            .target()
+            .expect("local ref target after");
+        assert_eq!(after_head_oid, before_head_oid);
+        assert_eq!(after_ref_oid, before_ref_oid);
+        assert_eq!(
+            std::fs::read_to_string(dir_b.join("shared.txt"))
+                .expect("read dirty file")
+                .replace("\r\n", "\n"),
+            "dirty local edits\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&bare_dir);
+    }
+
+    #[test]
+    fn stash_pop_refuses_existing_conflicts_and_reports_new_stash_conflicts() {
+        use crate::application::confirmations::{
+            OP_GIT_ABORT_MERGE, OP_GIT_PULL, OP_GIT_STASH_POP, OP_GIT_STASH_PUSH,
+        };
+
+        let (bare_dir, dir_a, dir_b, repo_a, repo_b, branch) = setup_cloned_pair();
+
+        // Create an existing merge conflict in repo_b.
+        commit_file(
+            &repo_a,
+            "shared.txt",
+            b"line1\nfrom-remote\n",
+            "remote edit",
+        );
+        push_branch_to_origin(&repo_a, &branch);
+        commit_file(&repo_b, "shared.txt", b"line1\nfrom-local\n", "local edit");
+
+        let confirmations = ConfirmationRegistry::new();
+        let pull_res = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect("pull conflict");
+        assert_eq!(pull_res.status, "conflicts");
+
+        // Upfront guard must refuse before consuming confirmation and must not
+        // swallow an out-of-range stash index as Ok(conflicts).
+        let pop_confirm_id = mint_op(&confirmations, OP_GIT_STASH_POP);
+        assert_eq!(
+            git_stash_pop(&dir_b, 99, &pop_confirm_id, &confirmations)
+                .expect_err("stash pop refused during existing conflict"),
+            VersionControlError::MergeInProgress
+        );
+
+        // After aborting merge, the unconsumed confirmation id is still valid
+        // and out-of-range index fails with GitFailed.
+        git_abort_merge(
+            &dir_b,
+            &mint_op(&confirmations, OP_GIT_ABORT_MERGE),
+            &confirmations,
+        )
+        .expect("abort merge");
+        assert_eq!(
+            git_stash_pop(&dir_b, 99, &pop_confirm_id, &confirmations)
+                .expect_err("out-of-range stash index fails"),
+            VersionControlError::GitFailed
+        );
+
+        // A stash pop that creates new conflicts returns Ok(status: "conflicts").
+        std::fs::write(dir_b.join("shared.txt"), b"line1\nstash-edit\n").expect("write stash edit");
+        git_stash_push(
+            &dir_b,
+            Some("conflicting stash"),
+            &mint_op(&confirmations, OP_GIT_STASH_PUSH),
+            &confirmations,
+        )
+        .expect("stash push");
+        commit_file(&repo_b, "shared.txt", b"line1\nhead-edit\n", "head edit");
+
+        let popped = git_stash_pop(
+            &dir_b,
+            0,
+            &mint_op(&confirmations, OP_GIT_STASH_POP),
+            &confirmations,
+        )
+        .expect("stash pop with new conflict returns Ok");
+        assert_eq!(popped.status, "conflicts");
+        assert_eq!(popped.conflicts.len(), 1);
+        assert_eq!(popped.conflicts[0].path, "shared.txt");
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&bare_dir);
+    }
 }

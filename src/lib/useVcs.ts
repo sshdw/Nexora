@@ -106,7 +106,7 @@ export interface VcsStore {
   reviewError: string | null;
   reviewCopied: boolean;
   /** Load the aggregate (mount: `false` resets selections; refresh: `true`). */
-  loadInfo: (keepSelection: boolean) => Promise<void>;
+  loadInfo: (keepSelection: boolean) => Promise<GitInfo | null>;
   /** Manual refresh: keeps the selection and reloads its diffs. */
   refresh: () => void;
   loadDiff: (path: string) => Promise<void>;
@@ -193,50 +193,55 @@ export function useVcs(): VcsStore {
   const selectedConflictPathRef = useRef<string | null>(null);
   selectedConflictPathRef.current = selectedConflictPath;
 
-  const loadInfo = useCallback(async (keepSelection: boolean) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await gitInfo(COMMIT_PAGE);
-      setInfo(data);
-      // Secondary workflow metadata loads best-effort so partial mocks or
-      // unborn repositories never block the main VCS status panel.
-      const [branchList, stashList] = await Promise.all([
-        gitBranches().catch(() => [] as GitBranch[]),
-        gitStashList().catch(() => [] as GitStashEntry[]),
-      ]);
-      setBranches(branchList);
-      setStashes(stashList);
-      if (!keepSelection) {
-        setSelectedPath(null);
-        setDiff(null);
-        setDiffError(null);
-        setSelectedConflictPath(null);
-        setConflictDiff(null);
-        setConflictDiffError(null);
-        setSelectedCommit(null);
-        setCommitDiff(null);
-        setCommitDiffError(null);
-        setExplain(IDLE_EXPLAIN);
-      } else if (
-        selectedConflictPathRef.current &&
-        !(data.conflicts ?? []).some(
-          (c) => c.path === selectedConflictPathRef.current
-        )
-      ) {
-        setSelectedConflictPath(null);
-        setConflictDiff(null);
-        setConflictDiffError(null);
+  const loadInfo = useCallback(
+    async (keepSelection: boolean): Promise<GitInfo | null> => {
+      setLoading(true);
+      setError(null);
+      try {
+        const data = await gitInfo(COMMIT_PAGE);
+        setInfo(data);
+        // Secondary workflow metadata loads best-effort so partial mocks or
+        // unborn repositories never block the main VCS status panel.
+        const [branchList, stashList] = await Promise.all([
+          gitBranches().catch(() => [] as GitBranch[]),
+          gitStashList().catch(() => [] as GitStashEntry[]),
+        ]);
+        setBranches(branchList);
+        setStashes(stashList);
+        if (!keepSelection) {
+          setSelectedPath(null);
+          setDiff(null);
+          setDiffError(null);
+          setSelectedConflictPath(null);
+          setConflictDiff(null);
+          setConflictDiffError(null);
+          setSelectedCommit(null);
+          setCommitDiff(null);
+          setCommitDiffError(null);
+          setExplain(IDLE_EXPLAIN);
+        } else if (
+          selectedConflictPathRef.current &&
+          !(data.conflicts ?? []).some(
+            (c) => c.path === selectedConflictPathRef.current
+          )
+        ) {
+          setSelectedConflictPath(null);
+          setConflictDiff(null);
+          setConflictDiffError(null);
+        }
+        return data;
+      } catch (e) {
+        setError(toMessage(e));
+        setInfo(null);
+        setBranches([]);
+        setStashes([]);
+        return null;
+      } finally {
+        setLoading(false);
       }
-    } catch (e) {
-      setError(toMessage(e));
-      setInfo(null);
-      setBranches([]);
-      setStashes([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    []
+  );
 
   useEffect(() => {
     void loadInfo(false);
@@ -289,10 +294,16 @@ export function useVcs(): VcsStore {
     setPushArmed(false);
     setAbortArmed(false);
     setForceDeleteBranch(null);
-    void loadInfo(true).then(() => {
+    void loadInfo(true).then((freshInfo) => {
+      if (!freshInfo) return;
       if (selectedPath) void loadDiff(selectedPath);
       if (selectedCommit) void loadCommitDiff(selectedCommit);
-      if (selectedConflictPath) void loadConflictDiff(selectedConflictPath);
+      if (
+        selectedConflictPath &&
+        (freshInfo.conflicts ?? []).some((c) => c.path === selectedConflictPath)
+      ) {
+        void loadConflictDiff(selectedConflictPath);
+      }
     });
   }, [
     loadInfo,

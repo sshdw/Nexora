@@ -518,4 +518,39 @@ describe("VersionControlPanel — conflicts, workflow & review (Stage 10)", () =
       expect.stringContaining("[REDACTED]")
     );
   });
+
+  it("clears selected conflict preview on refresh when resolved externally without re-fetching conflict diff", async () => {
+    state.info.conflicts = [{ path: "src/conflict.ts", status: "UU" }];
+    state.info.merge_in_progress = true;
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByText("Conflicted files: 1")).toBeInTheDocument()
+    );
+
+    // Select the conflicted file and load its preview.
+    fireEvent.click(screen.getByRole("button", { name: /src\/conflict\.ts/ }));
+    await waitFor(() =>
+      expect(screen.getAllByText(/const x = 'ours'/).length).toBeGreaterThan(0)
+    );
+    expect(
+      mockInvoke.mock.calls.filter(([cmd]) => cmd === "git_conflict_diff")
+    ).toHaveLength(1);
+
+    // Simulate external resolution before manual Refresh.
+    state.info.conflicts = [];
+    state.info.merge_in_progress = false;
+    mockInvoke.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Conflicted files: 1")).not.toBeInTheDocument()
+    );
+
+    // Stale selectedConflictPath must not trigger git_conflict_diff again.
+    expect(
+      mockInvoke.mock.calls.filter(([cmd]) => cmd === "git_conflict_diff")
+    ).toHaveLength(0);
+    expect(screen.queryByText(/const x = 'ours'/)).not.toBeInTheDocument();
+  });
 });
