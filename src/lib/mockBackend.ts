@@ -940,8 +940,7 @@ async function invoke(
             ? "oauth"
             : "none",
       };
-    case "chatgpt_oauth_start":
-    case "chatgpt_oauth_refresh": {
+    case "chatgpt_oauth_start": {
       settings.set("__mock_chatgpt_oauth_connected", "true");
       if (!providers.some((p) => p.name === "openai")) {
         providers.push({
@@ -955,6 +954,21 @@ async function invoke(
         has_refresh_token: true,
         expires_at: now() + 3600,
         connected_at: now(),
+        auth_mode: "oauth",
+      };
+     }
+    case "chatgpt_oauth_refresh": {
+      if (settings.get("__mock_chatgpt_oauth_connected") !== "true") {
+        throw {
+          kind: "request",
+          message: "ChatGPT OAuth is not connected",
+        };
+      }
+      return {
+        connected: true,
+        has_refresh_token: true,
+        expires_at: now() + 3600,
+        connected_at: now() - 60,
         auth_mode: "oauth",
       };
     }

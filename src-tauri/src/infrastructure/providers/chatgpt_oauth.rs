@@ -68,6 +68,14 @@ const MAX_CALLBACK_REQUEST_BYTES: usize = 8192;
 /// Maximum bytes read from a token endpoint response.
 const MAX_TOKEN_RESPONSE_BYTES: usize = 128 * 1024;
 
+/// Maximum UTF-8 characters stored in a single OS keyring entry so every chunk
+/// stays safely below Windows Credential Manager's 2560-byte (`1280` UTF-16
+/// char) `CRED_MAX_CREDENTIAL_BLOB_SIZE` limit (`keyring::Error::TooLong`).
+const MAX_KEYRING_CHUNK_CHARS: usize = 1000;
+
+/// Maximum number of keyring chunks allowed for one OAuth token bundle.
+const MAX_KEYRING_CHUNKS: usize = 32;
+
 /// Single-flight lock serializing OAuth token refresh operations so concurrent
 /// callers near expiry never race on a single-use rotating `refresh_token`.
 static REFRESH_SINGLE_FLIGHT: Mutex<()> = Mutex::new(());
@@ -250,13 +258,13 @@ impl ChatGptOAuthStatus {
 
 /// Secret OAuth token bundle persisted EXCLUSIVELY inside the OS keyring.
 /// Never serialized to `SQLite`, IPC payloads, or logs.
+/// Unused `id_token` payloads are deliberately dropped before persistence so
+/// keyring entries stay compact across platforms.
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct StoredChatGptOAuthTokens {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -275,7 +283,6 @@ impl std::fmt::Debug for StoredChatGptOAuthTokens {
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
             )
-            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
             .field("expires_at", &self.expires_at)
             .field("connected_at", &self.connected_at)
             .finish_non_exhaustive()
@@ -309,7 +316,43 @@ impl StoredChatGptOAuthTokens {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct KeyringChunkManifest {
+    slot: u8,
+    chunks: usize,
+}
+
+fn chunk_entry_key(slot: u8, index: usize) -> String {
+    format!("{CHATGPT_OAUTH_KEYRING_KEY}.s{slot}.{index}")
+}
+
+fn split_into_keyring_chunks(payload: &str) -> Result<Vec<String>, ChatGptOAuthError> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut char_count = 0usize;
+    for ch in payload.chars() {
+        current.push(ch);
+        char_count += 1;
+        if char_count == MAX_KEYRING_CHUNK_CHARS {
+            chunks.push(std::mem::take(&mut current));
+            char_count = 0;
+        }
+    }
+    if !current.is_empty() || chunks.is_empty() {
+        chunks.push(current);
+    }
+    if chunks.len() > MAX_KEYRING_CHUNKS {
+        return Err(ChatGptOAuthError::ResponseTooLarge);
+    }
+    Ok(chunks)
+}
+
 /// OS keyring store for opt-in ChatGPT Plus/Pro OAuth tokens.
+///
+/// Splits serialized token bundles across `<= 1000`-character keyring chunks
+/// using a two-slot write-new-then-delete-stale commit protocol so Windows
+/// Credential Manager's 2560-byte (`1280` UTF-16 char) blob limit is never
+/// exceeded and an existing refresh token is never lost if a save fails.
 pub(crate) struct ChatGptOAuthStore;
 
 impl ChatGptOAuthStore {
@@ -319,27 +362,104 @@ impl ChatGptOAuthStore {
     ) -> Result<(), ChatGptOAuthError> {
         let payload =
             serde_json::to_string(tokens).map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
-        backend
+        let chunks = split_into_keyring_chunks(&payload)?;
+
+        let prev_manifest =
+            match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY) {
+                Ok(raw) => serde_json::from_str::<KeyringChunkManifest>(&raw).ok(),
+                Err(_) => None,
+            };
+        let next_slot = match prev_manifest {
+            Some(m) if m.slot == 0 => 1,
+            _ => 0,
+        };
+
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let key = chunk_entry_key(next_slot, idx);
+            if backend
+                .set_password(CHATGPT_OAUTH_KEYRING_SERVICE, &key, chunk)
+                .is_err()
+            {
+                // Roll back partially written chunks in `next_slot` without
+                // touching the active manifest or the previous slot's chunks.
+                for cleanup_idx in 0..idx {
+                    let _ = backend.delete_credential(
+                        CHATGPT_OAUTH_KEYRING_SERVICE,
+                        &chunk_entry_key(next_slot, cleanup_idx),
+                    );
+                }
+                return Err(ChatGptOAuthError::KeyringUnavailable);
+            }
+        }
+
+        let manifest = KeyringChunkManifest {
+            slot: next_slot,
+            chunks: chunks.len(),
+        };
+        let manifest_json =
+            serde_json::to_string(&manifest).map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
+        if backend
             .set_password(
                 CHATGPT_OAUTH_KEYRING_SERVICE,
                 CHATGPT_OAUTH_KEYRING_KEY,
-                &payload,
+                &manifest_json,
             )
-            .map_err(|_| ChatGptOAuthError::KeyringUnavailable)
+            .is_err()
+        {
+            for cleanup_idx in 0..chunks.len() {
+                let _ = backend.delete_credential(
+                    CHATGPT_OAUTH_KEYRING_SERVICE,
+                    &chunk_entry_key(next_slot, cleanup_idx),
+                );
+            }
+            return Err(ChatGptOAuthError::KeyringUnavailable);
+        }
+
+        if let Some(prev) = prev_manifest {
+            if prev.slot != next_slot {
+                for old_idx in 0..prev.chunks.min(MAX_KEYRING_CHUNKS) {
+                    let _ = backend.delete_credential(
+                        CHATGPT_OAUTH_KEYRING_SERVICE,
+                        &chunk_entry_key(prev.slot, old_idx),
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn load_with(
         backend: &dyn CredentialBackend,
     ) -> Result<Option<StoredChatGptOAuthTokens>, ChatGptOAuthError> {
-        match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY) {
-            Ok(raw) => {
-                let parsed: StoredChatGptOAuthTokens = serde_json::from_str(&raw)
-                    .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
-                Ok(Some(parsed))
+        let raw =
+            match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY) {
+                Ok(raw) => raw,
+                Err(keyring::Error::NoEntry) => return Ok(None),
+                Err(_) => return Err(ChatGptOAuthError::KeyringUnavailable),
+            };
+
+        if let Ok(manifest) = serde_json::from_str::<KeyringChunkManifest>(&raw) {
+            if manifest.chunks == 0 || manifest.chunks > MAX_KEYRING_CHUNKS {
+                return Err(ChatGptOAuthError::KeyringUnavailable);
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(ChatGptOAuthError::KeyringUnavailable),
+            let mut assembled = String::with_capacity(manifest.chunks * MAX_KEYRING_CHUNK_CHARS);
+            for idx in 0..manifest.chunks {
+                let chunk = backend
+                    .get_password(
+                        CHATGPT_OAUTH_KEYRING_SERVICE,
+                        &chunk_entry_key(manifest.slot, idx),
+                    )
+                    .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
+                assembled.push_str(&chunk);
+            }
+            let parsed: StoredChatGptOAuthTokens = serde_json::from_str(&assembled)
+                .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
+            return Ok(Some(parsed));
         }
+
+        let parsed: StoredChatGptOAuthTokens =
+            serde_json::from_str(&raw).map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
+        Ok(Some(parsed))
     }
 
     /// Delete stored ChatGPT OAuth tokens from the OS keyring (idempotent).
@@ -348,6 +468,25 @@ impl ChatGptOAuthStore {
     }
 
     pub(crate) fn clear_with(backend: &dyn CredentialBackend) -> Result<(), ChatGptOAuthError> {
+        let prev_manifest =
+            match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY) {
+                Ok(raw) => serde_json::from_str::<KeyringChunkManifest>(&raw).ok(),
+                Err(keyring::Error::NoEntry) => None,
+                Err(_) => return Err(ChatGptOAuthError::KeyringUnavailable),
+            };
+
+        if let Some(manifest) = prev_manifest {
+            for idx in 0..manifest.chunks.min(MAX_KEYRING_CHUNKS) {
+                match backend.delete_credential(
+                    CHATGPT_OAUTH_KEYRING_SERVICE,
+                    &chunk_entry_key(manifest.slot, idx),
+                ) {
+                    Ok(()) | Err(keyring::Error::NoEntry) => {}
+                    Err(_) => return Err(ChatGptOAuthError::KeyringUnavailable),
+                }
+            }
+        }
+
         match backend.delete_credential(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY) {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(_) => Err(ChatGptOAuthError::KeyringUnavailable),
@@ -556,7 +695,9 @@ impl LoopbackCallbackServer {
             }
             match self.listener.accept() {
                 Ok((mut stream, _peer)) => {
-                    if let Some(outcome) = handle_callback_connection(&mut stream, expected_state) {
+                    if let Some(outcome) =
+                        handle_callback_connection(&mut stream, expected_state, deadline, cancel)
+                    {
                         return outcome;
                     }
                 }
@@ -572,14 +713,42 @@ impl LoopbackCallbackServer {
 fn handle_callback_connection(
     stream: &mut TcpStream,
     expected_state: &str,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
 ) -> Option<Result<String, ChatGptOAuthError>> {
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
 
     let mut buf = [0u8; MAX_CALLBACK_REQUEST_BYTES];
-    let n = stream.read(&mut buf).unwrap_or(0);
-    let request = String::from_utf8_lossy(&buf[..n]);
+    let mut filled = 0usize;
+    while filled < MAX_CALLBACK_REQUEST_BYTES {
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Some(Err(ChatGptOAuthError::Cancelled));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Some(Err(ChatGptOAuthError::CallbackTimeout));
+        }
+        let read_timeout = deadline
+            .saturating_duration_since(now)
+            .min(Duration::from_secs(1))
+            .max(Duration::from_millis(1));
+        let _ = stream.set_read_timeout(Some(read_timeout));
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                filled += n;
+                if buf[..filled].windows(4).any(|w| w == b"\r\n\r\n")
+                    || buf[..filled].windows(2).any(|w| w == b"\n\n")
+                {
+                    break;
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    let request = String::from_utf8_lossy(&buf[..filled]);
     let Some(target) = parse_http_get_target(&request) else {
         write_static_http_response(stream, "400 Bad Request", "Invalid OAuth callback request.");
         return None;
@@ -678,8 +847,6 @@ struct RawTokenResponse {
     #[serde(default)]
     refresh_token: Option<String>,
     #[serde(default)]
-    id_token: Option<String>,
-    #[serde(default)]
     expires_in: Option<i64>,
     #[serde(default)]
     token_type: Option<String>,
@@ -744,7 +911,6 @@ fn post_token_form(
     Ok(StoredChatGptOAuthTokens {
         access_token: raw.access_token,
         refresh_token: raw.refresh_token.filter(|s| !s.trim().is_empty()),
-        id_token: raw.id_token.filter(|s| !s.trim().is_empty()),
         expires_at,
         token_type: raw.token_type,
         scope: raw.scope,
@@ -1119,7 +1285,6 @@ mod tests {
             &StoredChatGptOAuthTokens {
                 access_token: "expired-access-secret".to_string(),
                 refresh_token: None,
-                id_token: None,
                 expires_at: Some(now_unix_secs() - 10),
                 token_type: Some("Bearer".to_string()),
                 scope: None,
@@ -1138,7 +1303,6 @@ mod tests {
             &StoredChatGptOAuthTokens {
                 access_token: "expired-access-secret".to_string(),
                 refresh_token: Some("   \t\n  ".to_string()),
-                id_token: None,
                 expires_at: Some(now_unix_secs() + 10), // within 60s REFRESH_SKEW_SECS
                 token_type: Some("Bearer".to_string()),
                 scope: None,
@@ -1211,7 +1375,6 @@ mod tests {
             &StoredChatGptOAuthTokens {
                 access_token: "initial-near-expiry-access".to_string(),
                 refresh_token: Some("rotating-rt-1".to_string()),
-                id_token: None,
                 expires_at: Some(now_unix_secs() + 5),
                 token_type: Some("Bearer".to_string()),
                 scope: None,
@@ -1410,5 +1573,163 @@ mod tests {
             assert!(!text.contains("bearer "));
             assert!(!text.contains("eyj"));
         }
+    }
+
+    struct SizeLimitedKeyring {
+        max_utf16_chars: usize,
+        entries: Mutex<HashMap<(String, String), String>>,
+        fail_after_writes: Mutex<Option<usize>>,
+    }
+
+    impl SizeLimitedKeyring {
+        fn new(max_utf16_chars: usize) -> Self {
+            Self {
+                max_utf16_chars,
+                entries: Mutex::new(HashMap::new()),
+                fail_after_writes: Mutex::new(None),
+            }
+        }
+
+        fn arm_fail_after_writes(&self, remaining_ok_writes: usize) {
+            *self.fail_after_writes.lock().expect("lock") = Some(remaining_ok_writes);
+        }
+    }
+
+    impl CredentialBackend for SizeLimitedKeyring {
+        fn set_password(&self, service: &str, key: &str, credential: &str) -> keyring::Result<()> {
+            if credential.encode_utf16().count() > self.max_utf16_chars {
+                return Err(keyring::Error::TooLong(
+                    "password".to_string(),
+                    u32::try_from(self.max_utf16_chars).unwrap_or(1280),
+                ));
+            }
+            let mut countdown = self.fail_after_writes.lock().expect("lock");
+            if let Some(rem) = *countdown {
+                if rem == 0 {
+                    *countdown = None;
+                    return Err(keyring::Error::PlatformFailure(
+                        "simulated mid-chunk keyring failure".into(),
+                    ));
+                }
+                *countdown = Some(rem - 1);
+            }
+            drop(countdown);
+
+            self.entries.lock().expect("lock").insert(
+                (service.to_string(), key.to_string()),
+                credential.to_string(),
+            );
+            Ok(())
+        }
+
+        fn get_password(&self, service: &str, key: &str) -> keyring::Result<String> {
+            self.entries
+                .lock()
+                .expect("lock")
+                .get(&(service.to_string(), key.to_string()))
+                .cloned()
+                .ok_or(keyring::Error::NoEntry)
+        }
+
+        fn delete_credential(&self, service: &str, key: &str) -> keyring::Result<()> {
+            self.entries
+                .lock()
+                .expect("lock")
+                .remove(&(service.to_string(), key.to_string()))
+                .map(|_| ())
+                .ok_or(keyring::Error::NoEntry)
+        }
+    }
+
+    #[test]
+    fn chunked_keyring_store_handles_3kb_access_token_under_windows_1280_char_limit_and_preserves_previous_on_failure(
+    ) {
+        let keyring = SizeLimitedKeyring::new(1280);
+        let large_access_token = format!("eyJhbGciOiJSUzI1NiJ9.{}.sig", "A".repeat(3072));
+        let initial_refresh_token = format!("rt_initial_{}", "R".repeat(600));
+
+        let initial = StoredChatGptOAuthTokens {
+            access_token: large_access_token.clone(),
+            refresh_token: Some(initial_refresh_token.clone()),
+            expires_at: Some(1_900_000_000),
+            token_type: Some("Bearer".to_string()),
+            scope: Some(DEFAULT_SCOPES.to_string()),
+            connected_at: 1_899_996_400,
+        };
+
+        ChatGptOAuthStore::save_with(&keyring, &initial)
+            .expect("3 KB access token chunks and saves under 1280-char limit");
+
+        {
+            let snapshot = keyring.entries.lock().expect("lock");
+            assert!(snapshot.len() >= 4, "expected manifest + multiple chunks");
+            for ((service, _key), value) in snapshot.iter() {
+                assert_eq!(service, CHATGPT_OAUTH_KEYRING_SERVICE);
+                assert!(
+                    value.chars().count() <= MAX_KEYRING_CHUNK_CHARS,
+                    "every keyring entry must be <= {MAX_KEYRING_CHUNK_CHARS} chars, got {}",
+                    value.chars().count()
+                );
+            }
+        }
+
+        let loaded = ChatGptOAuthStore::load_with(&keyring)
+            .expect("load chunked tokens")
+            .expect("tokens present");
+        assert_eq!(loaded.access_token, large_access_token);
+        assert_eq!(
+            loaded.refresh_token.as_deref(),
+            Some(initial_refresh_token.as_str())
+        );
+
+        // Simulate a write failure after the first chunk of a rotated update:
+        // the previously saved tokens (including the existing refresh_token)
+        // must remain intact and recoverable.
+        keyring.arm_fail_after_writes(1);
+        let failed_update = StoredChatGptOAuthTokens {
+            access_token: format!("eyJ.rotated.{}", "B".repeat(3072)),
+            refresh_token: Some("rt_rotated_lost_if_not_transactional".to_string()),
+            expires_at: Some(1_900_003_600),
+            token_type: Some("Bearer".to_string()),
+            scope: Some(DEFAULT_SCOPES.to_string()),
+            connected_at: 1_899_996_400,
+        };
+        let err = ChatGptOAuthStore::save_with(&keyring, &failed_update)
+            .expect_err("mid-save failure must surface error");
+        assert_eq!(err, ChatGptOAuthError::KeyringUnavailable);
+
+        let preserved = ChatGptOAuthStore::load_with(&keyring)
+            .expect("previous tokens still load cleanly after failed update")
+            .expect("previous tokens intact");
+        assert_eq!(preserved.access_token, large_access_token);
+        assert_eq!(
+            preserved.refresh_token.as_deref(),
+            Some(initial_refresh_token.as_str())
+        );
+
+        // Now perform a successful update to a smaller token and verify stale chunks from the old slot are deleted.
+        let compact_update = StoredChatGptOAuthTokens {
+            access_token: "compact-access-token".to_string(),
+            refresh_token: Some("compact-refresh-token".to_string()),
+            expires_at: Some(1_900_007_200),
+            token_type: Some("Bearer".to_string()),
+            scope: None,
+            connected_at: 1_899_996_400,
+        };
+        ChatGptOAuthStore::save_with(&keyring, &compact_update).expect("compact update succeeds");
+        {
+            let snapshot = keyring.entries.lock().expect("lock");
+            assert_eq!(
+                snapshot.len(),
+                2,
+                "stale chunks from previous slot must be cleaned up, leaving only manifest + 1 chunk"
+            );
+        }
+
+        ChatGptOAuthStore::clear_with(&keyring).expect("clear chunked store");
+        assert!(
+            keyring.entries.lock().expect("lock").is_empty(),
+            "clear_with must remove manifest and all chunk entries"
+        );
     }
 }

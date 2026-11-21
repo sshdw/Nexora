@@ -122,6 +122,14 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
 
     // Experimental/ToS notice is shown and sign-in requires opt-in acknowledgment.
     expect(screen.getByText(/Opt-in experimental feature/i)).toBeTruthy();
+    expect(
+      screen.getByRole("region", {
+        name: "ChatGPT Plus / Pro OAuth (Experimental)",
+      })
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("region", { name: "External CLI adapters (Opt-in)" })
+    ).toBeTruthy();
     const signInBtn = screen.getByRole("button", {
       name: "Sign in with ChatGPT (OAuth)",
     }) as HTMLButtonElement;
@@ -134,6 +142,24 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
 
     fireEvent.click(signInBtn);
     expect(store.startChatGptOAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces Waiting for browser busy state with role=status", () => {
+    const store = makeStore({ chatgptOAuthWorking: true });
+    render(
+      <LocaleProvider>
+        <CredentialsSection
+          store={store}
+          draftKeys={{}}
+          onDraftChange={vi.fn()}
+          onConnect={vi.fn()}
+          onDisconnect={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    const statusNode = screen.getByRole("status");
+    expect(statusNode.textContent).toBe("Waiting for browser\u2026");
   });
 
   it("renders connected ChatGPT OAuth controls (refresh + disconnect), hides API-key Disconnect when only OAuth is connected, and toggles CLI adapters", () => {

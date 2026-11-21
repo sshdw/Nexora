@@ -131,7 +131,7 @@ export default function CredentialsSection({
       </ul>
 
       {store.startChatGptOAuth && (
-        <div
+        <section
           className="nex-optin-card"
           aria-labelledby="chatgpt-oauth-heading"
         >
@@ -177,9 +177,13 @@ export default function CredentialsSection({
                 disabled={oauthBusy || !oauthOptInAck}
                 onClick={() => void store.startChatGptOAuth?.()}
               >
-                {store.chatgptOAuthWorking
-                  ? t("settings.chatgptOAuthSigningIn")
-                  : t("settings.chatgptOAuthSignIn")}
+                {store.chatgptOAuthWorking ? (
+                  <span role="status">
+                    {t("settings.chatgptOAuthSigningIn")}
+                  </span>
+                ) : (
+                  t("settings.chatgptOAuthSignIn")
+                )}
               </Button>
             ) : (
               <>
@@ -206,11 +210,11 @@ export default function CredentialsSection({
               </>
             )}
           </div>
-        </div>
+        </section>
       )}
 
       {store.refreshCliAdapters && (
-        <div
+        <section
           className="nex-optin-card"
           aria-labelledby="cli-adapters-heading"
         >
@@ -285,7 +289,7 @@ export default function CredentialsSection({
               </li>
             ))}
           </ul>
-        </div>
+        </section>
       )}
     </section>
   );

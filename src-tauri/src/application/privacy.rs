@@ -207,10 +207,10 @@ fn endpoint_destination(name: &str) -> &'static str {
         "api.anthropic.com"
     } else if name == gemini::PROVIDER_NAME {
         "generativelanguage.googleapis.com"
-    } else if name == crate::infrastructure::providers::cli_adapter::CLI_CODEX_NAME {
-        "local codex CLI (isolated subprocess)"
-    } else if name == crate::infrastructure::providers::cli_adapter::CLI_CLAUDE_NAME {
-        "local claude CLI (isolated subprocess)"
+    } else if name == crate::infrastructure::providers::cli_adapter::CLI_CODEX_NAME
+        || name == crate::infrastructure::providers::cli_adapter::CLI_CLAUDE_NAME
+    {
+        "via local CLI → OpenAI/Anthropic cloud"
     } else if let Some(preset) =
         crate::infrastructure::providers::catalog::openai::find_preset(name)
     {

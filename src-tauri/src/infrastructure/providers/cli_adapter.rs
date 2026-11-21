@@ -244,7 +244,122 @@ pub(crate) fn is_safe_cli_model_arg(model: &str) -> bool {
         .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b':' | b'/'))
 }
 
-/// Build non-interactive CLI arguments for `kind` and optional `model`.
+const DEFAULT_WINDOWS_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// Fresh empty temporary working directory created per CLI invocation and
+/// removed automatically on drop so autonomous CLIs never inherit Nexora's
+/// workspace or repository directory.
+struct IsolatedCliTempDir {
+    path: std::path::PathBuf,
+}
+
+impl IsolatedCliTempDir {
+    fn create() -> std::io::Result<Self> {
+        let path = std::env::temp_dir().join(format!("nexora-cli-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for IsolatedCliTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Resolve an executable name against `path_var` (and `pathext_var` when
+/// `use_windows_pathext` is true) so Windows npm `.cmd` / `.exe` shims are
+/// found without invoking an interactive shell.
+#[must_use]
+fn resolve_cli_binary_with(
+    program: &str,
+    path_var: Option<&std::ffi::OsStr>,
+    pathext_var: Option<&str>,
+    use_windows_pathext: bool,
+) -> std::path::PathBuf {
+    let program_path = std::path::Path::new(program);
+    if program_path.is_absolute()
+        || program.contains('/')
+        || program.contains('\\')
+        || program_path.components().count() > 1
+    {
+        return program_path.to_path_buf();
+    }
+    let Some(paths) = path_var else {
+        return program_path.to_path_buf();
+    };
+
+    let has_extension = program_path.extension().is_some();
+    let mut extensions: Vec<String> = Vec::new();
+    if use_windows_pathext && !has_extension {
+        let raw_exts = pathext_var.unwrap_or(DEFAULT_WINDOWS_PATHEXT);
+        for ext in raw_exts.split(';') {
+            let trimmed = ext.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lower = trimmed.to_ascii_lowercase();
+            let normalized = if lower.starts_with('.') {
+                lower
+            } else {
+                format!(".{lower}")
+            };
+            if !extensions
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&normalized))
+            {
+                extensions.push(normalized);
+            }
+        }
+        for fallback in [".exe", ".cmd", ".bat", ".com"] {
+            if !extensions
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(fallback))
+            {
+                extensions.push(fallback.to_string());
+            }
+        }
+    }
+
+    for dir in std::env::split_paths(paths) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        if use_windows_pathext && !has_extension {
+            for ext in &extensions {
+                let candidate = dir.join(format!("{program}{ext}"));
+                if candidate.is_file() {
+                    return candidate;
+                }
+            }
+        }
+        let direct = dir.join(program);
+        if direct.is_file() {
+            return direct;
+        }
+    }
+
+    program_path.to_path_buf()
+}
+
+#[must_use]
+fn resolve_cli_binary(program: &str, env: &BTreeMap<String, String>) -> std::path::PathBuf {
+    let path_val = env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATH"))
+        .map(|(_, v)| std::ffi::OsStr::new(v.as_str()));
+    let pathext_val = env
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("PATHEXT"))
+        .map(|(_, v)| v.as_str());
+    resolve_cli_binary_with(program, path_val, pathext_val, cfg!(windows))
+}
+
+/// Build non-interactive, text-only CLI arguments for `kind` and optional `model`.
 #[must_use]
 fn build_cli_args(kind: CliAdapterKind, model: &str) -> Vec<String> {
     let custom_model = model.trim() != kind.default_model() && is_safe_cli_model_arg(model.trim());
@@ -253,12 +368,16 @@ fn build_cli_args(kind: CliAdapterKind, model: &str) -> Vec<String> {
             let mut args = vec![
                 "exec".to_string(),
                 "--skip-git-repo-check".to_string(),
-                "-".to_string(),
+                "--sandbox".to_string(),
+                "read-only".to_string(),
+                "-c".to_string(),
+                "approval_policy=\"never\"".to_string(),
             ];
             if custom_model {
                 args.push("-m".to_string());
                 args.push(model.trim().to_string());
             }
+            args.push("-".to_string());
             args
         }
         CliAdapterKind::Claude => {
@@ -266,6 +385,12 @@ fn build_cli_args(kind: CliAdapterKind, model: &str) -> Vec<String> {
                 "-p".to_string(),
                 "--output-format".to_string(),
                 "text".to_string(),
+                "--tools".to_string(),
+                String::new(),
+                "--permission-mode".to_string(),
+                "plan".to_string(),
+                "--disallowedTools".to_string(),
+                "Bash,Edit,Write,WebFetch,WebSearch".to_string(),
             ];
             if custom_model {
                 args.push("--model".to_string());
@@ -319,11 +444,27 @@ fn sanitize_version_line(raw: &str) -> Option<String> {
 }
 
 enum SubprocessOutcome {
-    Exited { code: Option<i32>, stdout: Vec<u8> },
+    Exited {
+        code: Option<i32>,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
     TimedOut,
     Cancelled,
     OutputTooLarge,
     SpawnFailed,
+}
+
+fn stderr_indicates_auth_failure(stderr: &[u8]) -> bool {
+    let lower = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    lower.contains("not logged in")
+        || lower.contains("please log in")
+        || lower.contains("please login")
+        || lower.contains("sign in")
+        || lower.contains("unauthorized")
+        || lower.contains("authentication")
+        || lower.contains("invalid api key")
+        || lower.contains("invalid_api_key")
 }
 
 fn spawn_stdout_reader(
@@ -352,24 +493,28 @@ fn spawn_stdout_reader(
     })
 }
 
-fn spawn_stderr_drainer(mut pipe: std::process::ChildStderr) -> std::thread::JoinHandle<()> {
+fn spawn_stderr_drainer(mut pipe: std::process::ChildStderr) -> std::thread::JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
-        let mut drained = 0usize;
+        let mut captured = Vec::new();
         let mut sink = [0u8; 4096];
         while let Ok(n) = pipe.read(&mut sink) {
             if n == 0 {
                 break;
             }
-            drained = drained.saturating_add(n);
-            let _ = drained.min(MAX_CLI_STDERR_BYTES);
+            let remaining = MAX_CLI_STDERR_BYTES.saturating_sub(captured.len());
+            if remaining > 0 {
+                let take = remaining.min(n);
+                captured.extend_from_slice(&sink[..take]);
+            }
         }
+        captured
     })
 }
 
 fn cleanup_child_and_pipes(
     child: &mut nexora_os_exec::ProcessTreeChild,
     stdout_handle: Option<std::thread::JoinHandle<Vec<u8>>>,
-    stderr_handle: Option<std::thread::JoinHandle<()>>,
+    stderr_handle: Option<std::thread::JoinHandle<Vec<u8>>>,
 ) {
     let _ = child.kill_tree();
     let _ = child.wait();
@@ -382,8 +527,9 @@ fn cleanup_child_and_pipes(
 }
 
 /// Execute `program` with `args` inside a killable OS process tree with a
-/// clean sanitized environment, optional `stdin_payload`, hard `timeout`,
-/// cooperative `CancellationToken`, and strict `max_stdout_bytes`.
+/// fresh empty temporary working directory, clean sanitized environment,
+/// optional `stdin_payload`, hard `timeout`, cooperative `CancellationToken`,
+/// and strict `max_stdout_bytes`.
 fn run_contained_cli(
     program: &str,
     args: &[String],
@@ -396,9 +542,15 @@ fn run_contained_cli(
         return SubprocessOutcome::Cancelled;
     }
 
+    let Ok(isolated_dir) = IsolatedCliTempDir::create() else {
+        return SubprocessOutcome::SpawnFailed;
+    };
+
     let sanitized_env = build_sanitized_cli_env_from(std::env::vars());
-    let mut cmd = Command::new(program);
+    let resolved_program = resolve_cli_binary(program, &sanitized_env);
+    let mut cmd = Command::new(&resolved_program);
     cmd.args(args)
+        .current_dir(isolated_dir.path())
         .env_clear()
         .envs(&sanitized_env)
         .stdin(if stdin_payload.is_some() {
@@ -461,12 +613,18 @@ fn run_contained_cli(
         }
     };
 
+    // Reap any stray descendant processes spawned by the CLI before joining
+    // stdout/stderr reader threads so a grandchild holding an inherited pipe
+    // handle can never block the run thread after the direct child exits.
+    let _ = child.kill_tree();
+    let _ = child.wait();
+
     let stdout = stdout_handle
         .and_then(|h| h.join().ok())
         .unwrap_or_default();
-    if let Some(h) = stderr_handle {
-        let _ = h.join();
-    }
+    let stderr = stderr_handle
+        .and_then(|h| h.join().ok())
+        .unwrap_or_default();
 
     if overflow_flag.load(Ordering::SeqCst) {
         return SubprocessOutcome::OutputTooLarge;
@@ -475,6 +633,7 @@ fn run_contained_cli(
     SubprocessOutcome::Exited {
         code: exit_status.code(),
         stdout,
+        stderr,
     }
 }
 
@@ -495,6 +654,7 @@ pub(crate) fn probe_cli_adapter(kind: CliAdapterKind) -> (bool, Option<String>) 
         SubprocessOutcome::Exited {
             code: Some(0),
             stdout,
+            ..
         } => {
             let text = String::from_utf8_lossy(&stdout);
             (true, sanitize_version_line(&text))
@@ -625,6 +785,7 @@ impl CliAdapterExecutor {
             SubprocessOutcome::Exited {
                 code: Some(0),
                 stdout,
+                ..
             } => {
                 let text = String::from_utf8_lossy(&stdout).trim().to_string();
                 if text.is_empty() {
@@ -641,20 +802,31 @@ impl CliAdapterExecutor {
                     usage: None,
                 })
             }
-            SubprocessOutcome::Exited { code, .. } => {
+            SubprocessOutcome::Exited { code, stderr, .. } => {
+                if stderr_indicates_auth_failure(&stderr) {
+                    log::warn!(
+                        "{} cli adapter exited with authentication error ({:?}); hint: verify `{}` CLI is logged in before running",
+                        self.kind.provider_name(),
+                        code,
+                        self.kind.binary_name()
+                    );
+                    return Err(ExecutorError::Authentication);
+                }
                 log::warn!(
-                    "{} cli adapter exited with non-zero status ({:?})",
+                    "{} cli adapter exited with non-zero status ({:?}); hint: verify `{}` CLI is installed, logged in, and non-interactive",
                     self.kind.provider_name(),
-                    code
+                    code,
+                    self.kind.binary_name()
                 );
                 Err(ExecutorError::Failure)
             }
             SubprocessOutcome::TimedOut => {
                 log::warn!(
-                    "{} cli adapter timed out and process tree was killed",
-                    self.kind.provider_name()
+                    "{} cli adapter timed out and process tree was killed (non-retryable); hint: verify `{}` CLI is logged in and not waiting for interactive input",
+                    self.kind.provider_name(),
+                    self.kind.binary_name()
                 );
-                Err(ExecutorError::Network)
+                Err(ExecutorError::Failure)
             }
             SubprocessOutcome::Cancelled => Err(ExecutorError::Cancelled),
             SubprocessOutcome::OutputTooLarge => {
@@ -842,11 +1014,143 @@ mod tests {
         let err = executor
             .execute(&req, "", &CancellationToken::new())
             .expect_err("must time out");
-        assert!(matches!(err, ExecutorError::Network));
+        assert!(matches!(err, ExecutorError::Failure));
+        assert!(!nexora_core::provider::should_retry(&err));
         assert!(
             start.elapsed() < Duration::from_secs(8),
             "process tree must be killed promptly on timeout"
         );
+    }
+
+    #[test]
+    fn build_cli_args_enforces_text_only_sandbox_and_disables_tools() {
+        let codex_default = build_cli_args(CliAdapterKind::Codex, CLI_CODEX_MODELS[0]);
+        assert!(codex_default.contains(&"exec".to_string()));
+        assert!(codex_default.contains(&"--skip-git-repo-check".to_string()));
+        assert!(codex_default
+            .windows(2)
+            .any(|w| w == ["--sandbox", "read-only"]));
+        assert!(codex_default
+            .windows(2)
+            .any(|w| w == ["-c", "approval_policy=\"never\""]));
+        assert_eq!(codex_default.last().map(String::as_str), Some("-"));
+        assert!(!codex_default.contains(&"-m".to_string()));
+
+        let codex_custom = build_cli_args(CliAdapterKind::Codex, "gpt-5.2-codex");
+        assert!(codex_custom
+            .windows(2)
+            .any(|w| w == ["-m", "gpt-5.2-codex"]));
+
+        let claude_default = build_cli_args(CliAdapterKind::Claude, CLI_CLAUDE_MODELS[0]);
+        assert!(claude_default.contains(&"-p".to_string()));
+        assert!(claude_default
+            .windows(2)
+            .any(|w| w == ["--output-format", "text"]));
+        assert!(claude_default.windows(2).any(|w| w == ["--tools", ""]));
+        assert!(claude_default
+            .windows(2)
+            .any(|w| w == ["--permission-mode", "plan"]));
+        assert!(claude_default
+            .windows(2)
+            .any(|w| w == ["--disallowedTools", "Bash,Edit,Write,WebFetch,WebSearch"]));
+        assert!(!claude_default.contains(&"--model".to_string()));
+
+        let claude_custom = build_cli_args(CliAdapterKind::Claude, "claude-sonnet-4-5");
+        assert!(claude_custom
+            .windows(2)
+            .any(|w| w == ["--model", "claude-sonnet-4-5"]));
+    }
+
+    #[test]
+    fn cli_adapter_runs_in_isolated_empty_temp_dir_cleaned_up_on_drop() {
+        #[cfg(windows)]
+        let script = "$cwd = (Get-Location).Path; $count = @(Get-ChildItem -Force).Count; Write-Output ($cwd + '|' + $count)";
+        #[cfg(not(windows))]
+        let script =
+            "cwd=$(pwd); count=$(ls -A | wc -l | tr -d ' '); printf '%s|%s\n' \"$cwd\" \"$count\"";
+
+        let (prog, args) = shell_cmd(script);
+        let executor = CliAdapterExecutor::with_test_override(
+            CliAdapterKind::Codex,
+            prog,
+            args,
+            Duration::from_secs(10),
+            MAX_CLI_OUTPUT_BYTES,
+        );
+        let req = sample_request(CLI_CODEX_NAME, CLI_CODEX_MODELS[0], "check cwd");
+        let resp = executor
+            .execute(&req, "", &CancellationToken::new())
+            .expect("execution succeeds");
+
+        let (reported_cwd, entry_count) = resp.content.split_once('|').expect("cwd|count output");
+        assert_eq!(entry_count.trim(), "0", "isolated temp dir must be empty");
+
+        let cwd_path = std::path::Path::new(reported_cwd.trim());
+        let dir_name = cwd_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        assert!(
+            dir_name.starts_with("nexora-cli-"),
+            "subprocess must run in an isolated nexora-cli-* temp dir, got: {reported_cwd}"
+        );
+        if let Ok(host_cwd) = std::env::current_dir() {
+            assert_ne!(cwd_path, host_cwd.as_path());
+        }
+        assert!(
+            !cwd_path.exists(),
+            "isolated temp dir must be removed on drop after execution completes"
+        );
+    }
+
+    #[test]
+    fn cli_adapter_reaps_descendant_holding_stdout_pipe_after_parent_exits() {
+        #[cfg(windows)]
+        let script = "Write-Output 'parent-finished'; Start-Process powershell.exe -NoNewWindow -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30'";
+        #[cfg(not(windows))]
+        let script = "printf 'parent-finished\\n'; sleep 30 &";
+
+        let (prog, args) = shell_cmd(script);
+        let executor = CliAdapterExecutor::with_test_override(
+            CliAdapterKind::Codex,
+            prog,
+            args,
+            Duration::from_secs(15),
+            MAX_CLI_OUTPUT_BYTES,
+        );
+        let req = sample_request(CLI_CODEX_NAME, CLI_CODEX_MODELS[0], "reap descendants");
+        let start = Instant::now();
+        let resp = executor
+            .execute(&req, "", &CancellationToken::new())
+            .expect("parent exit succeeds without hanging on descendant pipe");
+        assert_eq!(resp.content, "parent-finished");
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "descendant holding stdout pipe must be killed promptly on parent exit"
+        );
+    }
+
+    #[test]
+    fn resolve_cli_binary_finds_windows_cmd_and_exe_shims_via_pathext() {
+        let dir = IsolatedCliTempDir::create().expect("temp dir");
+        let cmd_shim = dir.path().join("codex.cmd");
+        let exe_shim = dir.path().join("claude.exe");
+        std::fs::write(&cmd_shim, "@echo off\r\n").expect("write codex.cmd");
+        std::fs::write(&exe_shim, "MZ").expect("write claude.exe");
+
+        let path_os = std::env::join_paths([dir.path()]).expect("join_paths");
+        let resolved_codex = resolve_cli_binary_with(
+            "codex",
+            Some(path_os.as_os_str()),
+            Some(".COM;.EXE;.BAT;.CMD"),
+            true,
+        );
+        assert_eq!(resolved_codex, cmd_shim);
+
+        let resolved_claude = resolve_cli_binary_with(
+            "claude",
+            Some(path_os.as_os_str()),
+            Some(".COM;.EXE;.BAT;.CMD"),
+            true,
+        );
+        assert_eq!(resolved_claude, exe_shim);
     }
 
     #[test]

@@ -53,6 +53,13 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       provenance: string;
       has_manual_override: boolean;
     }[],
+    chatgptOAuth: {
+      connected: false,
+      has_refresh_token: false,
+      expires_at: null as number | null,
+      connected_at: null as number | null,
+      auth_mode: "none",
+    },
     refreshedByConnection: new Map<
       string,
       {
@@ -110,6 +117,41 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
             (provider) => provider.id !== (args as { id: number }).id
           );
           return null;
+        case "chatgpt_oauth_status":
+          return JSON.parse(JSON.stringify(state.chatgptOAuth));
+        case "chatgpt_oauth_disconnect":
+          state.chatgptOAuth = {
+            connected: false,
+            has_refresh_token: false,
+            expires_at: null,
+            connected_at: null,
+            auth_mode: "none",
+          };
+          return null;
+        case "set_cli_adapter_enabled": {
+          const { adapterId, enabled } = args as {
+            adapterId: "codex" | "claude";
+            enabled: boolean;
+          };
+          const providerName =
+            adapterId === "codex" ? "cli_codex" : "cli_claude";
+          const displayName =
+            adapterId === "codex" ? "Codex CLI" : "Claude CLI";
+          if (enabled) {
+            if (!state.configured.some((p) => p.name === providerName)) {
+              state.configured.push({
+                id: state.configured.length + 20,
+                name: providerName,
+                display_name: displayName,
+              });
+            }
+          } else {
+            state.configured = state.configured.filter(
+              (p) => p.name !== providerName
+            );
+          }
+          return enabled;
+        }
         case "list_model_capabilities":
           return JSON.parse(JSON.stringify(state.capabilities));
         case "get_model_capabilities": {
@@ -224,6 +266,13 @@ beforeEach(() => {
     ["provider.model", "gpt-5.2"],
   ]);
   state.capabilities = [];
+  state.chatgptOAuth = {
+    connected: false,
+    has_refresh_token: false,
+    expires_at: null,
+    connected_at: null,
+    auth_mode: "none",
+  };
   state.refreshedByConnection = new Map();
 });
 
@@ -582,6 +631,94 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
       )
     ).toBe(false);
     expect(result.current.selectedProvider).toBe("openai");
+  });
+
+  it("disconnect on openai when both API key and ChatGPT OAuth are connected removes only the API key and preserves OAuth, provider row, and selection", async () => {
+    state.chatgptOAuth = {
+      connected: true,
+      has_refresh_token: true,
+      expires_at: 1_900_000_000,
+      connected_at: 1_899_996_400,
+      auth_mode: "oauth",
+    };
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.providers[0]).toMatchObject({
+      configured: true,
+      credentialed: true,
+      available: true,
+    });
+    expect(result.current.chatgptOAuth?.connected).toBe(true);
+    mockInvoke.mockClear();
+
+    await act(async () => {
+      await result.current.disconnect("openai");
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("remove_provider_credential", {
+      provider: "openai",
+    });
+    expect(mockInvoke).not.toHaveBeenCalledWith("chatgpt_oauth_disconnect");
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "remove_provider")
+    ).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "set_setting")
+    ).toBe(false);
+
+    expect(result.current.selectedProvider).toBe("openai");
+    expect(result.current.selectedModel).toBe("gpt-5.2");
+    expect(result.current.chatgptOAuth?.connected).toBe(true);
+    expect(result.current.providers[0]).toMatchObject({
+      configured: true,
+      credentialed: false,
+      available: true,
+    });
+  });
+
+  it("toggleCliAdapter clears selection only after set_cli_adapter_enabled succeeds", async () => {
+    state.supported.push({
+      name: "cli_codex",
+      display_name: "Codex CLI",
+      models: ["codex-cli-default"],
+    });
+    state.configured.push({
+      id: 11,
+      name: "cli_codex",
+      display_name: "Codex CLI",
+    });
+    state.settings.set("provider.selected", "cli_codex");
+    state.settings.set("provider.model", "codex-cli-default");
+
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.selectedProvider).toBe("cli_codex");
+    mockInvoke.mockClear();
+
+    // 1. When set_cli_adapter_enabled fails, selection must not be cleared.
+    failNext.command = "set_cli_adapter_enabled";
+    let ok = true;
+    await act(async () => {
+      ok = (await result.current.toggleCliAdapter?.("codex", false)) ?? true;
+    });
+    expect(ok).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "set_setting")
+    ).toBe(false);
+    expect(result.current.selectedProvider).toBe("cli_codex");
+
+    // 2. When set_cli_adapter_enabled succeeds, selection is cleared after the IPC call.
+    mockInvoke.mockClear();
+    await act(async () => {
+      ok = (await result.current.toggleCliAdapter?.("codex", false)) ?? false;
+    });
+    expect(ok).toBe(true);
+    const callOrder = mockInvoke.mock.calls.map(([cmd]) => cmd);
+    const toggleIdx = callOrder.indexOf("set_cli_adapter_enabled");
+    const clearIdx = callOrder.indexOf("set_setting");
+    expect(toggleIdx).toBeGreaterThanOrEqual(0);
+    expect(clearIdx).toBeGreaterThan(toggleIdx);
+    expect(result.current.selectedProvider).toBeNull();
   });
 });
 

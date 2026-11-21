@@ -22,8 +22,8 @@
 use tauri::{AppHandle, Manager};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::application::providers::ProviderService;
-use crate::infrastructure::database::Database;
+use crate::application::providers::{ProviderError, ProviderService};
+use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::providers::chatgpt_oauth::{
     refresh_tokens, run_oauth_login_flow, ChatGptOAuthError, ChatGptOAuthStatus, ChatGptOAuthStore,
     DEFAULT_OAUTH_CALLBACK_TIMEOUT,
@@ -34,6 +34,38 @@ use crate::infrastructure::providers::openai::{
 };
 
 use super::error::{CommandError, ErrorKind};
+
+fn is_provider_already_exists(err: &ProviderError) -> bool {
+    matches!(
+        err,
+        ProviderError::Database(DatabaseError::Sqlite(rusqlite::Error::SqliteFailure(
+            sqlite_err,
+            _
+        ))) if sqlite_err.code == rusqlite::ErrorCode::ConstraintViolation
+    )
+}
+
+fn ensure_openai_provider_row_or_rollback<R>(
+    service: &ProviderService<'_>,
+    rollback_oauth: R,
+) -> Result<(), CommandError>
+where
+    R: FnOnce(),
+{
+    let result = match service.read_by_name(OPENAI_PROVIDER_NAME) {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => match service.create(OPENAI_PROVIDER_NAME, OPENAI_DISPLAY_NAME) {
+            Ok(_) => Ok(()),
+            Err(err) if is_provider_already_exists(&err) => Ok(()),
+            Err(err) => Err(CommandError::from(err)),
+        },
+        Err(err) => Err(CommandError::from(err)),
+    };
+    if result.is_err() {
+        rollback_oauth();
+    }
+    result
+}
 
 /// Store a new credential for `provider` in the OS secure keyring (FR-014).
 #[tauri::command]
@@ -96,16 +128,13 @@ pub(crate) async fn chatgpt_oauth_start(
         .map_err(CommandError::from)?;
 
         // Ensure the `openai` provider metadata row exists so OpenAI is
-        // immediately usable without requiring a separate API key.
+        // immediately usable without requiring a separate API key. If persisting
+        // the provider row fails, roll back the newly saved OAuth keyring tokens.
         let db = handle.state::<Database>();
         let service = ProviderService::new(db.inner());
-        if service
-            .read_by_name(OPENAI_PROVIDER_NAME)
-            .map_err(CommandError::from)?
-            .is_none()
-        {
-            let _ = service.create(OPENAI_PROVIDER_NAME, OPENAI_DISPLAY_NAME);
-        }
+        ensure_openai_provider_row_or_rollback(&service, || {
+            let _ = ChatGptOAuthStore::clear();
+        })?;
         Ok(status)
     })
     .await;

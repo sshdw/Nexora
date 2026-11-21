@@ -659,6 +659,11 @@ export function useProviders(): ProvidersStore {
       setWorking(true);
       setError(null);
       try {
+        if (name === OPENAI_PROVIDER && chatgptOAuth?.connected) {
+          await removeProviderCredential(name);
+          await reload();
+          return;
+        }
         // Clear the persisted selection first so it never points at a removed
         // provider (a selection is only valid while the provider is usable).
         if (selectedProvider === name) {
@@ -666,16 +671,6 @@ export function useProviders(): ProvidersStore {
           await setSetting(SELECTED_MODEL_KEY, null);
         }
         await removeProviderCredential(name);
-        if (name === OPENAI_PROVIDER && chatgptOAuth?.connected) {
-          await chatgptOAuthDisconnect();
-          setChatGptOAuth({
-            connected: false,
-            has_refresh_token: false,
-            expires_at: null,
-            connected_at: null,
-            auth_mode: "none",
-          });
-        }
         const def = configuredProviders.find(
           (provider) => provider.name === name
         );
@@ -761,11 +756,11 @@ export function useProviders(): ProvidersStore {
       setError(null);
       try {
         const providerName = adapterId === "codex" ? "cli_codex" : "cli_claude";
-        if (!enabled && selectedProvider === providerName) {
+        const nextEnabled = await setCliAdapterEnabled(adapterId, enabled);
+        if (!nextEnabled && selectedProvider === providerName) {
           await setSetting(SELECTED_PROVIDER_KEY, null);
           await setSetting(SELECTED_MODEL_KEY, null);
         }
-        const nextEnabled = await setCliAdapterEnabled(adapterId, enabled);
         setCliAdapters((prev) =>
           prev.map((item) =>
             item.id === adapterId ? { ...item, enabled: nextEnabled } : item

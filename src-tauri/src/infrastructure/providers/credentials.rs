@@ -304,11 +304,17 @@ fn provider_credential_exists_with(
     if super::cli_adapter::is_cli_adapter_provider(provider) {
         return Ok(true);
     }
-    if provider == super::openai::PROVIDER_NAME
-        && super::chatgpt_oauth::ChatGptOAuthStore::is_connected_with(oauth_backend)
-            .map_err(|_| CredentialError::StorageUnavailable)?
-    {
-        return Ok(true);
+    if provider == super::openai::PROVIDER_NAME {
+        match super::chatgpt_oauth::ChatGptOAuthStore::is_connected_with(oauth_backend) {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            Err(_) => {
+                if exists_with_dyn(api_backend, provider).unwrap_or(false) {
+                    return Ok(true);
+                }
+                return Err(CredentialError::StorageUnavailable);
+            }
+        }
     }
     exists_with_dyn(api_backend, provider)
 }
@@ -806,7 +812,6 @@ mod tests {
             &StoredChatGptOAuthTokens {
                 access_token: "chatgpt-oauth-access-token".to_string(),
                 refresh_token: Some("chatgpt-oauth-refresh".to_string()),
-                id_token: None,
                 expires_at: Some(future_exp),
                 token_type: Some("Bearer".to_string()),
                 scope: None,
