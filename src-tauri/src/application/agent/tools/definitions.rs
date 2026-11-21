@@ -3,6 +3,7 @@
 
 use super::ToolRegistry;
 use crate::application::agent::permissions::RunPreset;
+use crate::application::agent::roles::TaskCapability;
 use crate::application::execution::ToolDefinition;
 
 impl ToolRegistry {
@@ -65,19 +66,73 @@ impl ToolRegistry {
         is_plan: bool,
         mcp_tools: &[ToolDefinition],
     ) -> Vec<ToolDefinition> {
-        if is_plan {
-            return Self::definitions_for_read_only();
-        }
-        let mut defs = Self::definitions_for_preset(preset);
-        for mcp_def in mcp_tools {
-            if crate::application::agent::permissions::is_mcp_tool(&mcp_def.name)
-                && !crate::application::agent::permissions::is_known_tool(&mcp_def.name)
-                && !defs.iter().any(|existing| existing.name == mcp_def.name)
-            {
-                defs.push(mcp_def.clone());
+        Self::definitions_for_run_full(preset, is_plan, mcp_tools, false)
+    }
+
+    /// Tool definitions exposed to the model for a specific run preset, plan
+    /// mode, discovered MCP tools, and parent-only subagent orchestration tools
+    /// (`M19` / `P27`, `S11-07`).
+    ///
+    /// Subagents (`depth >= 1`) ALWAYS pass `include_subagents = false` so
+    /// subagent tools are omitted structurally (max depth = 1).
+    pub(crate) fn definitions_for_run_full(
+        preset: RunPreset,
+        is_plan: bool,
+        mcp_tools: &[ToolDefinition],
+        include_subagents: bool,
+    ) -> Vec<ToolDefinition> {
+        let mut defs = if is_plan {
+            Self::definitions_for_read_only()
+        } else {
+            let mut base = Self::definitions_for_preset(preset);
+            for mcp_def in mcp_tools {
+                if crate::application::agent::permissions::is_mcp_tool(&mcp_def.name)
+                    && !crate::application::agent::permissions::is_known_tool(&mcp_def.name)
+                    && !crate::application::agent::permissions::is_subagent_tool(&mcp_def.name)
+                    && !base.iter().any(|existing| existing.name == mcp_def.name)
+                {
+                    base.push(mcp_def.clone());
+                }
             }
+            base
+        };
+        if include_subagents {
+            defs.extend(Self::subagent_definitions());
         }
         defs
+    }
+
+    /// Tool definitions exposed to the model for a run, further filtered by an
+    /// optional [`TaskCapability`] ceiling (`P34`).
+    ///
+    /// Keeping `preset` unchanged while filtering via `capability` lets
+    /// `ReadOnly` / `WorkspaceWrite` subagents hide disallowed tools (such as
+    /// `execute_command`) without switching away from a `Coding` parent's
+    /// preset-scoped permission rules.
+    pub(crate) fn definitions_for_run_with_capability(
+        preset: RunPreset,
+        is_plan: bool,
+        capability: Option<TaskCapability>,
+        mcp_tools: &[ToolDefinition],
+        include_subagents: bool,
+    ) -> Vec<ToolDefinition> {
+        let mut defs =
+            Self::definitions_for_run_full(preset, is_plan, mcp_tools, include_subagents);
+        if let Some(cap) = capability {
+            defs.retain(|def| cap.allows_tool(&def.name));
+        }
+        defs
+    }
+
+    /// Parent-only subagent orchestration tools (`M19` / `P27`, `S11-07`).
+    pub(crate) fn subagent_definitions() -> Vec<ToolDefinition> {
+        vec![
+            spawn_subagent_definition(),
+            send_subagent_message_definition(),
+            wait_subagent_definition(),
+            kill_subagent_definition(),
+            list_subagents_definition(),
+        ]
     }
 }
 
@@ -266,6 +321,160 @@ fn ask_user_question_definition() -> ToolDefinition {
                 }
             },
             "required": ["question"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn spawn_subagent_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "spawn_subagent".to_string(),
+        description: "Spawn a visible task-scoped subagent to investigate or implement a focused subtask in parallel. Defaults to the parent's model (never auto-escalates) and strictly obeys child_access <= parent_current_access. Set use_worktree=true for isolated parallel writes in a Git repository; read-only subagents share the parent workspace without copying.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Clear, self-contained task prompt for the subagent"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short label displayed on the subagent card (optional)"
+                },
+                "access": {
+                    "type": "string",
+                    "enum": ["read_only", "workspace_write", "full_access"],
+                    "description": "Requested capability scope (default 'read_only'; strictly capped by parent's current access)"
+                },
+                "use_worktree": {
+                    "type": "boolean",
+                    "description": "Run a writing subagent inside an isolated temporary git worktree and apply its patch cleanly on completion (default false; ignored for read-only subagents)"
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional explicit model override on the same provider (defaults to parent model)"
+                },
+                "effort": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "xhigh"],
+                    "description": "Optional reasoning effort override validated against the model catalog's supported_efforts"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Maximum LLM turns for this subagent (default 12)"
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 900,
+                    "description": "Wall-clock timeout in seconds (default 180)"
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "Wait for the subagent to finish before returning (default false for parallel execution)"
+                }
+            },
+            "required": ["task"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn send_subagent_message_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "send_subagent_message".to_string(),
+        description: "Send a follow-up message to an existing completed/idle subagent, continuing inside its preserved conversation context.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "subagent_id": {
+                    "type": "string",
+                    "description": "Identifier of the existing subagent (e.g. 'sub-1')"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Follow-up instruction for the subagent"
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "description": "Optional turn limit for this continuation"
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 900,
+                    "description": "Optional wall-clock timeout in seconds"
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "Wait for the follow-up turn to finish before returning (default true)"
+                }
+            },
+            "required": ["subagent_id", "message"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn wait_subagent_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "wait_subagent".to_string(),
+        description: "Wait for one specific subagent, a list of subagents, or all currently running subagents to finish and return their results.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "subagent_id": {
+                    "type": "string",
+                    "description": "Single subagent ID to wait for (optional)"
+                },
+                "subagent_ids": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Multiple subagent IDs to wait for (optional; omit both to wait for all active subagents)"
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 900,
+                    "description": "Maximum seconds to wait (default 300)"
+                }
+            },
+            "required": [],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn kill_subagent_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "kill_subagent".to_string(),
+        description: "Stop one individual subagent and clean up its temporary worktree (if any) without cancelling the parent run.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "subagent_id": {
+                    "type": "string",
+                    "description": "Identifier of the subagent to stop"
+                }
+            },
+            "required": ["subagent_id"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn list_subagents_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_subagents".to_string(),
+        description: "List all subagents spawned in the current run along with their status, model, access level, worktree isolation, and step counts.".to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": [],
             "additionalProperties": false
         }),
     }

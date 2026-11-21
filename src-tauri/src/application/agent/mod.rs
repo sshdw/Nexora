@@ -31,12 +31,15 @@
 //!   the #65 ladder unchanged, and the append-only in-memory
 //!   [`governance::AuditLog`] accessory to the persistence row (no new table,
 //!   secret-free by construction).
-//! - WS-B.3 — Roles & Pipeline ([`roles`], [`pipeline`]): six hardcoded
-//!   [`roles::AgentRole`]s pinning tool subsets, task-key defaults, and
-//!   approval-posture references (naming the #65 `RiskClass` outcome, never
-//!   remapping it), plus the ordered [`pipeline::Pipeline`] stage list with
-//!   transition-gated advances, parent-capped budget slices, and stage
-//!   entries on the [`governance::AuditLog`].
+//! - `P34` — Task Capabilities & Pipeline ([`roles`], [`pipeline`]):
+//!   task-scoped [`roles::TaskCapability`] tiers (`read_only` /
+//!   `workspace_write` / `full_access`) plus the ordered [`pipeline::Pipeline`]
+//!   stage list with transition-gated advances and parent-capped budget slices.
+//! - `M19` / `P27` — Automatic Visible Subagents ([`subagents`]): task-scoped
+//!   subagent orchestration with configurable concurrency (`1..=6`, default `3`),
+//!   max depth `1`, parent model default (never auto-escalating), lifetime
+//!   `child_access <= parent_current_access` ceiling enforcement, and optional
+//!   isolated `git worktree` execution (`S11-08`).
 //! - Task T4 — Context Compaction ([`compaction`]): pure threshold-triggered
 //!   and overflow-driven folding of older in-run turns into a summary, with
 //!   a verbatim retained tail (`compaction::ContextGovernor`).
@@ -106,6 +109,7 @@ pub mod snapshots;
 pub mod spend;
 #[cfg(test)]
 mod stress;
+pub mod subagents;
 pub mod tasks;
 pub mod tools;
 pub mod work_queue;

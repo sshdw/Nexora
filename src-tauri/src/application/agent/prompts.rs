@@ -772,7 +772,7 @@ mod tests {
         );
         assert_eq!(messages[0].content, expected);
         assert!(messages[0].content.contains("act"));
-        assert!(messages[0].content.contains("executor"));
+        assert!(messages[0].content.contains("full_access"));
         assert!(messages[0].content.contains("running"));
     }
 

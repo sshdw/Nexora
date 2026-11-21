@@ -17,10 +17,13 @@ import {
   type RunPlan,
   type RunQuestion,
   type StepEventFrame,
+  type SubagentSnapshot,
+  type SubagentStepSnapshot,
   answerRunQuestion,
   clarifyAgentRun,
   getAgentStepObservation,
   inspectRunLive,
+  killSubagent as invokeKillSubagent,
   listAgentRuns,
   listAgentSteps,
   listConversationRunEvents,
@@ -75,6 +78,12 @@ export interface ActiveCommandView {
   truncated: boolean;
   killed: boolean;
   started_at: number;
+}
+
+export type SubagentStepView = SubagentStepSnapshot;
+
+export interface SubagentView extends Omit<SubagentSnapshot, "steps"> {
+  steps: SubagentStepView[];
 }
 
 /** One run as rendered by `AgentRunSteps` (Task 5.1 §6.3). */
@@ -144,6 +153,46 @@ export interface AgentRunView {
     before_tokens?: number;
     after_tokens?: number;
   } | null;
+  /** Visible task-scoped subagents spawned by this run (`M19`). */
+  subagents?: SubagentView[];
+}
+
+function upsertSubagent(
+  existing: SubagentView[] | undefined,
+  incoming: SubagentSnapshot
+): SubagentView[] {
+  const list = existing ?? [];
+  const idx = list.findIndex(
+    (item) => item.subagent_id === incoming.subagent_id
+  );
+  const incomingSteps = incoming.steps ?? [];
+  if (idx < 0) {
+    return [...list, { ...incoming, steps: incomingSteps }];
+  }
+  const prev = list[idx];
+  const mergedSteps =
+    incomingSteps.length > 0 ? incomingSteps : prev.steps;
+  return list.map((item, i) =>
+    i === idx ? { ...prev, ...incoming, steps: mergedSteps } : item
+  );
+}
+
+function appendSubagentStep(
+  existing: SubagentView[] | undefined,
+  subagentId: string,
+  step: SubagentStepView
+): SubagentView[] | undefined {
+  if (!existing) return existing;
+  const idx = existing.findIndex((item) => item.subagent_id === subagentId);
+  if (idx < 0) return existing;
+  return existing.map((item, i) => {
+    if (i !== idx) return item;
+    if (item.steps.some((s) => s.seq === step.seq)) return item;
+    return {
+      ...item,
+      steps: [...item.steps, step].sort((a, b) => a.seq - b.seq),
+    };
+  });
 }
 
 export type RevertOutcome =
@@ -258,6 +307,8 @@ export interface AgentRunStore {
   clarifyRun: (runId: number, content: string) => Promise<void>;
   /** Synchronously merge a recorded Plan decision into the local run view. */
   applyPlanDecision: (runId: number, plan: RunPlan) => void;
+  /** Stop one individual subagent of an active run without cancelling the parent run (`M19`). */
+  killSubagent: (runId: number, subagentId: string) => Promise<void>;
 }
 
 /** Merge previews by durable identity first, with seq as the legacy fallback.
@@ -681,6 +732,14 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
             : (old?.pending_approval ?? null)
           : null;
         if (isActive(merged.status)) {
+          if (!changed && live !== undefined && live?.run_id === row.id) {
+            if (live.subagents && live.subagents.length > 0) {
+              merged.subagents = live.subagents.reduce<SubagentView[]>(
+                (acc, snap) => upsertSubagent(acc, snap),
+                old?.subagents ?? []
+              );
+            }
+          }
           if (!changed && live !== undefined) {
             if (live?.run_id === row.id && live.pending_question) {
               merged.pending_question = live.pending_question;
@@ -1058,6 +1117,25 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
               plan_implemented_run_id: gov.plan.implemented_run_id,
             };
           }
+          if (gov.type === "subagent_updated") {
+            return {
+              ...run,
+              subagents: upsertSubagent(run.subagents, gov.subagent),
+            };
+          }
+          if (gov.type === "subagent_step") {
+            return {
+              ...run,
+              subagents: appendSubagentStep(run.subagents, gov.subagent_id, {
+                seq: gov.seq,
+                kind: gov.kind,
+                tool_name: gov.tool_name,
+                target: gov.target,
+                status: gov.status,
+                observation: gov.observation,
+              }),
+            };
+          }
           if (!isActive(run.status)) return run;
           if (gov.type === "stream_delta") {
             if (gov.kind === "text") {
@@ -1283,6 +1361,13 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     [conversationId, patch]
   );
 
+  const killSubagent = useCallback(
+    async (runId: number, subagentId: string): Promise<void> => {
+      await invokeKillSubagent(runId, subagentId);
+    },
+    []
+  );
+
   return {
     runs,
     loading,
@@ -1298,5 +1383,6 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
     answerQuestion,
     clarifyRun,
     applyPlanDecision,
+    killSubagent,
   };
 }

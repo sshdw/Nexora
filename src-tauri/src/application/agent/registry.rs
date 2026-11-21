@@ -4,11 +4,12 @@
 //! existing `service::` paths keep resolving.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::approval::{ApprovalDecision, ApprovalGate, AutonomyMode, PendingApprovalSnapshot};
 use super::control::RunControl;
 use super::question::{PendingQuestionSnapshot, QuestionResolveError};
+use super::subagents::{SubagentManager, SubagentSnapshot};
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::run_questions::RunQuestion;
 
@@ -46,8 +47,20 @@ pub(crate) struct ActiveAgentRun {
 #[derive(Debug, Default)]
 pub(crate) struct AgentRunRegistry {
     runs: Mutex<HashMap<i64, ActiveAgentRun>>,
+    subagents: Mutex<HashMap<i64, Arc<SubagentManager>>>,
     claimed_conversations: Mutex<HashSet<i64>>,
     threads: Mutex<HashMap<i64, Vec<std::thread::JoinHandle<()>>>>,
+}
+
+/// Outcome of killing one individual subagent of an active run (`M19`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KillSubagentOutcome {
+    /// The target subagent was stopped without cancelling its parent run.
+    Killed,
+    /// The parent run is not active.
+    RunNotActive,
+    /// The parent run is active, but no subagent with that id exists.
+    SubagentNotFound,
 }
 
 /// Outcome of a registry approval resolution.
@@ -79,6 +92,8 @@ pub(crate) struct LiveRunSnapshot {
     pub pending_approval: Option<PendingApprovalSnapshot>,
     /// The parked clarifying question, when `ask_user_question` is awaiting user input.
     pub pending_question: Option<PendingQuestionSnapshot>,
+    /// Live snapshots of task-scoped subagents spawned by this run (`M19`).
+    pub subagents: Vec<SubagentSnapshot>,
 }
 
 impl AgentRunRegistry {
@@ -108,6 +123,38 @@ impl AgentRunRegistry {
             .insert(run_id, entry);
     }
 
+    /// Attach a run's [`SubagentManager`] so cancel/mode-downgrade/approval and
+    /// individual `kill_subagent` IPC calls reach active subagents.
+    pub(crate) fn attach_subagents(&self, run_id: i64, manager: Arc<SubagentManager>) {
+        self.subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(run_id, manager);
+    }
+
+    /// Stop one individual subagent without cancelling its parent run (`M19`).
+    #[must_use]
+    pub(crate) fn kill_subagent(&self, run_id: i64, subagent_id: &str) -> KillSubagentOutcome {
+        let is_active = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&run_id);
+        if !is_active {
+            return KillSubagentOutcome::RunNotActive;
+        }
+        let manager = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
+        match manager {
+            Some(mgr) if mgr.kill_subagent(subagent_id) => KillSubagentOutcome::Killed,
+            _ => KillSubagentOutcome::SubagentNotFound,
+        }
+    }
+
     /// Release a terminated run: drop its handles and unclaim its
     /// conversation. Called by the run thread on every exit path, so a
     /// finished run is immediately reusable for a new run in the same
@@ -119,6 +166,11 @@ impl AgentRunRegistry {
     pub(crate) fn release(&self, run_id: i64) {
         let entry = self
             .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&run_id);
+        let _ = self
+            .subagents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&run_id);
@@ -150,9 +202,18 @@ impl AgentRunRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
             .cloned();
+        let subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
         match entry {
             Some(entry) => {
                 entry.control.cancel();
+                if let Some(mgr) = subagents {
+                    mgr.cancel_all(false);
+                }
                 true
             }
             None => false,
@@ -176,9 +237,18 @@ impl AgentRunRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
             .cloned();
+        let subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
         match entry {
             Some(entry) => {
                 entry.control.shutdown();
+                if let Some(mgr) = subagents {
+                    mgr.cancel_all(true);
+                }
                 true
             }
             None => false,
@@ -343,10 +413,21 @@ impl AgentRunRegistry {
             // `respond_with_scope` already recorded the sticky verdict when
             // `scope == "group"`; nothing further to do here.
             let _ = scope_group;
-            (ResolveOutcome::Resolved, pending)
-        } else {
-            (ResolveOutcome::NoPendingApproval, None)
+            return (ResolveOutcome::Resolved, pending);
         }
+        let subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
+        if let Some(mgr) = subagents {
+            let pending = mgr.pending_scope_info(call_id);
+            if mgr.resolve_approval(call_id, decision, scope) {
+                return (ResolveOutcome::Resolved, pending);
+            }
+        }
+        (ResolveOutcome::NoPendingApproval, None)
     }
 
     /// Read-only peek at a pending approval's `(tool_name, group_key)` without
@@ -360,12 +441,22 @@ impl AgentRunRegistry {
         run_id: i64,
         call_id: &str,
     ) -> Option<(String, Option<String>)> {
-        let runs = self
+        let entry = self
             .runs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = runs.get(&run_id)?;
-        entry.gate.pending_info(call_id)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned()?;
+        if let Some(info) = entry.gate.pending_info(call_id) {
+            return Some(info);
+        }
+        let subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned()?;
+        subagents.pending_scope_info(call_id)
     }
 
     /// Read-only live snapshot of the active run in `conversation_id` (G-15).
@@ -390,8 +481,20 @@ impl AgentRunRegistry {
                 .find(|(_, entry)| entry.conversation_id == conversation_id)?;
             (*run_id, entry.clone())
         };
-        let pending_approval = entry.gate.pending_snapshot();
+        let subagents_mgr = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
+        let pending_approval = entry
+            .gate
+            .pending_snapshot()
+            .or_else(|| subagents_mgr.as_ref().and_then(|m| m.pending_approval()));
         let pending_question = entry.control.question_gate().pending_snapshot();
+        let subagents = subagents_mgr
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.snapshots());
         let parked_reason = if pending_approval.is_some() {
             "awaiting_approval"
         } else if pending_question.is_some() {
@@ -409,6 +512,7 @@ impl AgentRunRegistry {
             parked_reason,
             pending_approval,
             pending_question,
+            subagents,
         })
     }
 
@@ -492,9 +596,18 @@ impl AgentRunRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&run_id)
             .cloned();
+        let subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned();
         match entry {
             Some(entry) => {
                 entry.gate.set_mode(mode);
+                if let Some(mgr) = subagents {
+                    mgr.propagate_mode(mode);
+                }
                 true
             }
             None => false,

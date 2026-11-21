@@ -1908,6 +1908,43 @@ async function invoke(
 
       return { run_id: runId };
     }
+    case "kill_subagent": {
+      const runId = Number(requireArg(args, "kill_subagent", "runId"));
+      const subagentId = String(requireArg(args, "kill_subagent", "subagentId"));
+      const active = activeRuns.get(runId);
+      if (!active)
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
+      const run = agentRuns.find((r) => r.id === runId);
+      emitAgentEvent({
+        type: "governance",
+        run_id: runId,
+        conversation_id: run?.conversation_id ?? 0,
+        event: {
+          type: "subagent_updated",
+          subagent: {
+            subagent_id: subagentId,
+            title: subagentId,
+            status: "cancelled",
+            model: run?.model ?? "mock-model",
+            effort: null,
+            access: "read_only",
+            worktree_isolated: false,
+            steps_taken: 0,
+            max_turns: 12,
+            started_at: now(),
+            finished_at: now(),
+            result_summary: null,
+            error: "Stopped by user",
+            patch_applied: false,
+            patch_conflict: false,
+          },
+        },
+      });
+      return null;
+    }
     case "cancel_agent_run": {
       const runId = Number(requireArg(args, "cancel_agent_run", "runId"));
       const active = activeRuns.get(runId);

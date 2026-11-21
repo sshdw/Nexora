@@ -2357,4 +2357,95 @@ describe("useAgentRun — Stage 5 PR 5B: retained thinking and final_content", (
     expect(result.current.runs[0]?.streaming_commands).toBeUndefined();
     expect(result.current.runs[0]?.steps[0]?.command_truncated).toBe(true);
   });
+
+  it("tracks subagent_updated and subagent_step events and routes killSubagent without cancelling parent", async () => {
+    const activeRun = {
+      id: 7,
+      conversation_id: 1,
+      model: "gpt-5.6-terra",
+      mode: "semi_autonomous",
+      status: "running",
+      interrupted: false,
+      started_at: 1000,
+      finished_at: null,
+      total_steps: 0,
+      final_content: null,
+      error: null,
+      spent_micro_usd: null,
+      limit_micro_usd: null,
+    };
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "list_agent_runs") return [activeRun];
+      if (cmd === "list_conversation_run_events") {
+        return { events: [], next_cursor: 0, has_more: false };
+      }
+      if (cmd === "inspect_run_live") {
+        return { run_id: 7, pending_approval: null, subagents: [] };
+      }
+      if (cmd === "kill_subagent") return null;
+      return [];
+    });
+
+    const { result } = renderHook(() => useAgentRun(1));
+    await waitFor(() => expect(result.current.runs).toHaveLength(1));
+
+    act(() => {
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "subagent_updated",
+          subagent: {
+            subagent_id: "sub-1",
+            title: "Inspect config",
+            status: "running",
+            model: "gpt-5.6-terra",
+            effort: "medium",
+            access: "read_only",
+            worktree_isolated: false,
+            steps_taken: 0,
+            max_turns: 12,
+            started_at: 1001,
+            finished_at: null,
+            result_summary: null,
+            error: null,
+            patch_applied: false,
+            patch_conflict: false,
+          },
+        },
+      });
+      emitAgentEvent({
+        type: "governance",
+        conversation_id: 1,
+        run_id: 7,
+        event: {
+          type: "subagent_step",
+          subagent_id: "sub-1",
+          seq: 1,
+          kind: "tool_call",
+          tool_name: "read_file",
+          target: "Cargo.toml",
+          status: "succeeded",
+          observation: "ok",
+        },
+      });
+    });
+
+    expect(result.current.runs[0]?.subagents).toHaveLength(1);
+    expect(result.current.runs[0]?.subagents?.[0]?.steps).toHaveLength(1);
+    expect(result.current.runs[0]?.subagents?.[0]?.steps[0]?.target).toBe(
+      "Cargo.toml"
+    );
+
+    await act(async () => {
+      await result.current.killSubagent(7, "sub-1");
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("kill_subagent", {
+      runId: 7,
+      subagentId: "sub-1",
+    });
+    expect(result.current.runs[0]?.status).toBe("running");
+  });
 });

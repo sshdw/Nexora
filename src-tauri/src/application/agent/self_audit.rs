@@ -457,14 +457,14 @@ pub(crate) fn record_report_gated(
 mod tests {
     use super::super::governance::{AuditEvent, AuditLog};
     use super::super::lifecycle::RunState;
-    use super::super::roles::AgentRole;
+    use super::super::roles::TaskCapability;
     use super::super::snapshots::RunPosition;
     use super::*;
 
     fn position(steps: usize, spent: u64) -> RunPosition {
         RunPosition {
             stage_index: 0,
-            role: AgentRole::Executor,
+            capability: TaskCapability::FullAccess,
             state: RunState::Running,
             steps_taken: steps,
             spent_micro_usd: spent,

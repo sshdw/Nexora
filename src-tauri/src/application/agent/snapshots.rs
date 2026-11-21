@@ -37,7 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::governance::{AuditEvent, AuditLog};
 use super::lifecycle::{LifecycleError, RunState};
-use super::roles::AgentRole;
+use super::roles::TaskCapability;
 
 // ---------------------------------------------------------------------------
 // Snapshot data
@@ -52,8 +52,8 @@ pub(crate) struct RunSnapshot {
     pub run_id: i64,
     /// Entered pipeline stages at capture (`Pipeline::entered().len()`).
     pub stage_index: usize,
-    /// Role bound to the stage at capture (`PipelineStage::role`).
-    pub role: AgentRole,
+    /// Capability bound to the stage at capture (`PipelineStage::capability`).
+    pub capability: TaskCapability,
     /// Lifecycle state at capture.
     pub state: RunState,
     /// Consumed model turns at capture.
@@ -72,8 +72,8 @@ pub(crate) struct RunSnapshot {
 pub(crate) struct Restored {
     /// Entered pipeline stages to resume from.
     pub stage_index: usize,
-    /// Stage-bound role to resume with.
-    pub role: AgentRole,
+    /// Stage-bound capability to resume with.
+    pub capability: TaskCapability,
     /// Lifecycle state to resume with.
     pub state: RunState,
     /// Consumed model turns to resume with (never below the snapshot).
@@ -84,14 +84,14 @@ pub(crate) struct Restored {
 
 /// Caller pipeline position filed by capture/checkpoint (WS-C.1):
 /// `stage_index` is the entered prefix length
-/// (`Pipeline::entered().len()`), `role` the stage-bound role, and the rest
+/// (`Pipeline::entered().len()`), `capability` the stage-bound capability, and the rest
 /// the caller's current lifecycle state and budget consumption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RunPosition {
     /// Entered pipeline stages at capture.
     pub stage_index: usize,
-    /// Role bound to the stage at capture.
-    pub role: AgentRole,
+    /// Capability bound to the stage at capture.
+    pub capability: TaskCapability,
     /// Lifecycle state at capture.
     pub state: RunState,
     /// Consumed model turns at capture.
@@ -337,7 +337,7 @@ impl SnapshotStore {
             .map_err(SnapshotError::Lifecycle)?;
         Ok(Restored {
             stage_index: snapshot.stage_index,
-            role: snapshot.role,
+            capability: snapshot.capability,
             state: snapshot.state,
             steps_taken: current.steps_taken.max(snapshot.steps_taken),
             spent_micro_usd: current.spent_micro_usd.max(snapshot.spent_micro_usd),
@@ -368,7 +368,7 @@ impl SnapshotStore {
         self.snapshots.push(RunSnapshot {
             run_id: self.run_id,
             stage_index: position.stage_index,
-            role: position.role,
+            capability: position.capability,
             state: position.state,
             steps_taken: position.steps_taken,
             spent_micro_usd: position.spent_micro_usd,
@@ -495,7 +495,10 @@ mod tests {
     ) -> usize {
         let position = RunPosition {
             stage_index: pipeline.entered().len(),
-            role: pipeline.next().unwrap_or(PipelineStage::Review).role(),
+            capability: pipeline
+                .next()
+                .unwrap_or(PipelineStage::Review)
+                .capability(),
             state,
             steps_taken,
             spent_micro_usd,
@@ -547,7 +550,7 @@ mod tests {
         let snapshot = store.snapshots()[first];
         assert_eq!(snapshot.run_id, 7);
         assert_eq!(snapshot.stage_index, 1);
-        assert_eq!(snapshot.role, PipelineStage::Act.role());
+        assert_eq!(snapshot.capability, PipelineStage::Act.capability());
         assert_eq!(snapshot.state, RunState::Running);
         assert_eq!(snapshot.steps_taken, 1);
         assert_eq!(snapshot.spent_micro_usd, 100);
@@ -569,7 +572,7 @@ mod tests {
             )
             .expect("backward rollback");
         assert_eq!(restored.stage_index, 1);
-        assert_eq!(restored.role, PipelineStage::Act.role());
+        assert_eq!(restored.capability, PipelineStage::Act.capability());
         assert_eq!(restored.state, RunState::Running);
         assert_eq!(restored.steps_taken, 3);
         assert_eq!(restored.spent_micro_usd, 400);
@@ -597,7 +600,7 @@ mod tests {
                 RunState::Running,
                 RunPosition {
                     stage_index: 1,
-                    role: PipelineStage::Act.role(),
+                    capability: PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 2,
                     spent_micro_usd: 1_000,
@@ -659,7 +662,7 @@ mod tests {
                 "stable",
                 RunPosition {
                     stage_index: 1,
-                    role: PipelineStage::Act.role(),
+                    capability: PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 1,
                     spent_micro_usd: 10,
@@ -677,7 +680,7 @@ mod tests {
                 "stable",
                 RunPosition {
                     stage_index: 2,
-                    role: PipelineStage::Review.role(),
+                    capability: PipelineStage::Review.capability(),
                     state: RunState::AwaitingApproval,
                     steps_taken: 2,
                     spent_micro_usd: 20,
@@ -714,7 +717,7 @@ mod tests {
                     "",
                     RunPosition {
                         stage_index: 0,
-                        role: PipelineStage::Plan.role(),
+                        capability: PipelineStage::Plan.capability(),
                         state: RunState::Running,
                         steps_taken: 0,
                         spent_micro_usd: 0,
@@ -769,7 +772,7 @@ mod tests {
                 RunState::Running,
                 RunPosition {
                     stage_index: 1,
-                    role: PipelineStage::Act.role(),
+                    capability: PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 1,
                     spent_micro_usd: 10,
@@ -844,7 +847,7 @@ mod tests {
                 RunState::Running,
                 RunPosition {
                     stage_index: 1,
-                    role: PipelineStage::Act.role(),
+                    capability: PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 1,
                     spent_micro_usd: 10,
@@ -899,7 +902,7 @@ mod tests {
                 RunState::Running,
                 RunPosition {
                     stage_index: 1,
-                    role: PipelineStage::Act.role(),
+                    capability: PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 1,
                     spent_micro_usd: 10,
@@ -939,7 +942,7 @@ mod tests {
                 RunState::Running,
                 RunPosition {
                     stage_index: 1,
-                    role: PipelineStage::Act.role(),
+                    capability: PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 1,
                     spent_micro_usd: 10,
@@ -972,7 +975,7 @@ mod tests {
                 "stable",
                 RunPosition {
                     stage_index: pipeline.entered().len(),
-                    role: PipelineStage::Review.role(),
+                    capability: PipelineStage::Review.capability(),
                     state: RunState::AwaitingApproval,
                     steps_taken: 2,
                     spent_micro_usd: 20,
@@ -1031,7 +1034,7 @@ mod tests {
                 hostile_name,
                 RunPosition {
                     stage_index: 0,
-                    role: PipelineStage::Plan.role(),
+                    capability: PipelineStage::Plan.capability(),
                     state: RunState::Running,
                     steps_taken: 0,
                     spent_micro_usd: 0,
@@ -1099,7 +1102,7 @@ mod tests {
         assert!(SnapshotStore::new(7).is_enabled());
         let position = RunPosition {
             stage_index: 0,
-            role: PipelineStage::Plan.role(),
+            capability: PipelineStage::Plan.capability(),
             state: RunState::Running,
             steps_taken: 0,
             spent_micro_usd: 0,

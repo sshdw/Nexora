@@ -175,6 +175,7 @@ export default function ConversationView({
     answerQuestion,
     clarifyRun,
     applyPlanDecision,
+    killSubagent,
   } = useAgentRun(conversationId);
   const {
     items: queueItems,
@@ -503,6 +504,12 @@ export default function ConversationView({
       void handleAgentCancel(runId);
     },
     [handleAgentCancel]
+  );
+  const dispatchKillSubagent = useCallback(
+    (runId: number, subagentId: string) => {
+      void killSubagent(runId, subagentId);
+    },
+    [killSubagent]
   );
   const dispatchAgentContinue = useCallback(
     (runId: number) => {
@@ -890,6 +897,7 @@ export default function ConversationView({
                   hasActiveRun={hasActiveRun}
                   onResolveApproval={dispatchAgentApprove}
                   onCancel={dispatchAgentCancel}
+                  onKillSubagent={dispatchKillSubagent}
                   onContinue={dispatchAgentContinue}
                   onPause={dispatchAgentPause}
                   onResume={dispatchAgentResume}

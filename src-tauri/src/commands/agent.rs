@@ -541,6 +541,33 @@ pub(crate) fn cancel_agent_run(
     }
 }
 
+/// Stop one individual subagent of an active run without cancelling the parent
+/// run (`M19` / `P27`).
+#[tauri::command]
+pub(crate) fn kill_subagent(
+    run_id: i64,
+    subagent_id: String,
+    registry: State<'_, ManagedRegistry>,
+) -> Result<(), CommandError> {
+    if subagent_id.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "a subagent id is required",
+        ));
+    }
+    match registry.kill_subagent(run_id, subagent_id.trim()) {
+        service::KillSubagentOutcome::Killed => Ok(()),
+        service::KillSubagentOutcome::RunNotActive => Err(CommandError::new(
+            ErrorKind::NotFound,
+            format!("no active agent run with id {run_id}"),
+        )),
+        service::KillSubagentOutcome::SubagentNotFound => Err(CommandError::new(
+            ErrorKind::NotFound,
+            "no matching subagent for this run",
+        )),
+    }
+}
+
 /// Resolve a parked approval (5.1 minimum; 5.2 polishes the UX).
 ///
 /// M1-core `scope`: `None`/`"single"` resolves one call; `"group"` records
@@ -1728,7 +1755,7 @@ mod tests {
     /// — no extra key, no missing key.
     #[test]
     fn agent_command_arg_keys_match_rust_params() {
-        const AGENT_COMMANDS: [(&str, &[&str]); 24] = [
+        const AGENT_COMMANDS: [(&str, &[&str]); 25] = [
             (
                 "start_agent_run",
                 &[
@@ -1752,6 +1779,7 @@ mod tests {
                 &["runId", "decision", "reply", "provider", "model", "effort"],
             ),
             ("cancel_agent_run", &["runId"]),
+            ("kill_subagent", &["runId", "subagentId"]),
             (
                 "resolve_agent_approval",
                 &["runId", "callId", "approved", "scope"],

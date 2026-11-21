@@ -1,7 +1,7 @@
-//! Staged execution pipeline: ordered stages bound to roles (WS-B.3).
+//! Staged execution pipeline: ordered stages bound to task capabilities (`P34`).
 //!
 //! The default run flows `plan → act → review`. Each stage binds one
-//! [`AgentRole`] (fixed per stage); the lifecycle segment is recorded per
+//! [`TaskCapability`] (fixed per stage); the lifecycle segment is recorded per
 //! entry — [`Pipeline::advance`] takes the genuine lifecycle edge at the
 //! point, gates it on [`super::lifecycle::transition`], and appends a fixed-vocabulary
 //! stage entry to the [`AuditLog`] atomically. An illegal edge fails with the
@@ -17,20 +17,20 @@
 
 use super::governance::{AuditEvent, AuditLog, RunBudget};
 use super::lifecycle::{LifecycleError, RunState};
-use super::roles::AgentRole;
+use super::roles::TaskCapability;
 
 // ---------------------------------------------------------------------------
 // Stages
 // ---------------------------------------------------------------------------
 
-/// One ordered pipeline stage (WS-B.3).
+/// One ordered pipeline stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PipelineStage {
-    /// Plan the work (bound to [`AgentRole::Planner`]).
+    /// Plan the work (bound to [`TaskCapability::ReadOnly`]).
     Plan,
-    /// Do the work (bound to [`AgentRole::Executor`]).
+    /// Do the work (bound to [`TaskCapability::FullAccess`]).
     Act,
-    /// Review the work (bound to [`AgentRole::Reviewer`]).
+    /// Review the work (bound to [`TaskCapability::ReadOnly`]).
     Review,
 }
 
@@ -53,13 +53,12 @@ impl PipelineStage {
         }
     }
 
-    /// Role bound to this stage.
+    /// Capability bound to this stage.
     #[must_use]
-    pub(crate) const fn role(self) -> AgentRole {
+    pub(crate) const fn capability(self) -> TaskCapability {
         match self {
-            Self::Plan => AgentRole::Planner,
-            Self::Act => AgentRole::Executor,
-            Self::Review => AgentRole::Reviewer,
+            Self::Plan | Self::Review => TaskCapability::ReadOnly,
+            Self::Act => TaskCapability::FullAccess,
         }
     }
 }
@@ -350,7 +349,7 @@ impl std::error::Error for BudgetError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::agent::roles::ALL_ROLES;
+    use crate::application::agent::roles::ALL_CAPABILITIES;
 
     #[test]
     fn default_pipeline_binds_stages_in_order() {
@@ -360,14 +359,14 @@ mod tests {
             DEFAULT_STAGES.map(PipelineStage::as_str),
             ["plan", "act", "review"]
         );
-        assert_eq!(PipelineStage::Plan.role(), AgentRole::Planner);
-        assert_eq!(PipelineStage::Act.role(), AgentRole::Executor);
-        assert_eq!(PipelineStage::Review.role(), AgentRole::Reviewer);
-        // Every bound role is one of the six typed roles.
+        assert_eq!(PipelineStage::Plan.capability(), TaskCapability::ReadOnly);
+        assert_eq!(PipelineStage::Act.capability(), TaskCapability::FullAccess);
+        assert_eq!(PipelineStage::Review.capability(), TaskCapability::ReadOnly);
+        // Every bound capability is one of the typed task capabilities.
         for stage in DEFAULT_STAGES {
             assert!(
-                ALL_ROLES.contains(&stage.role()),
-                "{stage:?} binds a typed role"
+                ALL_CAPABILITIES.contains(&stage.capability()),
+                "{stage:?} binds a typed capability"
             );
         }
         assert_eq!(pipeline.next(), Some(PipelineStage::Plan));

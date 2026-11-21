@@ -128,6 +128,7 @@ pub fn run() {
             commands::flags::flags_status,
             commands::agent::start_agent_run,
             commands::agent::cancel_agent_run,
+            commands::agent::kill_subagent,
             commands::agent::resolve_agent_approval,
             commands::agent::extend_agent_run,
             commands::agent::agent_set_mode,

@@ -69,7 +69,9 @@ use crate::infrastructure::repository::run_questions::RunQuestionRepository;
 // S3 split: the run registry lives in `super::registry`; re-exported here so
 // existing `service::{AgentRunRegistry, ActiveAgentRun, ResolveOutcome}`
 // paths (commands, e2e/stress tests) keep resolving with no other file edits.
-pub(crate) use super::registry::{ActiveAgentRun, AgentRunRegistry, ResolveOutcome};
+pub(crate) use super::registry::{
+    ActiveAgentRun, AgentRunRegistry, KillSubagentOutcome, ResolveOutcome,
+};
 
 // ---------------------------------------------------------------------------
 // Frames (the wire shape of `agent-run-event`)
@@ -583,6 +585,25 @@ pub(crate) fn resolve_approval_timeout(db: &Database) -> std::time::Duration {
 }
 /// Setting key backing the per-run spend guard (`agent.spend_limit_micro_usd`).
 pub(crate) use nexora_core::config::SPEND_LIMIT_KEY;
+
+/// Resolve the configured maximum concurrent subagents (`1..=6`, default `3`)
+/// through `Project (.nexora/) > Personal > Default`.
+#[must_use]
+pub(crate) fn resolve_subagent_max_concurrency_for_workspace(
+    db: &Database,
+    workspace_root: Option<&Path>,
+) -> usize {
+    let raw = crate::application::settings::resolve_effective_setting(
+        db,
+        workspace_root,
+        super::subagents::SUBAGENT_MAX_CONCURRENCY_KEY,
+        None,
+    );
+    match raw.as_deref().and_then(|s| s.trim().parse::<usize>().ok()) {
+        Some(limit) => super::subagents::clamp_max_concurrency(limit),
+        None => super::subagents::DEFAULT_SUBAGENT_MAX_CONCURRENCY,
+    }
+}
 
 #[must_use]
 pub(crate) fn resolve_effective_effort_for_workspace(
@@ -1250,6 +1271,54 @@ fn spawn_run(
                         })
                     });
                 let mcp_cancel = control.token().clone();
+                let effective_effort = resolve_effective_effort_for_workspace(
+                    &db,
+                    Some(&workspace_root),
+                    &run_request.provider,
+                    &run_request.model,
+                );
+                let discovered_instructions =
+                    match crate::application::project_dir::discover_instructions(
+                        &workspace_root,
+                        None,
+                    ) {
+                        Ok(instructions) => {
+                            if !instructions.skipped_escapes.is_empty() {
+                                log::warn!(
+                                    "agent run setup: skipped symlink-escaping instruction file(s)"
+                                );
+                            }
+                            (!instructions.combined.is_empty()).then_some(instructions.combined)
+                        }
+                        Err(err) => {
+                            log::warn!("agent run setup: instruction discovery skipped: {err}");
+                            None
+                        }
+                    };
+                let subagent_max_concurrency =
+                    resolve_subagent_max_concurrency_for_workspace(&db, Some(&workspace_root));
+                let subagent_manager = super::subagents::SubagentManager::new(
+                    super::subagents::SubagentManagerConfig {
+                        parent_run_id: run_id,
+                        db: Some(db.clone()),
+                        executor: Arc::clone(&executor),
+                        workspace_root: workspace_root.clone(),
+                        provider: run_request.provider.clone(),
+                        model: run_request.model.clone(),
+                        effort: effective_effort.clone(),
+                        credential: run_request.credential.clone(),
+                        parent_control: control.clone(),
+                        parent_gate: gate.clone(),
+                        parent_preset: preset,
+                        parent_is_plan: is_plan,
+                        permission_store: Some(permission_store.clone()),
+                        project_instructions: discovered_instructions.clone(),
+                        run_flags: resolved_flags.run_flags(),
+                        event_sender: Some(tx_for_recorder.clone()),
+                        max_concurrency: subagent_max_concurrency,
+                    },
+                );
+                run_registry.attach_subagents(run_id, Arc::clone(&subagent_manager));
                 let mut runner = AgentRunner::new(executor.as_ref(), &workspace_root)
                     .with_plan(is_plan)
                     .with_control(control)
@@ -1265,7 +1334,8 @@ fn spawn_run(
                     .with_run_flags(resolved_flags.run_flags())
                     .with_audit_log(Arc::clone(&audit_log))
                     .with_event_sender(tx_for_recorder.clone())
-                    .with_stream_deltas(true);
+                    .with_stream_deltas(true)
+                    .with_subagent_manager(subagent_manager);
                 if let Some(plan_text) = active_plan_text {
                     runner = runner.with_active_plan(plan_text);
                 }
@@ -1276,28 +1346,10 @@ fn spawn_run(
                         runner = runner.with_mcp_runtime(Arc::new(mcp_runtime));
                     }
                 }
-                match crate::application::project_dir::discover_instructions(&workspace_root, None)
-                {
-                    Ok(instructions) => {
-                        if !instructions.skipped_escapes.is_empty() {
-                            log::warn!(
-                                "agent run setup: skipped symlink-escaping instruction file(s)"
-                            );
-                        }
-                        if !instructions.combined.is_empty() {
-                            runner = runner.with_project_instructions(instructions.combined);
-                        }
-                    }
-                    Err(err) => {
-                        log::warn!("agent run setup: instruction discovery skipped: {err}");
-                    }
+                if let Some(instructions) = discovered_instructions {
+                    runner = runner.with_project_instructions(instructions);
                 }
-                if let Some(effort) = resolve_effective_effort_for_workspace(
-                    &db,
-                    Some(&workspace_root),
-                    &run_request.provider,
-                    &run_request.model,
-                ) {
+                if let Some(effort) = effective_effort {
                     runner = runner.with_model_config(
                         ModelConfig::new(&run_request.model).with_effort(Some(effort)),
                     );

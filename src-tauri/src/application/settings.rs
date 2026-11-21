@@ -44,7 +44,7 @@ use nexora_core::config::{
     APPEARANCE_THEME_KEY, APPROVAL_TIMEOUT_KEY, AUTONOMY_KEY, CHAT_PROFILE_KEY,
     MAX_CAPABILITY_OVERRIDES_BYTES, MCP_SERVERS_KEY, MODEL_CAPABILITY_OVERRIDES_KEY,
     SELECTED_EFFORT_KEY, SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY, SPEND_LIMIT_KEY,
-    WORKSPACE_RECENT_KEY, WORKSPACE_ROOTS_KEY, WORKSPACE_ROOT_KEY,
+    SUBAGENT_MAX_CONCURRENCY_KEY, WORKSPACE_RECENT_KEY, WORKSPACE_ROOTS_KEY, WORKSPACE_ROOT_KEY,
 };
 
 /// Application-layer service coordinating persistent application settings.
@@ -384,6 +384,7 @@ pub(crate) fn default_setting_value(key: &str) -> Option<&'static str> {
         ACCESS_PROFILE_KEY => Some("standard"),
         AUTONOMY_KEY => Some("semi_autonomous"),
         APPROVAL_TIMEOUT_KEY => Some(DEFAULT_APPROVAL_TIMEOUT_STR),
+        SUBAGENT_MAX_CONCURRENCY_KEY => Some("3"),
         PRESET_KEY => Some("coding"),
         k if k.starts_with(config::FLAG_KEY_PREFIX) => Some("true"),
         _ => None,

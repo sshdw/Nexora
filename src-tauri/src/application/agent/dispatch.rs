@@ -1,7 +1,9 @@
 //! Per-tool-call dispatch pipeline (split from `runner`).
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[cfg(test)]
@@ -12,9 +14,10 @@ use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunCo
 use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
 use crate::application::agent::injection;
 use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore, RunPreset};
-use crate::application::agent::persistence::{ActiveRunRecord, StepProvenance};
+use crate::application::agent::persistence::{step_preview_opt, ActiveRunRecord, StepProvenance};
 use crate::application::agent::question::{AskQuestionArgs, QuestionRunContext, QuestionWaitEnd};
-use crate::application::agent::roles::AgentRole;
+use crate::application::agent::roles::TaskCapability;
+use crate::application::agent::subagents::{SubagentManager, MAX_SUBAGENT_DEPTH};
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{AiMessage, AiRole, ToolCall};
 
@@ -38,6 +41,7 @@ fn observation_message(ctx: &DispatchCtx<'_>, call: &ToolCall, observation: &str
 
 fn is_dispatchable_tool(ctx: &DispatchCtx<'_>, name: &str) -> bool {
     permissions::is_known_tool(name)
+        || permissions::is_subagent_tool(name)
         || (permissions::is_mcp_tool(name) && ctx.mcp_runtime.is_some_and(|rt| rt.has_tool(name)))
 }
 
@@ -60,11 +64,10 @@ pub(crate) struct DispatchCtx<'a> {
     /// its gate decision here, secret-free. `None` keeps the exact pre-B.2
     /// pipeline.
     pub audit: Option<&'a AuditLog>,
-    /// Optional role-scoped tool subset (WS-B.3): when `Some`, a known tool
-    /// outside the role's subset becomes a controlled denial observation
-    /// before the store, the ladder, and execution (mirroring the T5 document
-    /// shell ban). `None` keeps the exact pre-B.3 pipeline.
-    pub role: Option<AgentRole>,
+    /// Optional task-scoped capability gate (`P34`): when `Some`, a known tool
+    /// outside the capability's subset becomes a controlled denial observation
+    /// before the store, the ladder, and execution.
+    pub capability: Option<TaskCapability>,
     /// The `injection` feature flag (WS-C.2 gate): enveloped observations
     /// when `true` (current behavior); raw observations when `false`
     /// (pre-2.0 shape). The flag gates the envelope only — the marker-scan
@@ -83,6 +86,15 @@ pub(crate) struct DispatchCtx<'a> {
     pub question_ctx: Option<&'a QuestionRunContext>,
     /// Optional run-scoped user-added MCP tool runtime (`M18` / `P26`).
     pub mcp_runtime: Option<&'a dyn crate::application::mcp::McpToolRuntime>,
+    /// Optional parent-run subagent manager (`M19` / `P27`). Always `None`
+    /// inside subagents (`subagent_depth >= 1`).
+    pub subagent_manager: Option<&'a Arc<SubagentManager>>,
+    /// Nesting depth (`0` for top-level parent run, `1` for child subagents).
+    pub subagent_depth: u8,
+    /// Active subagent identifier when running inside a child subagent.
+    pub subagent_id: Option<&'a str>,
+    /// Monotonic step sequence counter for child `AgentRunEvent::SubagentStep` frames.
+    pub subagent_step_seq: Option<&'a AtomicUsize>,
 }
 
 /// Emit a governance event on the optional channel, best-effort.
@@ -256,12 +268,66 @@ fn dispatch_one(
     if !allowed {
         let observation = "Error: tool is blocked by the effective access profile";
         messages.push(trusted_denial_message(call, observation));
+        emit_subagent_tool_step(ctx, call, "denied", Some(observation));
         if let Some(rec) = record.as_mut() {
             rec.tool_call_with_provenance(
                 call,
                 observation,
                 "denied",
                 None,
+                StepProvenance::system(),
+            );
+        }
+        return Ok(());
+    }
+    // M19 / P27 fail-closed max-depth=1 gate: subagents can NEVER spawn or
+    // control subagents even if they smuggle a tool call outside the schema.
+    if permissions::is_subagent_tool(&call.name) {
+        if ctx.subagent_depth >= MAX_SUBAGENT_DEPTH {
+            let observation =
+                "Error: subagent tools are not available (maximum subagent nesting depth of 1 reached)";
+            messages.push(trusted_denial_message(call, observation));
+            emit_subagent_tool_step(ctx, call, "denied", Some(observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    observation,
+                    "denied",
+                    None,
+                    StepProvenance::system(),
+                );
+            }
+            return Ok(());
+        }
+        let Some(manager) = ctx.subagent_manager else {
+            let observation = "Error: subagent tools require an active parent run subagent manager";
+            messages.push(trusted_denial_message(call, observation));
+            if let Some(rec) = record.as_mut() {
+                rec.tool_call_with_provenance(
+                    call,
+                    observation,
+                    "denied",
+                    None,
+                    StepProvenance::system(),
+                );
+            }
+            return Ok(());
+        };
+        let dispatch_started = Instant::now();
+        let outcome = manager.dispatch_tool(&call.name, &call.arguments)?;
+        let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
+        let status = if outcome.starts_with("Error:") {
+            "failed"
+        } else {
+            "succeeded"
+        };
+        messages.push(observation_message(ctx, call, &outcome));
+        if let Some(rec) = record.as_mut() {
+            rec.tool_call_with_provenance(
+                call,
+                &outcome,
+                status,
+                Some(dispatch_ms),
                 StepProvenance::system(),
             );
         }
@@ -299,6 +365,7 @@ fn dispatch_one(
     // path below.
     if ctx.preset == RunPreset::Document && call.name == "execute_command" {
         messages.push(trusted_denial_message(call, DOCUMENT_SHELL_DENIAL));
+        emit_subagent_tool_step(ctx, call, "denied", Some(DOCUMENT_SHELL_DENIAL));
         if let Some(rec) = record.as_mut() {
             rec.tool_call_with_provenance(
                 call,
@@ -310,21 +377,18 @@ fn dispatch_one(
         }
         return Ok(());
     }
-    // WS-B.3 structural role gate: a role-scoped run never exposes tools
-    // outside the role's subset, so such a call is denied deterministically
-    // here — before the sticky-group path, the permission store, and the
-    // approval ladder. Unknown tools skip this gate and keep their existing
-    // controlled-observation path below. Both interpolated values are fixed
-    // vocabulary (a known tool name, a canonical role name), so the denial
-    // stays secret-free by construction.
-    if let Some(role) = ctx.role {
-        if is_dispatchable_tool(ctx, &call.name) && !role.allows_tool(&call.name) {
+    // P34 structural capability gate: a capability-scoped run never exposes
+    // tools outside its subset, so such a call is denied deterministically
+    // before the sticky-group path, permission store, and approval ladder.
+    if let Some(capability) = ctx.capability {
+        if is_dispatchable_tool(ctx, &call.name) && !capability.allows_tool(&call.name) {
             let observation = format!(
-                "Error: tool '{}' is not available to agent role '{}'",
+                "Error: tool '{}' is not available under task capability '{}'",
                 call.name,
-                role.as_str()
+                capability.as_str()
             );
             messages.push(trusted_denial_message(call, &observation));
+            emit_subagent_tool_step(ctx, call, "denied", Some(&observation));
             if let Some(rec) = record.as_mut() {
                 rec.tool_call_with_provenance(
                     call,
@@ -1084,6 +1148,7 @@ fn execute_and_record_bound(
     let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
     let (observation, tool_status) = classify_outcome(outcome, ctx.token);
     messages.push(observation_message(ctx, call, &observation));
+    emit_subagent_tool_step(ctx, call, tool_status, Some(&observation));
     if let Some(rec) = record.as_mut() {
         let provenance = if invalidated {
             StepProvenance::system()
@@ -1123,6 +1188,43 @@ fn execute_tool_call(
         StepProvenance::system()
     };
     execute_and_record_bound(ctx, call, messages, record, valid_provenance);
+}
+
+fn emit_subagent_tool_step(
+    ctx: &DispatchCtx<'_>,
+    call: &ToolCall,
+    status: &str,
+    observation: Option<&str>,
+) {
+    let (Some(subagent_id), Some(seq_counter)) = (ctx.subagent_id, ctx.subagent_step_seq) else {
+        return;
+    };
+    let seq = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
+    let target = permissions::extract_path(&call.name, &call.arguments).or_else(|| {
+        serde_json::from_str::<serde_json::Value>(&call.arguments)
+            .ok()
+            .and_then(|v| {
+                v.get("path")
+                    .or_else(|| v.get("pattern"))
+                    .or_else(|| v.get("command"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(|s| injection::redact_secrets(s).0)
+            })
+    });
+    let redacted_obs = observation.map(|text| injection::redact_secrets(text).0);
+    let (preview, _, _) = step_preview_opt(redacted_obs.as_deref());
+    emit(
+        ctx.sender,
+        AgentRunEvent::SubagentStep {
+            subagent_id: subagent_id.to_string(),
+            seq,
+            kind: "tool_call".to_string(),
+            tool_name: Some(call.name.clone()),
+            target,
+            status: Some(status.to_string()),
+            observation: preview,
+        },
+    );
 }
 
 // AC-302: the inline test mass (2,596 lines) moved verbatim to

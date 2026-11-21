@@ -1743,4 +1743,97 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
     fireEvent.click(screen.getByRole("button", { name: /#1/ }));
     expect(screen.getByText("Killed")).toBeInTheDocument();
   });
+
+  it("renders expandable visible subagent cards with model/effort, access/worktree badges, steps, summary, and individual Stop without cancelling parent", () => {
+    localStorage.setItem(LOCALE_KEY, "en");
+    const onCancel = vi.fn();
+    const onKillSubagent = vi.fn();
+
+    renderRun(
+      runView({
+        run_id: 7,
+        status: "running",
+        steps: [],
+        steps_loaded: true,
+        subagents: [
+          {
+            subagent_id: "sub-1",
+            title: "Audit auth module",
+            status: "running",
+            model: "gemini-3.6-flash",
+            effort: "high",
+            access: "read_only",
+            worktree_isolated: false,
+            steps_taken: 2,
+            max_turns: 12,
+            started_at: 1001,
+            finished_at: null,
+            result_summary: null,
+            error: null,
+            patch_applied: false,
+            patch_conflict: false,
+            steps: [
+              {
+                seq: 1,
+                kind: "tool_call",
+                tool_name: "read_file",
+                target: "src/auth.rs",
+                status: "succeeded",
+                observation: "Read 42 lines",
+              },
+            ],
+          },
+          {
+            subagent_id: "sub-2",
+            title: "Refactor parser",
+            status: "completed",
+            model: "gpt-5.6-terra",
+            effort: null,
+            access: "workspace_write",
+            worktree_isolated: true,
+            steps_taken: 4,
+            max_turns: 12,
+            started_at: 1001,
+            finished_at: 1008,
+            result_summary: "Updated parser cleanly.",
+            error: null,
+            patch_applied: true,
+            patch_conflict: false,
+            steps: [],
+          },
+        ],
+      }),
+      { onCancel, onKillSubagent }
+    );
+
+    expect(screen.getByText("Subagents")).toBeInTheDocument();
+    expect(screen.getByText("Audit auth module")).toBeInTheDocument();
+    expect(screen.getByText("gemini-3.6-flash · high")).toBeInTheDocument();
+    expect(screen.getByText("Read-only")).toBeInTheDocument();
+    expect(screen.getByText("Refactor parser")).toBeInTheDocument();
+    expect(screen.getByText("Worktree")).toBeInTheDocument();
+    expect(screen.getByText("Patch applied")).toBeInTheDocument();
+
+    // Stop button appears only for running subagent and does not cancel parent run.
+    const stopBtn = screen.getByRole("button", {
+      name: "Stop subagent Audit auth module",
+    });
+    fireEvent.click(stopBtn);
+    expect(onKillSubagent).toHaveBeenCalledWith(7, "sub-1");
+    expect(onCancel).not.toHaveBeenCalled();
+
+    // Expand sub-1 to inspect steps.
+    const sub1Toggle = screen.getByRole("button", {
+      name: /^Audit auth module/,
+    });
+    expect(sub1Toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(sub1Toggle);
+    expect(sub1Toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("src/auth.rs")).toBeInTheDocument();
+    expect(screen.getByText("Read 42 lines")).toBeInTheDocument();
+
+    // Expand sub-2 to inspect result summary.
+    fireEvent.click(screen.getByRole("button", { name: /Refactor parser/ }));
+    expect(screen.getByText("Updated parser cleanly.")).toBeInTheDocument();
+  });
 });

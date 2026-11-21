@@ -1956,12 +1956,16 @@ fn shell_group_injection_hold_approval_is_current_call_consent() {
         preset: RunPreset::Coding,
         sender: Some(&tx),
         audit: None,
-        role: None,
+        capability: None,
         injection_enabled: true,
         checkpoints: None,
         turn_index: 0,
         question_ctx: None,
         mcp_runtime: None,
+        subagent_manager: None,
+        subagent_depth: 0,
+        subagent_id: None,
+        subagent_step_seq: None,
     };
     dispatch_tool_calls(&ctx, &[call], &mut messages, &mut None).expect("held shell dispatches");
     drop(tx);
@@ -2866,12 +2870,16 @@ fn final_rule_refresh_rejects_stale_allow_snapshot_without_obsolete_provenance()
         preset: RunPreset::Coding,
         sender: None,
         audit: None,
-        role: None,
+        capability: None,
         injection_enabled: true,
         checkpoints: None,
         turn_index: 0,
         question_ctx: None,
         mcp_runtime: None,
+        subagent_manager: None,
+        subagent_depth: 0,
+        subagent_id: None,
+        subagent_step_seq: None,
     };
     let mut active = ActiveRunRecord::start(RunRecorder::new(&db), "m", "full_autonomous");
     let mut messages = Vec::new();
@@ -3083,12 +3091,16 @@ fn verified_general_shell_bypasses_seeded_ask_while_custom_ask_still_parks() {
         preset: RunPreset::Coding,
         sender: None,
         audit: None,
-        role: None,
+        capability: None,
         injection_enabled: true,
         checkpoints: None,
         turn_index: 0,
         question_ctx: None,
         mcp_runtime: None,
+        subagent_manager: None,
+        subagent_depth: 0,
+        subagent_id: None,
+        subagent_step_seq: None,
     };
     let mut messages = Vec::new();
     let mut record = None;

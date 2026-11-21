@@ -451,6 +451,21 @@ pub(crate) const KNOWN_TOOL_NAMES: &[&str] = &[
     "ask_user_question",
 ];
 
+/// Parent-only subagent orchestration tool names (`M19` / `P27`, `S11-07`).
+pub(crate) const SUBAGENT_TOOL_NAMES: &[&str] = &[
+    "spawn_subagent",
+    "send_subagent_message",
+    "wait_subagent",
+    "kill_subagent",
+    "list_subagents",
+];
+
+/// Whether `name` is one of the parent-only subagent orchestration tools.
+#[must_use]
+pub(crate) fn is_subagent_tool(name: &str) -> bool {
+    SUBAGENT_TOOL_NAMES.contains(&name)
+}
+
 /// Whether a tool name is one of the native tools (unknown tools never
 /// reach the store).
 #[must_use]

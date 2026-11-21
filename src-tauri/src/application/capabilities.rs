@@ -417,6 +417,18 @@ pub(crate) fn resolve_model_capabilities(
     resolve_capabilities_with_overrides(connection_id, model_id, &overrides)
 }
 
+/// Resolve effective capabilities for `(connection_id, model_id)` with an
+/// optional database handle (unit tests without a DB still consult cached API
+/// metadata and the built-in verified `M06` catalog).
+pub(crate) fn resolve_model_capabilities_opt_db(
+    db: Option<&Database>,
+    connection_id: &str,
+    model_id: &str,
+) -> ConnectionModelCapabilities {
+    let overrides = db.map_or_else(BTreeMap::new, read_effective_overrides);
+    resolve_capabilities_with_overrides(connection_id, model_id, &overrides)
+}
+
 /// List effective capabilities across all supported connections & known/discovered models.
 pub(crate) fn list_all_model_capabilities(db: &Database) -> Vec<ConnectionModelCapabilities> {
     let overrides = read_effective_overrides(db);

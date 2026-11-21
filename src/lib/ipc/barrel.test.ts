@@ -96,6 +96,7 @@ const SNAPSHOT: readonly string[] = [
   "inspectRun",
   "inspectRunLive",
   "isProviderAvailable",
+  "killSubagent",
   "listAgentRuns",
   "listAgentSteps",
   "listAttachments",
@@ -197,6 +198,14 @@ describe("tauri barrel parity (AC-205)", () => {
       conversationId: 7,
       afterEventId: 23,
       limit: 2,
+    });
+  });
+
+  it("routes killSubagent with camelCase runId and subagentId", async () => {
+    await barrel.killSubagent(7, "sub-1");
+    expect(invoke).toHaveBeenLastCalledWith("kill_subagent", {
+      runId: 7,
+      subagentId: "sub-1",
     });
   });
 
