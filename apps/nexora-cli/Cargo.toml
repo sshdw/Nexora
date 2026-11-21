@@ -1,7 +1,7 @@
 [package]
 name = "nexora-cli"
 version = "0.1.0"
-description = "Nexora CLI stub (phase 0): offline --help/--version/doctor; interactive TUI lands in later phases"
+description = "Nexora CLI: offline diagnostics, shared facts, machine run output, and an interactive TUI"
 license = "MIT"
 authors = ["Nexora Team"]
 edition = "2021"
@@ -17,11 +17,15 @@ path = "src/main.rs"
 # `doctor` and Desktop `ReleasePanel` read the same facts from the same code
 # instead of maintaining two copies. `nexora-core` does not depend on Clap.
 nexora-core = { path = "../../crates/nexora-core" }
-# Phase 0 needs argument parsing only. Ratatui/Crossterm (brief §2.1:
-# Ratatui 0.30.2 + Crossterm 0.29) are deliberately NOT depended on yet —
-# the stub must never open a fullscreen TUI; they arrive with the
-# interactive phase.
+# Argument parsing (pure, offline) plus Ratatui for the phase-5 interactive
+# TUI (brief §2.1: Ratatui 0.30.2, Crossterm 0.29). Crossterm is used ONLY
+# through Ratatui's `ratatui::crossterm` re-export (one major, one source of
+# input events); there is no direct Crossterm dependency and no async runtime.
 clap = { version = "4.5", features = ["derive"] }
+# Phase 5 (issue #164): fullscreen TUI on an interactive TTY only. MIT licensed,
+# MSRV below the pinned toolchain. The default `crossterm` feature supplies the
+# `ratatui::crossterm` re-export; `TestBackend` powers the no-real-terminal tests.
+ratatui = "0.30.2"
 # Versioned machine output (phase 4a): `serde_json::Map` is the generic
 # `WireFrame` envelope. `serde` derives the frame envelope; neither crate
 # carries a runtime, touches the network, or reads a credential. Both versions

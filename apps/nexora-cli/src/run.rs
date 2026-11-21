@@ -569,8 +569,17 @@ impl RunFailure {
 }
 
 /// The CLI-local seam a real agent backend will implement in a later stage.
-pub(crate) trait RunHost {
+///
+/// `Send + Sync` lets the phase-5 TUI call it from its run thread through a
+/// shared `&'static dyn RunHost`. `request_cancel` has a default no-op so the
+/// shipped/thin hosts stay valid: the TUI still shows honest `cancel pending`
+/// feedback, and a real backend overrides it with an actual cancellation.
+pub(crate) trait RunHost: Send + Sync {
     fn start(&self, launch: &LaunchSettings) -> Result<Vec<WireFrame>, RunFailure>;
+
+    /// Ask a running agent to cancel. One request per cancel gesture; the
+    /// shipped host has nothing to cancel, so the default is a no-op.
+    fn request_cancel(&self) {}
 }
 
 /// Shipped host: honest, fixed failure. Starts nothing, grants nothing.
@@ -684,9 +693,41 @@ pub(crate) fn render_machine(frames: &[WireFrame], format: OutputFormat) -> Stri
 
 /// The only host implementation linked into the shipped binary. A later,
 /// separately authorized stage swaps this for the extracted real host.
-fn host() -> &'static dyn RunHost {
+/// `pub(crate)` so the TUI's run thread can drive the same seam (no parallel
+/// event model).
+pub(crate) fn host() -> &'static dyn RunHost {
     static HOST: UnavailableRunHost = UnavailableRunHost;
     &HOST
+}
+
+/// Build validated launch settings for a task submitted from the TUI. Uses the
+/// same defaults as a bare `nexora run <prompt>` and never persists overrides.
+pub(crate) fn tui_launch(
+    prompt: String,
+    color: String,
+    ascii: bool,
+    motion: String,
+) -> Result<LaunchSettings, CliError> {
+    let args = RunArgs {
+        prompt: Some(prompt.clone()),
+        provider: None,
+        model: None,
+        mode: None,
+        max_steps: None,
+        budget_usd: None,
+        workspace: None,
+        format: "text".to_string(),
+        plain: false,
+        no_color: false,
+        quiet: false,
+        verbose: false,
+    };
+    let caps = CapabilityArgs {
+        color,
+        ascii,
+        motion,
+    };
+    validate(&args, &caps, prompt)
 }
 
 /// Command entry point: resolve prompt, validate, then hand off to the host.

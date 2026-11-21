@@ -7,10 +7,10 @@
 //! [`nexora_core`]. `run` (phase 4a) parses and validates a launch and renders
 //! versioned machine output; the shipped host honestly reports that agent
 //! execution is not available in this build yet — no step, tool call,
-//! approval, or success is fabricated. No branch here opens a fullscreen UI,
-//! touches the network, or prints a secret. The interactive TUI lands in a
-//! later phase; until then a bare `nexora` exits with usage guidance rather
-//! than guessing.
+//! approval, or success is fabricated. The phase-5 interactive TUI opens only
+//! for a bare `nexora` on three real terminals; redirected/piped invocations
+//! still exit with usage guidance and emit zero escape bytes. No branch here
+//! touches the network or prints a secret.
 //!
 //! Process exit codes come from [`nexora_core::error::CliExitCode`] — the
 //! versioned 0–5 CLI contract (brief §9.4, plan §5) — so the CLI cannot invent
@@ -26,6 +26,9 @@ mod models;
 mod providers;
 mod run;
 mod store;
+mod tui;
+
+use std::io::IsTerminal;
 
 use clap::{Parser, Subcommand};
 use nexora_core::error::CliExitCode;
@@ -161,6 +164,29 @@ fn run(cli: &Cli) -> Result<String, CliError> {
 
 fn main() {
     let cli = Cli::parse();
+
+    // The TUI is entered ONLY for a bare command on three real terminals.
+    // `--color always` never overrides TTY detection, and `run --format
+    // json|jsonl` always has a subcommand so it can never land here. Every
+    // redirected/piped bare invocation falls through to the unchanged `None`
+    // arm below: exit 2, `nexora doctor` guidance, and zero ESC bytes.
+    if cli.command.is_none()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+    {
+        let outcome = tui::run(&cli.capability);
+        match outcome {
+            Ok(code) => std::process::exit(code.code()),
+            Err(err) => {
+                // The TerminalGuard was dropped inside `tui::run`, so the
+                // alternate screen is already gone before this report.
+                err.report();
+                std::process::exit(err.exit_code().code());
+            }
+        }
+    }
+
     match run(&cli) {
         Ok(text) => {
             print!("{text}");
