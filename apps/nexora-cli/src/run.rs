@@ -1069,6 +1069,53 @@ mod tests {
     }
 
     #[test]
+    fn render_json_shape_is_stable_for_one_and_many_frames() {
+        let settings = quiet_launch(false, false);
+        let frames = ScriptedRunHost::success()
+            .start(&settings)
+            .expect("scripted frames");
+        assert_eq!(frames.len(), 2);
+
+        // Exactly one frame is a bare object — not a one-element array.
+        let single = render_machine(&frames[..1], OutputFormat::Json);
+        assert!(
+            single.starts_with('{') && single.ends_with('}'),
+            "single-frame JSON must be one bare object: {single}"
+        );
+        let single_value: Value = serde_json::from_str(&single).expect("single JSON object");
+        assert_eq!(
+            single_value,
+            json!({
+                "type": "run_started",
+                "status": "running",
+                "schema_version": MACHINE_SCHEMA_VERSION,
+            })
+        );
+
+        // Multiple frames are an array of objects in host order, each stamped.
+        let many = render_machine(&frames, OutputFormat::Json);
+        assert!(
+            many.starts_with('[') && many.ends_with(']'),
+            "multi-frame JSON must be an array: {many}"
+        );
+        let many_value: Value = serde_json::from_str(&many).expect("JSON array");
+        let objects = many_value.as_array().expect("top-level array");
+        assert_eq!(objects.len(), frames.len());
+        for (object, frame) in objects.iter().zip(&frames) {
+            assert_eq!(object["schema_version"], json!(MACHINE_SCHEMA_VERSION));
+            assert_eq!(object["type"], frame.get("type").cloned().expect("type"));
+            assert_eq!(
+                object["status"],
+                frame.get("status").cloned().expect("status")
+            );
+        }
+        assert_eq!(objects[0]["type"], json!("run_started"));
+        assert_eq!(objects[1]["type"], json!("run_finished"));
+
+        assert!(!single.contains('\u{1b}') && !many.contains('\u{1b}'));
+    }
+
+    #[test]
     fn render_jsonl_has_schema_version_on_every_line() {
         let settings = quiet_launch(true, false);
         let frames = ScriptedRunHost::success()
