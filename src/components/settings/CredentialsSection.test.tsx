@@ -136,8 +136,14 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
     expect(store.startChatGptOAuth).toHaveBeenCalledTimes(1);
   });
 
-  it("renders connected ChatGPT OAuth controls (refresh + disconnect) and CLI adapter enable/disable state", () => {
+  it("renders connected ChatGPT OAuth controls (refresh + disconnect), hides API-key Disconnect when only OAuth is connected, and toggles CLI adapters", () => {
+    const base = makeStore();
     const store = makeStore({
+      providers: base.providers.map((entry) =>
+        entry.supported.name === "openai"
+          ? { ...entry, configured: true, credentialed: false, available: true }
+          : entry
+      ),
       chatgptOAuth: {
         connected: true,
         has_refresh_token: true,
@@ -157,6 +163,11 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
         />
       </LocaleProvider>
     );
+
+    // OpenAI row shows Connected via OAuth, but does not expose the API-key Disconnect button
+    // when no API key is stored in the keyring (credentialed === false).
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
 
     expect(screen.getByText("OAuth connected")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Refresh token" }));

@@ -20,6 +20,7 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -66,6 +67,10 @@ const MAX_CALLBACK_REQUEST_BYTES: usize = 8192;
 
 /// Maximum bytes read from a token endpoint response.
 const MAX_TOKEN_RESPONSE_BYTES: usize = 128 * 1024;
+
+/// Single-flight lock serializing OAuth token refresh operations so concurrent
+/// callers near expiry never race on a single-use rotating `refresh_token`.
+static REFRESH_SINGLE_FLIGHT: Mutex<()> = Mutex::new(());
 
 /// Classified, secret-free errors raised by the ChatGPT OAuth flow.
 ///
@@ -435,6 +440,24 @@ pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// Verify that the OAuth callback's `state` query parameter matches
+/// `expected_state` in constant time.
+///
+/// # Errors
+/// Returns [`ChatGptOAuthError::StateMismatch`] when `received_state` is
+/// missing or does not match `expected_state`.
+pub(crate) fn verify_csrf_state(
+    received_state: Option<&str>,
+    expected_state: &str,
+) -> Result<(), ChatGptOAuthError> {
+    match received_state {
+        Some(received) if constant_time_eq(received.as_bytes(), expected_state.as_bytes()) => {
+            Ok(())
+        }
+        _ => Err(ChatGptOAuthError::StateMismatch),
+    }
+}
+
 /// Build the OAuth 2.0 + PKCE `S256` authorization URL with CSRF `state`.
 ///
 /// # Errors
@@ -510,9 +533,11 @@ impl LoopbackCallbackServer {
     /// Wait for the OAuth callback on `127.0.0.1`, verifying `state` in
     /// constant time and returning the single-use authorization `code`.
     ///
+    /// Unauthenticated requests with missing or mismatched CSRF `state`
+    /// receive HTTP `400 Bad Request` without aborting the listener.
+    ///
     /// # Errors
     /// Returns [`ChatGptOAuthError::CallbackTimeout`],
-    /// [`ChatGptOAuthError::StateMismatch`],
     /// [`ChatGptOAuthError::AuthorizationDenied`],
     /// [`ChatGptOAuthError::MissingCode`], or [`ChatGptOAuthError::Cancelled`].
     pub(crate) fn wait_for_code(
@@ -582,6 +607,15 @@ fn handle_callback_connection(
         }
     }
 
+    if verify_csrf_state(state.as_deref(), expected_state).is_err() {
+        write_static_http_response(
+            stream,
+            "400 Bad Request",
+            "OAuth state verification failed. You may close this tab.",
+        );
+        return None;
+    }
+
     if error.is_some() {
         write_static_http_response(
             stream,
@@ -589,18 +623,6 @@ fn handle_callback_connection(
             "Sign-in was denied or cancelled. You may close this tab.",
         );
         return Some(Err(ChatGptOAuthError::AuthorizationDenied));
-    }
-
-    let state_valid = state
-        .as_deref()
-        .is_some_and(|received| constant_time_eq(received.as_bytes(), expected_state.as_bytes()));
-    if !state_valid {
-        write_static_http_response(
-            stream,
-            "400 Bad Request",
-            "OAuth state verification failed. You may close this tab.",
-        );
-        return Some(Err(ChatGptOAuthError::StateMismatch));
     }
 
     let Some(auth_code) = code.filter(|c| !c.trim().is_empty()) else {
@@ -762,16 +784,11 @@ pub(crate) fn exchange_code_and_store_with(
     Ok(status)
 }
 
-/// Refresh stored ChatGPT OAuth tokens using the OS keyring `refresh_token` and
-/// persist the rotated tokens exclusively in the OS keyring.
-///
-/// # Errors
-/// Returns a secret-free [`ChatGptOAuthError`].
-pub(crate) fn refresh_tokens_with(
+fn refresh_tokens_locked(
     backend: &dyn CredentialBackend,
     config: &ChatGptOAuthConfig,
     timeout: Duration,
-) -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
+) -> Result<StoredChatGptOAuthTokens, ChatGptOAuthError> {
     let existing = ChatGptOAuthStore::load_with(backend)?.ok_or(ChatGptOAuthError::NotConnected)?;
     let refresh = existing
         .refresh_token
@@ -798,9 +815,29 @@ pub(crate) fn refresh_tokens_with(
     if existing.connected_at > 0 {
         updated.connected_at = existing.connected_at;
     }
-    let status = updated.status();
     ChatGptOAuthStore::save_with(backend, &updated)?;
-    Ok(status)
+    Ok(updated)
+}
+
+/// Refresh stored ChatGPT OAuth tokens using the OS keyring `refresh_token` and
+/// persist the rotated tokens exclusively in the OS keyring.
+///
+/// Guarded by a single-flight lock that re-reads the keyring inside the lock
+/// before refreshing so concurrent callers never race on a rotating
+/// `refresh_token`.
+///
+/// # Errors
+/// Returns a secret-free [`ChatGptOAuthError`].
+pub(crate) fn refresh_tokens_with(
+    backend: &dyn CredentialBackend,
+    config: &ChatGptOAuthConfig,
+    timeout: Duration,
+) -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
+    let _guard = REFRESH_SINGLE_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let updated = refresh_tokens_locked(backend, config, timeout)?;
+    Ok(updated.status())
 }
 
 /// Refresh stored ChatGPT OAuth tokens in production using the default OS
@@ -817,8 +854,8 @@ pub(crate) fn refresh_tokens() -> Result<ChatGptOAuthStatus, ChatGptOAuthError> 
 }
 
 /// Resolve an active ChatGPT OAuth Bearer access token from the OS keyring,
-/// transparently refreshing expired or near-expiry tokens when a `refresh_token`
-/// is stored.
+/// transparently refreshing expired or near-expiry tokens under a single-flight
+/// lock and failing closed if no usable `refresh_token` is available.
 ///
 /// Returns `Ok(None)` when opt-in ChatGPT OAuth is not connected.
 ///
@@ -835,13 +872,25 @@ pub(crate) fn resolve_access_token_with(
     if record.access_token.trim().is_empty() {
         return Ok(None);
     }
-    if record.needs_refresh(now_unix_secs()) && record.refresh_token.is_some() {
-        refresh_tokens_with(backend, config, timeout)?;
-        let fresh =
-            ChatGptOAuthStore::load_with(backend)?.ok_or(ChatGptOAuthError::NotConnected)?;
-        return Ok(Some(fresh.access_token));
+    if !record.needs_refresh(now_unix_secs()) {
+        return Ok(Some(record.access_token));
     }
-    Ok(Some(record.access_token))
+
+    let _guard = REFRESH_SINGLE_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(current) = ChatGptOAuthStore::load_with(backend)? else {
+        return Ok(None);
+    };
+    if current.access_token.trim().is_empty() {
+        return Ok(None);
+    }
+    if !current.needs_refresh(now_unix_secs()) {
+        return Ok(Some(current.access_token));
+    }
+
+    let refreshed = refresh_tokens_locked(backend, config, timeout)?;
+    Ok(Some(refreshed.access_token))
 }
 
 /// Run the full interactive opt-in ChatGPT OAuth 2.0 + PKCE loopback login flow
@@ -979,49 +1028,251 @@ mod tests {
 
     #[test]
     fn loopback_callback_verifies_state_and_enforces_timeout() {
+        assert_eq!(
+            verify_csrf_state(None, "expected-csrf-state"),
+            Err(ChatGptOAuthError::StateMismatch)
+        );
+        assert_eq!(
+            verify_csrf_state(Some("tampered-state"), "expected-csrf-state"),
+            Err(ChatGptOAuthError::StateMismatch)
+        );
+        assert_eq!(
+            verify_csrf_state(Some("expected-csrf-state"), "expected-csrf-state"),
+            Ok(())
+        );
+
         let server = LoopbackCallbackServer::bind(&[]).expect("bind ephemeral loopback");
         let redirect = server.redirect_uri();
         assert!(redirect.starts_with("http://127.0.0.1:"));
         assert!(redirect.ends_with("/auth/callback"));
 
-        // Mismatched CSRF state is rejected immediately.
-        let bad_url = format!("{redirect}?code=abc&state=tampered-state");
+        // Unauthenticated requests with missing or mismatched CSRF state
+        // (including ?error= probes) must receive HTTP 400 without aborting
+        // the active sign-in listener, which continues waiting for the valid callback.
+        let redirect_for_probes = redirect.clone();
         let handle = std::thread::spawn(move || {
-            let _ = reqwest::blocking::get(bad_url);
-        });
-        let err = server
-            .wait_for_code("expected-csrf-state", Duration::from_secs(5), None)
-            .expect_err("state mismatch must fail");
-        assert_eq!(err, ChatGptOAuthError::StateMismatch);
-        let _ = handle.join();
+            let unauth_error_no_state =
+                reqwest::blocking::get(format!("{redirect_for_probes}?error=access_denied"))
+                    .expect("probe 1");
+            assert_eq!(unauth_error_no_state.status().as_u16(), 400);
 
-        // Authorization error callback is rejected cleanly.
-        let denied_url = format!("{redirect}?error=access_denied&state=expected-csrf-state");
-        let handle = std::thread::spawn(move || {
-            let _ = reqwest::blocking::get(denied_url);
-        });
-        let err = server
-            .wait_for_code("expected-csrf-state", Duration::from_secs(5), None)
-            .expect_err("error must fail");
-        assert_eq!(err, ChatGptOAuthError::AuthorizationDenied);
-        let _ = handle.join();
+            let unauth_error_bad_state = reqwest::blocking::get(format!(
+                "{redirect_for_probes}?error=access_denied&state=tampered-state"
+            ))
+            .expect("probe 2");
+            assert_eq!(unauth_error_bad_state.status().as_u16(), 400);
 
-        // Valid state + code succeeds.
-        let good_url = format!("{redirect}?code=auth-code-777&state=expected-csrf-state");
-        let handle = std::thread::spawn(move || {
-            let _ = reqwest::blocking::get(good_url);
+            let missing_state_code =
+                reqwest::blocking::get(format!("{redirect_for_probes}?code=abc")).expect("probe 3");
+            assert_eq!(missing_state_code.status().as_u16(), 400);
+
+            let mismatched_state_code = reqwest::blocking::get(format!(
+                "{redirect_for_probes}?code=abc&state=tampered-state"
+            ))
+            .expect("probe 4");
+            assert_eq!(mismatched_state_code.status().as_u16(), 400);
+
+            let valid_cb = reqwest::blocking::get(format!(
+                "{redirect_for_probes}?code=auth-code-777&state=expected-csrf-state"
+            ))
+            .expect("valid callback");
+            assert_eq!(valid_cb.status().as_u16(), 200);
         });
         let code = server
             .wait_for_code("expected-csrf-state", Duration::from_secs(5), None)
-            .expect("valid callback succeeds");
+            .expect("valid callback succeeds after ignoring unauthenticated probes");
         assert_eq!(code, "auth-code-777");
+        handle.join().expect("probe thread joins");
+
+        // Authorization error callback WITH valid CSRF state is rejected cleanly.
+        let denied_url = format!("{redirect}?error=access_denied&state=expected-csrf-state");
+        let handle = std::thread::spawn(move || {
+            let resp = reqwest::blocking::get(denied_url).expect("denied response");
+            assert_eq!(resp.status().as_u16(), 400);
+        });
+        let err = server
+            .wait_for_code("expected-csrf-state", Duration::from_secs(5), None)
+            .expect_err("authenticated error callback must fail");
+        assert_eq!(err, ChatGptOAuthError::AuthorizationDenied);
         let _ = handle.join();
 
-        // Timeout is enforced when no callback arrives.
+        // Timeout is enforced when no valid callback arrives.
         let timeout_err = server
             .wait_for_code("expected-csrf-state", Duration::from_millis(80), None)
             .expect_err("must time out");
         assert_eq!(timeout_err, ChatGptOAuthError::CallbackTimeout);
+    }
+
+    #[test]
+    fn expired_token_without_usable_refresh_token_fails_closed() {
+        let keyring = MemoryKeyring::default();
+        let config = ChatGptOAuthConfig {
+            issuer: "http://127.0.0.1:9".to_string(),
+            client_id: "nexora-test-client".to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+
+        // 1. Expired access token with refresh_token = None must fail closed.
+        ChatGptOAuthStore::save_with(
+            &keyring,
+            &StoredChatGptOAuthTokens {
+                access_token: "expired-access-secret".to_string(),
+                refresh_token: None,
+                id_token: None,
+                expires_at: Some(now_unix_secs() - 10),
+                token_type: Some("Bearer".to_string()),
+                scope: None,
+                connected_at: 1_700_000_000,
+            },
+        )
+        .expect("save expired token without refresh_token");
+
+        let err = resolve_access_token_with(&keyring, &config, Duration::from_secs(1))
+            .expect_err("expired token without refresh_token must fail closed");
+        assert_eq!(err, ChatGptOAuthError::TokenRefreshFailed);
+
+        // 2. Expired access token with whitespace-only refresh_token must also fail closed.
+        ChatGptOAuthStore::save_with(
+            &keyring,
+            &StoredChatGptOAuthTokens {
+                access_token: "expired-access-secret".to_string(),
+                refresh_token: Some("   \t\n  ".to_string()),
+                id_token: None,
+                expires_at: Some(now_unix_secs() + 10), // within 60s REFRESH_SKEW_SECS
+                token_type: Some("Bearer".to_string()),
+                scope: None,
+                connected_at: 1_700_000_000,
+            },
+        )
+        .expect("save near-expiry token with whitespace refresh_token");
+
+        let err = resolve_access_token_with(&keyring, &config, Duration::from_secs(1))
+            .expect_err("near-expiry token with whitespace refresh_token must fail closed");
+        assert_eq!(err, ChatGptOAuthError::TokenRefreshFailed);
+    }
+
+    fn spawn_rotating_token_server(
+        expected_requests: usize,
+    ) -> (
+        u16,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock rotating token server");
+        let port = listener.local_addr().expect("addr").port();
+        let refresh_calls = Arc::new(AtomicUsize::new(0));
+        let refresh_calls_srv = Arc::clone(&refresh_calls);
+        let handle = std::thread::spawn(move || {
+            for idx in 0..expected_requests {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                assert_eq!(refresh_calls_srv.fetch_add(1, Ordering::SeqCst), idx);
+
+                let expected_refresh = format!("rotating-rt-{}", idx + 1);
+                let next_refresh = format!("rotating-rt-{}", idx + 2);
+                let next_access = format!("rotated-access-{}", idx + 2);
+                let (status, body) = if req.contains(&format!("refresh_token={expected_refresh}")) {
+                    (
+                        "200 OK",
+                        format!(
+                            r#"{{"access_token":"{next_access}","refresh_token":"{next_refresh}","expires_in":3600,"token_type":"Bearer"}}"#
+                        ),
+                    )
+                } else {
+                    (
+                        "400 Bad Request",
+                        r#"{"error":"invalid_grant"}"#.to_string(),
+                    )
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (port, refresh_calls, handle)
+    }
+
+    #[test]
+    fn concurrent_callers_near_expiry_single_flight_refresh_without_rotating_token_race() {
+        use std::sync::{Arc, Barrier};
+
+        let (port, refresh_calls, server_thread) = spawn_rotating_token_server(3);
+        let keyring = Arc::new(MemoryKeyring::default());
+        ChatGptOAuthStore::save_with(
+            keyring.as_ref(),
+            &StoredChatGptOAuthTokens {
+                access_token: "initial-near-expiry-access".to_string(),
+                refresh_token: Some("rotating-rt-1".to_string()),
+                id_token: None,
+                expires_at: Some(now_unix_secs() + 5),
+                token_type: Some("Bearer".to_string()),
+                scope: None,
+                connected_at: 1_700_000_000,
+            },
+        )
+        .expect("seed near-expiry token");
+
+        let config = Arc::new(ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: "nexora-test-client".to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        });
+
+        let barrier = Arc::new(Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let (kr, cfg, bar) = (
+                    Arc::clone(&keyring),
+                    Arc::clone(&config),
+                    Arc::clone(&barrier),
+                );
+                std::thread::spawn(move || {
+                    bar.wait();
+                    resolve_access_token_with(kr.as_ref(), cfg.as_ref(), Duration::from_secs(5))
+                })
+            })
+            .collect();
+        for handle in handles {
+            let resolved = handle.join().expect("join").expect("ok").expect("some");
+            assert_eq!(resolved, "rotated-access-2");
+        }
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 1);
+
+        let barrier2 = Arc::new(Barrier::new(2));
+        let refresh_handles: Vec<_> = (0..2)
+            .map(|_| {
+                let (kr, cfg, bar) = (
+                    Arc::clone(&keyring),
+                    Arc::clone(&config),
+                    Arc::clone(&barrier2),
+                );
+                std::thread::spawn(move || {
+                    bar.wait();
+                    refresh_tokens_with(kr.as_ref(), cfg.as_ref(), Duration::from_secs(5))
+                })
+            })
+            .collect();
+        for handle in refresh_handles {
+            let status = handle.join().expect("join").expect("refresh succeeds");
+            assert!(status.connected && status.has_refresh_token);
+        }
+        assert_eq!(refresh_calls.load(Ordering::SeqCst), 3);
+
+        let final_record = ChatGptOAuthStore::load_with(keyring.as_ref())
+            .expect("load final")
+            .expect("present");
+        assert_eq!(final_record.access_token, "rotated-access-4");
+        assert_eq!(final_record.refresh_token.as_deref(), Some("rotating-rt-4"));
+        server_thread.join().expect("mock rotating server exits");
     }
 
     #[test]

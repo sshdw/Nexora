@@ -666,6 +666,16 @@ export function useProviders(): ProvidersStore {
           await setSetting(SELECTED_MODEL_KEY, null);
         }
         await removeProviderCredential(name);
+        if (name === OPENAI_PROVIDER && chatgptOAuth?.connected) {
+          await chatgptOAuthDisconnect();
+          setChatGptOAuth({
+            connected: false,
+            has_refresh_token: false,
+            expires_at: null,
+            connected_at: null,
+            auth_mode: "none",
+          });
+        }
         const def = configuredProviders.find(
           (provider) => provider.name === name
         );
@@ -679,7 +689,7 @@ export function useProviders(): ProvidersStore {
         setWorking(false);
       }
     },
-    [configuredProviders, selectedProvider, reload]
+    [configuredProviders, selectedProvider, chatgptOAuth, reload]
   );
 
   const startChatGptOAuth = useCallback(async (): Promise<boolean> => {
@@ -725,13 +735,25 @@ export function useProviders(): ProvidersStore {
         connected_at: null,
         auth_mode: "none",
       });
+      if (!credentialedNames.has(OPENAI_PROVIDER)) {
+        if (selectedProvider === OPENAI_PROVIDER) {
+          await setSetting(SELECTED_PROVIDER_KEY, null);
+          await setSetting(SELECTED_MODEL_KEY, null);
+        }
+        const def = configuredProviders.find(
+          (provider) => provider.name === OPENAI_PROVIDER
+        );
+        if (def) {
+          await removeProvider(def.id);
+        }
+      }
       await reload();
     } catch (e) {
       setError(toCommandError(e));
     } finally {
       setChatGptOAuthWorking(false);
     }
-  }, [reload]);
+  }, [configuredProviders, credentialedNames, selectedProvider, reload]);
 
   const toggleCliAdapter = useCallback(
     async (adapterId: "codex" | "claude", enabled: boolean): Promise<boolean> => {
@@ -778,7 +800,7 @@ export function useProviders(): ProvidersStore {
         return {
           supported: definition,
           configured: isConfigured,
-          credentialed: isCli ? isConfigured : hasApiKey || hasOAuth,
+          credentialed: isCli ? isConfigured : hasApiKey,
           available: isCli
             ? isConfigured
             : isConfigured && (hasApiKey || hasOAuth),

@@ -115,7 +115,11 @@ export default function CredentialsSection({
                 <Button
                   variant="quiet"
                   className="nex-provider-remove"
-                  disabled={store.working}
+                  disabled={
+                    store.working ||
+                    (supported.name === "openai" &&
+                      Boolean(store.chatgptOAuthWorking))
+                  }
                   onClick={() => onDisconnect(supported)}
                 >
                   {t("settings.disconnect")}
