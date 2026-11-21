@@ -18,6 +18,7 @@ pub mod agent_tasks;
 pub mod file_checkpoints;
 pub mod run_plans;
 pub mod run_questions;
+pub mod settings;
 pub mod work_queue;
 
 /// Result type shared by all repositories, centralizing propagation of
