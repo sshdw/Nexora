@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 use crate::application::agent::control::CancellationToken;
 use crate::application::agent::redaction::redact_command_output;
+use crate::application::agent::tools::path_safety::canonical_root;
 
 /// Hard timeout for a single post-edit diagnostic check.
 pub(crate) const DEFAULT_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(6);
@@ -89,18 +90,20 @@ pub(crate) fn run_post_edit_diagnostics_with_timeout(
         return None;
     }
     let (tool, manifest_dir) = detect_tool_and_manifest(workspace_root, edited_file)?;
-    let cmd = build_command(tool, &manifest_dir, workspace_root);
+    let canon_root = canonical_comparable_path(workspace_root);
+    let canon_file = canonical_comparable_path(edited_file);
+    let cmd = build_command(tool, &manifest_dir, &canon_root);
     let (success, raw_output) = run_bounded_command(cmd, timeout, token)?;
     if success {
         return None;
     }
-    let edited_hint = edited_file
+    let edited_hint = canon_file
         .strip_prefix(&manifest_dir)
         .ok()
-        .or_else(|| edited_file.strip_prefix(workspace_root).ok())
+        .or_else(|| canon_file.strip_prefix(&canon_root).ok())
         .map_or_else(
             || {
-                edited_file
+                canon_file
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default()
@@ -108,6 +111,22 @@ pub(crate) fn run_post_edit_diagnostics_with_timeout(
             |p| p.to_string_lossy().replace('\\', "/"),
         );
     format_diagnostics(tool, &edited_hint, &raw_output)
+}
+
+/// Canonicalize `path` via [`canonical_root`] and strip any Windows verbatim
+/// (`\\?\`) prefix so `starts_with` / `strip_prefix` comparisons and child
+/// process `current_dir` calls agree across verbatim, 8.3, symlinked, and
+/// relative spellings.
+fn canonical_comparable_path(path: &Path) -> PathBuf {
+    let canon = canonical_root(path);
+    let text = canon.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    canon
 }
 
 /// Determine the diagnostic tool and nearest manifest directory within
@@ -123,16 +142,29 @@ pub(crate) fn detect_tool_and_manifest(
         _ => return None,
     };
 
+    let canon_root = canonical_comparable_path(workspace_root);
+    let canon_file = if edited_file.exists() {
+        canonical_comparable_path(edited_file)
+    } else if let Some(parent) = edited_file.parent() {
+        let mut p = canonical_comparable_path(parent);
+        if let Some(name) = edited_file.file_name() {
+            p.push(name);
+        }
+        p
+    } else {
+        canonical_comparable_path(edited_file)
+    };
+
     let manifest_name = tool.manifest_name();
-    let mut cursor = edited_file.parent()?;
+    let mut cursor = canon_file.parent()?;
     loop {
-        if !cursor.starts_with(workspace_root) {
+        if !cursor.starts_with(&canon_root) {
             break;
         }
         if cursor.join(manifest_name).is_file() {
             return Some((tool, cursor.to_path_buf()));
         }
-        if cursor == workspace_root {
+        if cursor == canon_root {
             break;
         }
         let Some(parent) = cursor.parent() else {
@@ -209,14 +241,14 @@ pub(crate) fn run_bounded_command(
     if token.is_cancelled() {
         return None;
     }
-    let mut child = cmd.spawn().ok()?;
-    let stdout_handle = child.stdout.take().map(spawn_bounded_reader);
-    let stderr_handle = child.stderr.take().map(spawn_bounded_reader);
+    let mut child = nexora_os_exec::spawn_in_process_tree(&mut cmd).ok()?;
+    let stdout_handle = child.take_stdout().map(spawn_bounded_reader);
+    let stderr_handle = child.take_stderr().map(spawn_bounded_reader);
 
     let start = Instant::now();
     let status = loop {
         if token.is_cancelled() || start.elapsed() >= timeout {
-            let _ = child.kill();
+            let _ = child.kill_tree();
             let _ = child.wait();
             return None;
         }
@@ -224,7 +256,7 @@ pub(crate) fn run_bounded_command(
             Ok(Some(exit)) => break exit,
             Ok(None) => thread::sleep(POLL_INTERVAL),
             Err(_) => {
-                let _ = child.kill();
+                let _ = child.kill_tree();
                 let _ = child.wait();
                 return None;
             }
@@ -237,6 +269,7 @@ pub(crate) fn run_bounded_command(
     let stderr = stderr_handle
         .and_then(|h| h.join().ok())
         .unwrap_or_default();
+    let _ = child.kill_tree();
     let mut combined = String::with_capacity(stdout.len() + stderr.len() + 1);
     combined.push_str(&String::from_utf8_lossy(&stdout));
     if !combined.is_empty() && !combined.ends_with('\n') && !stderr.is_empty() {
@@ -406,6 +439,46 @@ mod tests {
             detect_tool_and_manifest(&ws, &file),
             Some((DiagnosticTool::Rust, sub.clone()))
         );
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn detects_manifest_across_verbatim_and_non_canonical_paths() {
+        let ws = temp_workspace();
+        let sub = ws.join("crates").join("pkg");
+        fs::create_dir_all(sub.join("src")).unwrap();
+        fs::write(sub.join("Cargo.toml"), "[package]\nname=\"pkg\"\n").unwrap();
+        let file = sub.join("src").join("lib.rs");
+        fs::write(&file, "pub fn x() {}").unwrap();
+
+        // `resolve_path` returns a canonicalized (`\\?\`-prefixed on Windows) path,
+        // while callers pass the raw `workspace_root`.
+        let resolved = crate::application::agent::tools::path_safety::resolve_path(
+            &ws,
+            "crates/pkg/src/lib.rs",
+        )
+        .expect("resolve_path");
+        assert_eq!(
+            detect_tool_and_manifest(&ws, &resolved),
+            Some((DiagnosticTool::Rust, sub.clone()))
+        );
+
+        // Non-canonical root containing `..` / `.` segments vs canonicalized `resolved` path.
+        let non_canon_ws = ws.join("crates").join("..").join(".");
+        assert_eq!(
+            detect_tool_and_manifest(&non_canon_ws, &resolved),
+            Some((DiagnosticTool::Rust, sub.clone()))
+        );
+
+        #[cfg(windows)]
+        {
+            let verbatim_ws = PathBuf::from(format!(r"\\?\{}", ws.display()));
+            assert_eq!(
+                detect_tool_and_manifest(&verbatim_ws, &file),
+                Some((DiagnosticTool::Rust, sub.clone()))
+            );
+        }
+
         let _ = fs::remove_dir_all(&ws);
     }
 
