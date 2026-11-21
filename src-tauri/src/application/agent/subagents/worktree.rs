@@ -97,6 +97,8 @@ impl WorktreeIsolation {
             return Err(format!("failed to create git worktree: {stderr}"));
         }
 
+        let worktree_path = canonicalize_path(&worktree_path);
+
         let subagent_workspace = if rel_workspace.as_os_str().is_empty() {
             worktree_path.clone()
         } else {
@@ -271,6 +273,18 @@ impl Drop for WorktreeIsolation {
     fn drop(&mut self) {
         self.cleanup();
     }
+}
+
+fn canonicalize_path(path: &Path) -> PathBuf {
+    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let text = canon.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = text.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    canon
 }
 
 fn relative_workspace(repo_root: &Path, workspace_root: &Path) -> PathBuf {

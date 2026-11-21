@@ -34,7 +34,7 @@ fn temp_dir(label: &str) -> PathBuf {
     ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).expect("create temp test dir");
-    dir
+    crate::application::agent::tools::test_support::canonical_workspace(&dir)
 }
 
 fn init_git_repo(dir: &Path) {
