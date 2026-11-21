@@ -81,6 +81,15 @@ const SECRET_MARKERS: [&str; 9] = [
     "BEGIN PRIVATE KEY",
 ];
 
+/// Whether a caller-supplied string carries a known credential marker.
+///
+/// Shared by every redaction gate in the CLI (config keys, `run` flag values,
+/// rendered values) so there is exactly one definition of "key-shaped bytes".
+#[must_use]
+pub(crate) fn is_secret_shaped(value: &str) -> bool {
+    SECRET_MARKERS.iter().any(|marker| value.contains(marker))
+}
+
 /// Return a label safe to echo in a diagnostic.
 ///
 /// A normal dotted setting key is printed verbatim so the rejection is
@@ -89,13 +98,12 @@ const SECRET_MARKERS: [&str; 9] = [
 /// stays loud without reproducing hostile argv bytes.
 #[must_use]
 pub(crate) fn safe_key_label(key: &str) -> String {
-    let looks_secret = SECRET_MARKERS.iter().any(|marker| key.contains(marker));
     let printable = !key.is_empty()
         && key.len() <= 200
         && key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
-    if looks_secret || !printable {
+    if is_secret_shaped(key) || !printable {
         "[redacted]".to_string()
     } else {
         key.to_string()
@@ -145,7 +153,7 @@ pub(crate) fn unknown_key(key: &str) -> CliError {
 /// still never prints the bytes.
 #[must_use]
 pub(crate) fn redact_value(value: &str) -> String {
-    if SECRET_MARKERS.iter().any(|marker| value.contains(marker)) {
+    if is_secret_shaped(value) {
         "[redacted]".to_string()
     } else {
         value.to_string()
