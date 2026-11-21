@@ -8,7 +8,7 @@
 //! looks like credential material, so a hostile `config set` cannot smuggle
 //! key bytes into stderr (brief §11, §15; issue #162 redaction acceptance).
 
-use nexora_core::error::{CoreErrorKind, ExitCode};
+use nexora_core::error::{CliExitCode, CoreErrorKind};
 
 /// A classified, secret-free CLI failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,10 +52,14 @@ impl CliError {
         }
     }
 
-    /// The numeric process exit status, from the one shared table.
+    /// The CLI process exit status, from the versioned CLI table.
+    ///
+    /// All CLI exits — including the phase-3 commands — go through this table
+    /// (brief §9.4, plan §5), so a DB/config failure maps to `Internal` (`1`),
+    /// never to `Budget` (`5`).
     #[must_use]
-    pub(crate) fn exit_code(&self) -> ExitCode {
-        ExitCode::for_kind(self.kind)
+    pub(crate) fn exit_code(&self) -> CliExitCode {
+        CliExitCode::for_kind(self.kind)
     }
 
     /// Print the diagnostic to stderr. Never prints a value or a raw OS error.

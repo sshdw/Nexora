@@ -263,6 +263,168 @@ impl Display for ExitCode {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLI process exit contract (brief §9.4, NEXORA-CLI-PLAN.md §5)
+// ---------------------------------------------------------------------------
+
+/// Version of the CLI process exit-code table.
+///
+/// This is a *separate*, stable contract from [`EXIT_CODE_TABLE_VERSION`] and
+/// [`ExitCode`]. The latter is the shared error-category table (0–11) used by
+/// the desktop IPC boundary. The brief §9.4 / plan §5 exit codes are the
+/// numbers a shell sees when the `nexora` binary exits (0–5); scripts branch on
+/// them, so they are frozen here and never renumbered. Two tables, two
+/// versions, on purpose: changing one must not silently rewrite the other.
+pub const CLI_EXIT_CODE_TABLE_VERSION: u32 = 1;
+
+/// Process exit codes of the `nexora` CLI.
+///
+/// | Code | Variant | Meaning |
+/// |---|---|---|
+/// | 0 | `Ok` | success |
+/// | 1 | `Internal` | unexpected/internal failure (DB, config, I/O, ...) |
+/// | 2 | `Usage` | user / validation error (bad flag, bad provider/model) |
+/// | 3 | `Provider` | provider / network / auth failure |
+/// | 4 | `Cancelled` | approval denied or run cancelled |
+/// | 5 | `Budget` | step-budget / spend-limit exhausted |
+///
+/// Every CLI process exit — including commands added before this table — goes
+/// through this enum. In particular a DB/config failure maps to `Internal`
+/// (`1`), never to `Budget` (`5`): the two concepts are unrelated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(i32)]
+pub enum CliExitCode {
+    /// Successful completion.
+    Ok = 0,
+    /// Unexpected or internal failure (persistence, config, serialization, I/O).
+    Internal = 1,
+    /// User / validation error (bad flag, bad provider or model).
+    Usage = 2,
+    /// Provider / network / credential failure.
+    Provider = 3,
+    /// Approval denied, or the run was cancelled before completion.
+    Cancelled = 4,
+    /// Step budget or spend limit exhausted.
+    Budget = 5,
+}
+
+impl CliExitCode {
+    /// The numeric value handed to the OS on process exit.
+    #[must_use]
+    pub const fn code(self) -> i32 {
+        self as i32
+    }
+
+    /// Map a shared error category onto the CLI exit contract.
+    ///
+    /// Total by construction over [`CoreErrorKind::ALL`]. Validation-shaped
+    /// kinds are usage (`2`); provider/credential kinds are provider (`3`);
+    /// confirmation is cancellation (`4`); everything else — notably
+    /// persistence/config `Database` — is internal (`1`).
+    #[must_use]
+    pub const fn for_kind(kind: CoreErrorKind) -> Self {
+        match kind {
+            CoreErrorKind::InvalidInput
+            | CoreErrorKind::InvalidJson
+            | CoreErrorKind::UnsupportedFormat
+            | CoreErrorKind::UnsupportedVersion
+            | CoreErrorKind::InvalidData => Self::Usage,
+            CoreErrorKind::Credential | CoreErrorKind::Request => Self::Provider,
+            CoreErrorKind::ConfirmationRequired => Self::Cancelled,
+            CoreErrorKind::NotFound
+            | CoreErrorKind::Database
+            | CoreErrorKind::Serialization
+            | CoreErrorKind::Io
+            | CoreErrorKind::Conflict => Self::Internal,
+        }
+    }
+
+    /// Map a concrete provider executor failure onto the CLI exit contract.
+    ///
+    /// A provider call cancelled in flight is user cancellation (`4`), not a
+    /// provider failure. A prompt that exceeds the model context window is an
+    /// internal failure (`1`) unless the runner reclassifies it as a budget
+    /// outcome — this choice is pinned in `cli_exit_code_table_is_pinned`.
+    #[must_use]
+    pub const fn for_executor_error(error: &crate::provider::ExecutorError) -> Self {
+        use crate::provider::ExecutorError;
+        match error {
+            ExecutorError::Cancelled => Self::Cancelled,
+            ExecutorError::ContextLengthExceeded => Self::Internal,
+            ExecutorError::Network
+            | ExecutorError::RateLimited { .. }
+            | ExecutorError::ProviderUnavailable
+            | ExecutorError::PaymentRequired
+            | ExecutorError::Authentication
+            | ExecutorError::InvalidRequest
+            | ExecutorError::UnexpectedResponse
+            | ExecutorError::Failure => Self::Provider,
+        }
+    }
+}
+
+/// Terminal outcome of a CLI-launched run, mapped onto [`CliExitCode`].
+///
+/// Kept deliberately small and secret-free: it is a classification label, not
+/// a carrier for step counts, spend amounts, or provider payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CliRunOutcome {
+    /// The run finished successfully.
+    Completed,
+    /// An unexpected/internal failure ended the run.
+    Failed,
+    /// Run history could not be persisted.
+    PersistenceFailure,
+    /// A provider call failed.
+    Provider,
+    /// The context window was exhausted after recovery attempts.
+    ContextExhausted,
+    /// The user cancelled the run.
+    Cancelled,
+    /// An approval was denied in non-interactive mode.
+    ApprovalDenied,
+    /// The step budget was exhausted.
+    BudgetExhausted,
+    /// The spend limit was exceeded.
+    SpendLimitExceeded,
+}
+
+impl CliExitCode {
+    /// Map a run's terminal outcome onto the CLI exit contract.
+    #[must_use]
+    pub const fn for_run_outcome(outcome: CliRunOutcome) -> Self {
+        match outcome {
+            CliRunOutcome::Completed => Self::Ok,
+            CliRunOutcome::Failed
+            | CliRunOutcome::PersistenceFailure
+            | CliRunOutcome::ContextExhausted => Self::Internal,
+            CliRunOutcome::Provider => Self::Provider,
+            CliRunOutcome::Cancelled | CliRunOutcome::ApprovalDenied => Self::Cancelled,
+            CliRunOutcome::BudgetExhausted | CliRunOutcome::SpendLimitExceeded => Self::Budget,
+        }
+    }
+
+    /// Map an approval outcome onto the CLI exit contract.
+    ///
+    /// In non-interactive mode an approval request is never auto-granted: a
+    /// denial or a cancel both resolve to `4`, with an explicit how-to-repeat
+    /// hint printed by the CLI adapter.
+    #[must_use]
+    pub const fn for_approval(approved: bool) -> Self {
+        if approved {
+            Self::Ok
+        } else {
+            Self::Cancelled
+        }
+    }
+}
+
+impl Display for CliExitCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.code())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,5 +564,114 @@ mod tests {
                 "shared error text must not contain {sentinel:?}: {text}"
             );
         }
+    }
+
+    // --- CLI process exit contract (brief §9.4 / plan §5) -------------------
+
+    #[test]
+    fn cli_exit_code_table_is_pinned() {
+        // The published shell-facing contract. These exact numbers are what
+        // automation branches on; changing one is a breaking change that MUST
+        // accompany a CLI_EXIT_CODE_TABLE_VERSION bump.
+        assert_eq!(CLI_EXIT_CODE_TABLE_VERSION, 1);
+        assert_eq!(CliExitCode::Ok.code(), 0);
+        assert_eq!(CliExitCode::Internal.code(), 1);
+        assert_eq!(CliExitCode::Usage.code(), 2);
+        assert_eq!(CliExitCode::Provider.code(), 3);
+        assert_eq!(CliExitCode::Cancelled.code(), 4);
+        assert_eq!(CliExitCode::Budget.code(), 5);
+
+        // The two tables are independent: both happen to be at version 1, but
+        // the shared error table's numbers (0–11) must not leak into the CLI
+        // contract (0–5).
+        assert_eq!(CLI_EXIT_CODE_TABLE_VERSION, 1);
+        assert_eq!(EXIT_CODE_TABLE_VERSION, 1);
+        assert_eq!(ExitCode::Database.code(), 5);
+        assert_eq!(CliExitCode::for_kind(CoreErrorKind::Database).code(), 1);
+        assert_ne!(ExitCode::Budget.code(), CliExitCode::Budget.code());
+    }
+
+    #[test]
+    fn cli_exit_code_core_kind_mapping_is_pinned() {
+        let expected = [
+            (CoreErrorKind::InvalidInput, 2),
+            (CoreErrorKind::InvalidJson, 2),
+            (CoreErrorKind::UnsupportedFormat, 2),
+            (CoreErrorKind::UnsupportedVersion, 2),
+            (CoreErrorKind::InvalidData, 2),
+            (CoreErrorKind::Credential, 3),
+            (CoreErrorKind::Request, 3),
+            (CoreErrorKind::ConfirmationRequired, 4),
+            (CoreErrorKind::NotFound, 1),
+            (CoreErrorKind::Database, 1),
+            (CoreErrorKind::Serialization, 1),
+            (CoreErrorKind::Io, 1),
+            (CoreErrorKind::Conflict, 1),
+        ];
+        assert_eq!(expected.len(), CoreErrorKind::ALL.len());
+        for (kind, code) in expected {
+            assert_eq!(
+                CliExitCode::for_kind(kind).code(),
+                code,
+                "CLI exit code for {kind:?} changed"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_exit_code_run_outcome_mapping_is_pinned() {
+        let expected = [
+            (CliRunOutcome::Completed, 0),
+            (CliRunOutcome::Failed, 1),
+            (CliRunOutcome::PersistenceFailure, 1),
+            (CliRunOutcome::Provider, 3),
+            (CliRunOutcome::ContextExhausted, 1),
+            (CliRunOutcome::Cancelled, 4),
+            (CliRunOutcome::ApprovalDenied, 4),
+            (CliRunOutcome::BudgetExhausted, 5),
+            (CliRunOutcome::SpendLimitExceeded, 5),
+        ];
+        for (outcome, code) in expected {
+            assert_eq!(
+                CliExitCode::for_run_outcome(outcome).code(),
+                code,
+                "CLI exit code for {outcome:?} changed"
+            );
+        }
+        // Owner decision: `ContextExhausted` is internal unless core
+        // classifies it as budget. It is internal here — pin that choice.
+        assert_eq!(
+            CliExitCode::for_run_outcome(CliRunOutcome::ContextExhausted),
+            CliExitCode::Internal
+        );
+        assert_ne!(
+            CliExitCode::for_run_outcome(CliRunOutcome::ContextExhausted),
+            CliExitCode::Budget
+        );
+    }
+
+    #[test]
+    fn cli_exit_code_executor_error_and_approval_mapping_is_pinned() {
+        use crate::provider::ExecutorError;
+        assert_eq!(
+            CliExitCode::for_executor_error(&ExecutorError::Authentication).code(),
+            3
+        );
+        assert_eq!(
+            CliExitCode::for_executor_error(&ExecutorError::Network).code(),
+            3
+        );
+        assert_eq!(
+            CliExitCode::for_executor_error(&ExecutorError::Cancelled).code(),
+            4
+        );
+        assert_eq!(
+            CliExitCode::for_executor_error(&ExecutorError::ContextLengthExceeded).code(),
+            1
+        );
+        // Non-interactive never auto-approves: only an explicit grant maps to
+        // success; denial and cancellation both map to 4.
+        assert_eq!(CliExitCode::for_approval(true).code(), 0);
+        assert_eq!(CliExitCode::for_approval(false).code(), 4);
     }
 }

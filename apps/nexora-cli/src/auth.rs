@@ -81,7 +81,7 @@ mod tests {
         for hostile in ["ghost", SECRET, "openai\nsk-live-x", ""] {
             let err = validate_provider(hostile).expect_err("unsupported provider must be loud");
             assert!(!err.message.contains(SECRET));
-            assert_eq!(err.exit_code(), nexora_core::ExitCode::Usage);
+            assert_eq!(err.exit_code(), nexora_core::error::CliExitCode::Usage);
         }
         assert!(validate_provider(SECRET)
             .expect_err("hostile id")
@@ -126,7 +126,7 @@ mod tests {
             unreachable!("no write after a failed read")
         })
         .expect_err("read failure");
-        assert_eq!(err.exit_code(), nexora_core::ExitCode::Credential);
+        assert_eq!(err.exit_code(), nexora_core::error::CliExitCode::Provider);
         assert!(!err.message.contains(SECRET));
         assert!(!err.message.contains("openai"));
     }

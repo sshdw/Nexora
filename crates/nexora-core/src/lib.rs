@@ -74,6 +74,9 @@ pub mod provider;
 pub mod storage;
 pub mod version;
 
-pub use error::{CoreError, CoreErrorKind, ExitCode, EXIT_CODE_TABLE_VERSION};
+pub use error::{
+    CliExitCode, CliRunOutcome, CoreError, CoreErrorKind, ExitCode, CLI_EXIT_CODE_TABLE_VERSION,
+    EXIT_CODE_TABLE_VERSION,
+};
 pub use provider::{AiRequest, AiResponse, CancellationToken, ExecutorError, ProviderExecutor};
 pub use version::{ManifestVersions, MAX_VERSION_CHARS};
