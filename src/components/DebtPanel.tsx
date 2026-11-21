@@ -26,8 +26,8 @@ import { useCallback, useState } from "react";
 import type { DebtItem } from "../lib/tauri";
 import { useDebt } from "../lib/useDebt";
 import { useStrings, type Strings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
 import ConfirmDialog from "./ConfirmDialog";
 import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
@@ -155,16 +155,16 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
           <p className="nex-vcs-subtitle">{t("debt.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button
+          <Button
             variant="quiet"
             onClick={() => void runImport()}
             disabled={importing || loading}
           >
             {importing ? t("debt.importing") : t("debt.import")}
-          </M3Button>
-          <M3Button variant="quiet" onClick={onClose}>
+          </Button>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
@@ -184,7 +184,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
             {issueNotice}
           </p>
         )}
-        {loading && <M3LoadingIndicator label={t("common.loading")} />}
+        {loading && <LoadingIndicator label={t("common.loading")} />}
         {!loading && (
           <>
             <p className="nex-vcs-notice" role="note">
@@ -271,14 +271,14 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                           </option>
                         ))}
                       </select>{" "}
-                      <M3Button
+                      <Button
                         variant="quiet"
                         onClick={() => setDeleteTarget(item)}
                         disabled={busyId === item.id}
                       >
                         {t("debt.delete")}
-                      </M3Button>{" "}
-                      <M3Button
+                      </Button>{" "}
+                      <Button
                         variant="quiet"
                         onClick={() =>
                           setIssueTarget({
@@ -291,7 +291,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                         disabled={busyId === item.id}
                       >
                         {t("issue.fileIssue")}
-                      </M3Button>
+                      </Button>
                     </div>
                   </li>
                 ))}
@@ -304,9 +304,9 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
           <h3 className="nex-vcs-section-title">{t("debt.new")}</h3>
           {!formOpen ? (
             <div>
-              <M3Button variant="quiet" onClick={() => setFormOpen(true)}>
+              <Button variant="quiet" onClick={() => setFormOpen(true)}>
                 {t("debt.create")}
-              </M3Button>
+              </Button>
             </div>
           ) : (
             <>
@@ -364,14 +364,14 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                 onChange={(event) => setFormNote(event.target.value)}
               />
               <div>
-                <M3Button
+                <Button
                   variant="quiet"
                   onClick={() => void saveManual()}
                   disabled={saving}
                 >
                   {t("debt.save")}
-                </M3Button>{" "}
-                <M3Button
+                </Button>{" "}
+                <Button
                   variant="quiet"
                   onClick={() => {
                     setFormOpen(false);
@@ -379,7 +379,7 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                   }}
                 >
                   {t("debt.cancel")}
-                </M3Button>
+                </Button>
               </div>
             </>
           )}

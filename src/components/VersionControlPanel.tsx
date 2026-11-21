@@ -38,8 +38,8 @@ import { useEffect, useRef, useState } from "react";
 import { formatRelativeTime } from "../lib/format";
 import { useVcs } from "../lib/useVcs";
 import { DiffView } from "./AgentRunSteps";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
 import { getLocale, tp, tr, type Locale } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 
@@ -234,12 +234,12 @@ export default function VersionControlPanel({
           </p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button variant="quiet" onClick={vcs.refresh} disabled={loading}>
+          <Button variant="quiet" onClick={vcs.refresh} disabled={loading}>
             {loading ? t("vcs.refreshing") : t("vcs.refresh")}
-          </M3Button>
-          <M3Button variant="quiet" onClick={onClose}>
+          </Button>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
@@ -270,7 +270,7 @@ export default function VersionControlPanel({
 
       <div className="nex-vcs-body">
         {loading ? (
-          <M3LoadingIndicator label={t("vcs.loading")} />
+          <LoadingIndicator label={t("vcs.loading")} />
         ) : error || !info ? (
           <div className="nex-composer-error nex-fade-in" role="alert">
             {error ?? t("vcs.unavailable")}
@@ -307,7 +307,7 @@ export default function VersionControlPanel({
                           </span>
                         )}
                       </div>
-                      <M3Button
+                      <Button
                         variant="secondary"
                         size="sm"
                         disabled={acting !== null}
@@ -318,7 +318,7 @@ export default function VersionControlPanel({
                           : abortArmed
                             ? t("vcs.confirmAbortMerge")
                             : t("vcs.abortMerge")}
-                      </M3Button>
+                      </Button>
                     </div>
                     {abortArmed && acting === null && (
                       <p className="nex-vcs-notice" role="note">
@@ -362,7 +362,7 @@ export default function VersionControlPanel({
                                 </span>
                               </button>
                               <div className="nex-vcs-conflict-actions">
-                                <M3Button
+                                <Button
                                   variant="quiet"
                                   size="sm"
                                   disabled={busy || acting !== null}
@@ -374,8 +374,8 @@ export default function VersionControlPanel({
                                   }
                                 >
                                   {t("vcs.acceptOurs")}
-                                </M3Button>
-                                <M3Button
+                                </Button>
+                                <Button
                                   variant="quiet"
                                   size="sm"
                                   disabled={busy || acting !== null}
@@ -387,8 +387,8 @@ export default function VersionControlPanel({
                                   }
                                 >
                                   {t("vcs.acceptTheirs")}
-                                </M3Button>
-                                <M3Button
+                                </Button>
+                                <Button
                                   variant="quiet"
                                   size="sm"
                                   disabled={acting !== null}
@@ -400,7 +400,7 @@ export default function VersionControlPanel({
                                   }
                                 >
                                   {t("vcs.askAgentResolve")}
-                                </M3Button>
+                                </Button>
                               </div>
                             </li>
                           );
@@ -422,7 +422,7 @@ export default function VersionControlPanel({
                           </span>
                         </h4>
                         {conflictDiffLoading ? (
-                          <M3LoadingIndicator
+                          <LoadingIndicator
                             label={t("vcs.conflictLoading", {
                               path: selectedConflictPath,
                             })}
@@ -526,7 +526,7 @@ export default function VersionControlPanel({
                                   {file.path}
                                 </span>
                               </button>
-                              <M3Button
+                              <Button
                                 variant="quiet"
                                 size="sm"
                                 disabled={busy || acting !== null}
@@ -539,7 +539,7 @@ export default function VersionControlPanel({
                                   : staged
                                     ? t("vcs.unstage")
                                     : t("vcs.stage")}
-                              </M3Button>
+                              </Button>
                             </li>
                           );
                         })}
@@ -565,7 +565,7 @@ export default function VersionControlPanel({
                       </span>
                     </h3>
                     {diffLoading ? (
-                      <M3LoadingIndicator
+                      <LoadingIndicator
                         label={t("vcs.diffLoading", { path: selectedPath })}
                       />
                     ) : diffError || !diff ? (
@@ -628,15 +628,15 @@ export default function VersionControlPanel({
                     </p>
                   )}
                   <div className="nex-vcs-header-actions">
-                    <M3Button
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={generating || acting !== null}
                       onClick={() => void vcs.generate()}
                     >
                       {generating ? t("vcs.generating") : t("vcs.generate")}
-                    </M3Button>
-                    <M3Button
+                    </Button>
+                    <Button
                       variant="primary"
                       size="sm"
                       disabled={
@@ -650,7 +650,7 @@ export default function VersionControlPanel({
                       {acting === "commit"
                         ? t("vcs.committing")
                         : t("vcs.commit")}
-                    </M3Button>
+                    </Button>
                   </div>
                   <p className="nex-vcs-notice" role="note">
                     {t("vcs.genNotice")}
@@ -665,23 +665,23 @@ export default function VersionControlPanel({
                     {t("vcs.remoteSection")}
                   </h3>
                   <div className="nex-vcs-header-actions">
-                    <M3Button
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={acting !== null}
                       onClick={() => void vcs.fetchOrigin()}
                     >
                       {acting === "fetch" ? t("vcs.fetching") : t("vcs.fetch")}
-                    </M3Button>
-                    <M3Button
+                    </Button>
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={acting !== null || !info.branch}
                       onClick={() => void vcs.pullOrigin()}
                     >
                       {acting === "pull" ? t("vcs.pulling") : t("vcs.pull")}
-                    </M3Button>
-                    <M3Button
+                    </Button>
+                    <Button
                       variant="secondary"
                       size="sm"
                       disabled={acting !== null || !info.branch}
@@ -697,7 +697,7 @@ export default function VersionControlPanel({
                         : pushArmed
                           ? t("vcs.confirmPush")
                           : t("vcs.push")}
-                    </M3Button>
+                    </Button>
                   </div>
                   {pushArmed && info.branch && acting === null && (
                     <p className="nex-vcs-notice" role="note">
@@ -736,7 +736,7 @@ export default function VersionControlPanel({
                           </option>
                         ))}
                       </select>
-                      <M3Button
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={
@@ -749,8 +749,8 @@ export default function VersionControlPanel({
                         {acting === "branch-switch"
                           ? t("vcs.branchSwitching")
                           : t("vcs.branchSwitch")}
-                      </M3Button>
-                      <M3Button
+                      </Button>
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={
@@ -765,7 +765,7 @@ export default function VersionControlPanel({
                         {acting === "branch-delete"
                           ? t("vcs.branchDeleting")
                           : t("vcs.branchDelete")}
-                      </M3Button>
+                      </Button>
                     </div>
                   )}
                   {forceDeleteBranch && (
@@ -776,7 +776,7 @@ export default function VersionControlPanel({
                         })}
                       </p>
                       <div className="nex-vcs-header-actions">
-                        <M3Button
+                        <Button
                           variant="secondary"
                           size="sm"
                           disabled={acting !== null}
@@ -787,15 +787,15 @@ export default function VersionControlPanel({
                           {t("vcs.branchForceDeleteConfirm", {
                             name: forceDeleteBranch,
                           })}
-                        </M3Button>
-                        <M3Button
+                        </Button>
+                        <Button
                           variant="quiet"
                           size="sm"
                           disabled={acting !== null}
                           onClick={vcs.cancelForceDelete}
                         >
                           {t("vcs.cancel")}
-                        </M3Button>
+                        </Button>
                       </div>
                     </div>
                   )}
@@ -809,7 +809,7 @@ export default function VersionControlPanel({
                       disabled={acting !== null}
                       onChange={(event) => setNewBranchName(event.target.value)}
                     />
-                    <M3Button
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={
@@ -823,7 +823,7 @@ export default function VersionControlPanel({
                       {acting === "branch-create"
                         ? t("vcs.branchCreating")
                         : t("vcs.branchCreate")}
-                    </M3Button>
+                    </Button>
                   </div>
                 </section>
 
@@ -844,7 +844,7 @@ export default function VersionControlPanel({
                       disabled={acting !== null}
                       onChange={(event) => setStashMessage(event.target.value)}
                     />
-                    <M3Button
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={acting !== null || info.files.length === 0}
@@ -856,7 +856,7 @@ export default function VersionControlPanel({
                       {acting === "stash-push"
                         ? t("vcs.stashing")
                         : t("vcs.stashPush")}
-                    </M3Button>
+                    </Button>
                   </div>
                   {stashes.length === 0 ? (
                     <p className="nex-agent-empty">{t("vcs.stashEmpty")}</p>
@@ -880,7 +880,7 @@ export default function VersionControlPanel({
                               {entry.message}
                             </span>
                           </div>
-                          <M3Button
+                          <Button
                             variant="quiet"
                             size="sm"
                             disabled={acting !== null}
@@ -889,7 +889,7 @@ export default function VersionControlPanel({
                             {acting === `stash-pop-${entry.index}`
                               ? t("vcs.stashPopping")
                               : t("vcs.stashPop")}
-                          </M3Button>
+                          </Button>
                         </li>
                       ))}
                     </ul>
@@ -904,7 +904,7 @@ export default function VersionControlPanel({
                     {t("vcs.reviewSection")}
                   </h3>
                   <div className="nex-vcs-header-actions">
-                    <M3Button
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={reviewLoading || acting !== null}
@@ -913,8 +913,8 @@ export default function VersionControlPanel({
                       {reviewLoading
                         ? t("vcs.reviewPreparing")
                         : t("vcs.reviewWorking")}
-                    </M3Button>
-                    <M3Button
+                    </Button>
+                    <Button
                       variant="quiet"
                       size="sm"
                       disabled={
@@ -923,7 +923,7 @@ export default function VersionControlPanel({
                       onClick={() => void vcs.prepareReview("branch")}
                     >
                       {t("vcs.reviewBranch")}
-                    </M3Button>
+                    </Button>
                   </div>
                   {reviewError && (
                     <div
@@ -960,7 +960,7 @@ export default function VersionControlPanel({
                             <DiffView observation={reviewDiff.diff} />
                           </div>
                           <div className="nex-vcs-header-actions">
-                            <M3Button
+                            <Button
                               variant="quiet"
                               size="sm"
                               onClick={() =>
@@ -970,15 +970,15 @@ export default function VersionControlPanel({
                               {reviewCopied
                                 ? t("vcs.copied")
                                 : t("vcs.reviewCopy")}
-                            </M3Button>
+                            </Button>
                             {onSendToAgent && (
-                              <M3Button
+                              <Button
                                 variant="primary"
                                 size="sm"
                                 onClick={() => onSendToAgent(reviewDiff.prompt)}
                               >
                                 {t("vcs.reviewSend")}
-                              </M3Button>
+                              </Button>
                             )}
                           </div>
                         </>
@@ -1085,7 +1085,7 @@ export default function VersionControlPanel({
                       </span>
                     </h3>
                     {commitDiffLoading ? (
-                      <M3LoadingIndicator
+                      <LoadingIndicator
                         label={t("vcs.commitLoading", {
                           hash: shortHash(selectedCommit),
                         })}
@@ -1150,7 +1150,7 @@ export default function VersionControlPanel({
                           </>
                         )}
                         <div className="nex-vcs-header-actions">
-                          <M3Button
+                          <Button
                             variant="quiet"
                             size="sm"
                             disabled={explain.loading || !explainable}
@@ -1164,9 +1164,9 @@ export default function VersionControlPanel({
                               : explain.explanation
                                 ? t("vcs.explainAgain")
                                 : t("vcs.explain")}
-                          </M3Button>
+                          </Button>
                           {explain.explanation && (
-                            <M3Button
+                            <Button
                               variant="quiet"
                               size="sm"
                               onClick={() =>
@@ -1178,7 +1178,7 @@ export default function VersionControlPanel({
                               {explain.copied
                                 ? t("vcs.copied")
                                 : t("vcs.copyExplanation")}
-                            </M3Button>
+                            </Button>
                           )}
                         </div>
                         <p className="nex-vcs-notice" role="note">

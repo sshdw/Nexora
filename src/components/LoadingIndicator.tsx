@@ -13,17 +13,17 @@
 import { cn } from "../lib/utils";
 import { Spinner } from "./ui/spinner";
 
-export interface M3LoadingIndicatorProps {
+export interface LoadingIndicatorProps {
   /** Short waiting description, e.g. "Loading messages". Announced and
    * shown as text — never motion alone. */
   label: string;
   size?: "sm" | "md";
 }
 
-export default function M3LoadingIndicator({
+export default function LoadingIndicator({
   label,
   size = "md",
-}: M3LoadingIndicatorProps) {
+}: LoadingIndicatorProps) {
   return (
     <div
       className={cn(
@@ -31,6 +31,7 @@ export default function M3LoadingIndicator({
         size === "sm" ? "text-xs" : "text-sm"
       )}
       role="status"
+      aria-live="polite"
     >
       <Spinner
         className={size === "sm" ? "size-3" : "size-4"}

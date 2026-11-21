@@ -13,8 +13,8 @@
 //! existing keys are composer Enter/Shift+Enter in
 //! `ConversationView.tsx:463`, rename Enter/Escape in
 //! `ConversationItem.tsx:79-85`, segmented arrows/Home/End in
-//! `M3SegmentedGroup.tsx:79-103`, toolbar/modal Escape in
-//! `M3Toolbar.tsx:71-74` and `Modal.tsx:113-114`; none use modifiers, so all
+//! `SegmentedGroup.tsx:79-103`, toolbar/modal Escape in
+//! `Toolbar.tsx:71-74` and `Modal.tsx:113-114`; none use modifiers, so all
 //! modified combos below are collision-free):
 //!   Ctrl+Tab / Ctrl+PageDown .... next tab
 //!   Ctrl+Shift+Tab / Ctrl+PageUp  previous tab

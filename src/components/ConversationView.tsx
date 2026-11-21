@@ -64,7 +64,7 @@ import MessageMarkdown from "./MessageMarkdown";
 import ThinkingBlock from "./ThinkingBlock";
 import type { ModelConnectionGroup } from "./ModelPicker";
 import { useStrings } from "../lib/useLocale";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import LoadingIndicator from "./LoadingIndicator";
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -872,7 +872,7 @@ export default function ConversationView({
         aria-label={t("conv.messagesAria")}
       >
         {loading ? (
-          <M3LoadingIndicator label={t("conv.loadingMessages")} />
+          <LoadingIndicator label={t("conv.loadingMessages")} />
         ) : (
           threadItems.map((item) => {
             if (item.kind === "run") {
@@ -1022,7 +1022,7 @@ export default function ConversationView({
         )}
         {sending && !agentMode && !streamingText && (
           <div className="nex-thread-waiting">
-            <M3LoadingIndicator label={t("conv.responding")} size="sm" />
+            <LoadingIndicator label={t("conv.responding")} size="sm" />
           </div>
         )}
         {activeRun && activeRun.streaming_text && (
@@ -1035,7 +1035,7 @@ export default function ConversationView({
         )}
         {agentBusy && (
           <div className="nex-thread-waiting">
-            <M3LoadingIndicator label={t("conv.agentWorking")} size="sm" />
+            <LoadingIndicator label={t("conv.agentWorking")} size="sm" />
           </div>
         )}
       </div>

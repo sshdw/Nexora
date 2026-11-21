@@ -19,7 +19,7 @@ import type { AgentTask } from "../lib/tauri";
 import { useActivity } from "../lib/useActivity";
 import { formatRelativeTime } from "../lib/format";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
+import Button from "./Button";
 
 export interface ActivityPanelProps {
   /** Open the full Tasks overlay (the queue's own home). */
@@ -165,9 +165,9 @@ export default function ActivityPanel({
       {/* The queue's own home is one click away and always present — the
           panel is a glance, not a replacement for the Tasks surface. */}
       <div className="nex-dock-panel-footer">
-        <M3Button variant="quiet" size="sm" onClick={onOpenTasks}>
+        <Button variant="quiet" size="sm" onClick={onOpenTasks}>
           {t("dock.activityOpenTasks")}
-        </M3Button>
+        </Button>
       </div>
     </div>
   );

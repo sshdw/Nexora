@@ -32,8 +32,8 @@ import {
   mcpUpsertServer,
 } from "../../lib/tauri";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
-import M3SegmentedGroup from "../M3SegmentedGroup";
+import Button from "../Button";
+import SegmentedGroup from "../SegmentedGroup";
 import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface McpSectionProps {
@@ -370,7 +370,7 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                   </div>
 
                   <div className="nex-provider-actions">
-                    <M3Button
+                    <Button
                       variant="secondary"
                       size="sm"
                       disabled={isBusy}
@@ -379,8 +379,8 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                       {busyServer === srv.name
                         ? t("settings.mcpListingTools")
                         : t("settings.mcpListTools")}
-                    </M3Button>
-                    <M3Button
+                    </Button>
+                    <Button
                       variant="quiet"
                       size="sm"
                       className="nex-provider-remove"
@@ -388,7 +388,7 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                       onClick={() => void handleRemove(srv.name)}
                     >
                       {t("settings.mcpRemove")}
-                    </M3Button>
+                    </Button>
                   </div>
                 </div>
 
@@ -402,7 +402,7 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                   <div className="nex-provider-actions">
                     {srv.oauth && (
                       <>
-                        <M3Button
+                        <Button
                           variant="primary"
                           size="sm"
                           disabled={isBusy}
@@ -411,16 +411,16 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                           {oauthBusy === srv.name
                             ? t("settings.mcpOAuthSigningIn")
                             : t("settings.mcpOAuthSignIn")}
-                        </M3Button>
+                        </Button>
                         {srv.auth_kind === "oauth" && (
-                          <M3Button
+                          <Button
                             variant="secondary"
                             size="sm"
                             disabled={isBusy}
                             onClick={() => void handleRefreshOAuth(srv.name)}
                           >
                             {t("settings.mcpOAuthRefresh")}
-                          </M3Button>
+                          </Button>
                         )}
                       </>
                     )}
@@ -441,7 +441,7 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                         }))
                       }
                     />
-                    <M3Button
+                    <Button
                       variant="secondary"
                       size="sm"
                       disabled={
@@ -450,16 +450,16 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                       onClick={() => void handleSaveBearer(srv.name)}
                     >
                       {t("settings.mcpSaveBearer")}
-                    </M3Button>
+                    </Button>
                     {srv.has_auth && (
-                      <M3Button
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={isBusy}
                         onClick={() => void handleClearAuth(srv.name)}
                       >
                         {t("settings.mcpClearAuth")}
-                      </M3Button>
+                      </Button>
                     )}
                   </div>
                 )}
@@ -491,7 +491,7 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
           <span className="nex-settings-label" id="mcp-transport-label">
             {t("settings.mcpTransportLabel")}
           </span>
-          <M3SegmentedGroup
+          <SegmentedGroup
             labelledBy="mcp-transport-label"
             indicator={false}
             value={transport}
@@ -672,14 +672,14 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
         )}
 
         <div>
-          <M3Button
+          <Button
             variant="primary"
             size="sm"
             disabled={adding}
             onClick={() => void handleAddServer()}
           >
             {adding ? t("settings.mcpAdding") : t("settings.mcpAddButton")}
-          </M3Button>
+          </Button>
         </div>
       </div>
     </section>

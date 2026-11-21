@@ -2,7 +2,7 @@ import { useState } from "react";
 
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
-import M3RailItem from "./M3RailItem";
+import RailItem from "./RailItem";
 
 export interface WorkspaceRootsSwitcherProps {
   store: WorkspaceStore;
@@ -10,7 +10,7 @@ export interface WorkspaceRootsSwitcherProps {
 
 /** Multi-root registry switcher: registered roots with set-active + remove,
  * an add-folder entry, and the honest per-feature coverage note.
- * Rendered on the shared M3RailItem row primitive; tokens only, no raw
+ * Rendered on the shared RailItem row primitive; tokens only, no raw
  * values (paths are user data and render raw). Removing the active root
  * falls back to the default — every root-aware feature follows on its next
  * manual refresh. */
@@ -26,14 +26,14 @@ export default function WorkspaceRootsSwitcher({
 
   return (
     <div className="nex-roots">
-      <M3RailItem
+      <RailItem
         label={label}
         icon={<span aria-hidden="true">🗂</span>}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
         {label}
-      </M3RailItem>
+      </RailItem>
       {open && (
         <div className="nex-roots-panel">
           {count === 0 ? (

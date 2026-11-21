@@ -1,4 +1,4 @@
-import M3RailItem from "./M3RailItem";
+import RailItem from "./RailItem";
 import { IssuesIcon } from "./icons";
 import { useStrings } from "../lib/useLocale";
 
@@ -9,7 +9,7 @@ export interface IssuesEntryProps {
 }
 
 // Navigation entry point for the read-only GitHub Issues & PRs screen, on
-// the shared M3RailItem row primitive with its .is-active pill/tone emphasis.
+// the shared RailItem row primitive with its .is-active pill/tone emphasis.
 // `aria-current` (not `aria-pressed`): this is a navigation destination.
 // Unrendered since #219 (the nav trim) — the panel, this entry and its hooks
 // stay, so re-adding the rail row is a one-line change.
@@ -19,13 +19,13 @@ export default function IssuesEntry({
 }: IssuesEntryProps) {
   const { t } = useStrings();
   return (
-    <M3RailItem
+    <RailItem
       label={t("nav.ghLabel")}
       icon={<IssuesIcon />}
       active={active}
       onClick={onClick}
     >
       {t("nav.gh")}
-    </M3RailItem>
+    </RailItem>
   );
 }

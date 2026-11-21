@@ -6,7 +6,7 @@
 import type { SupportedProvider } from "../../lib/tauri";
 import type { ProvidersStore } from "../../lib/useProviders";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
+import Button from "../Button";
 
 export interface CredentialsSectionProps {
   store: ProvidersStore;
@@ -83,23 +83,23 @@ export default function CredentialsSection({
                   onDraftChange(supported.name, event.target.value)
                 }
               />
-              <M3Button
+              <Button
                 variant="primary"
                 size="sm"
                 disabled={store.working || !draftKeys[supported.name]?.trim()}
                 onClick={() => onConnect(supported)}
               >
                 {credentialed ? t("settings.update") : t("settings.connect")}
-              </M3Button>
+              </Button>
               {credentialed && (
-                <M3Button
+                <Button
                   variant="quiet"
                   className="nex-provider-remove"
                   disabled={store.working}
                   onClick={() => onDisconnect(supported)}
                 >
                   {t("settings.disconnect")}
-                </M3Button>
+                </Button>
               )}
             </div>
           </li>

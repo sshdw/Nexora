@@ -8,7 +8,7 @@ import type { FileCheckpoint } from "../../lib/tauri";
 import type { AgentStepView } from "../../lib/useAgentRun";
 import { tr, type Locale } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
+import Button from "../Button";
 import { FILE_TOOLS } from "./grouping";
 import {
   diffCounts,
@@ -407,7 +407,7 @@ export const StepSection = memo(function StepSection({
                     </span>
                   ) : (
                     onRevertCheckpoint && (
-                      <M3Button
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={reverting}
@@ -416,7 +416,7 @@ export const StepSection = memo(function StepSection({
                         {reverting
                           ? t("agent.checkpointReverting")
                           : t("agent.checkpointRevertFile")}
-                      </M3Button>
+                      </Button>
                     )
                   )}
                 </div>
@@ -447,7 +447,7 @@ export const StepSection = memo(function StepSection({
             </>
           )}
           {step.observation_truncated && !expanded && (
-            <M3Button
+            <Button
               variant="quiet"
               size="sm"
               onClick={handleExpand}
@@ -468,22 +468,22 @@ export const StepSection = memo(function StepSection({
                           ? "byte"
                           : "bytes",
                   })}
-            </M3Button>
+            </Button>
           )}
           {step.observation_error && !expanded && !step.observation_loading && (
             <div className="nex-agent-approval-actions">
               <span className="nex-agent-run-error" role="alert">
                 {t("agent.fullLoadError")}
               </span>
-              <M3Button variant="quiet" size="sm" onClick={handleExpand}>
+              <Button variant="quiet" size="sm" onClick={handleExpand}>
                 {t("common.retry")}
-              </M3Button>
+              </Button>
             </div>
           )}
           {expanded && (
-            <M3Button variant="quiet" size="sm" onClick={handleCollapse}>
+            <Button variant="quiet" size="sm" onClick={handleCollapse}>
               {t("agent.showLess")}
-            </M3Button>
+            </Button>
           )}
         </div>
       )}

@@ -1,4 +1,4 @@
-//! M3SegmentedGroup — Glide Select (R4-08) + the `.nex-seg` contract
+//! SegmentedGroup — Glide Select (R4-08) + the `.nex-seg` contract
 //! (G-18).
 //!
 //! jsdom ships no layout engine, so the geometry has to be supplied:
@@ -52,24 +52,24 @@ import {
   vi,
 } from "vitest";
 
-import M3SegmentedGroup from "./M3SegmentedGroup";
-import type { M3SegmentOption } from "./M3SegmentedGroup";
+import SegmentedGroup from "./SegmentedGroup";
+import type { SegmentOption } from "./SegmentedGroup";
 import { readRepoFile } from "../test/readRepoFile";
 
 type Mode = "chat" | "agent" | "context";
 
-const TWO_OPTIONS: readonly M3SegmentOption<Mode>[] = [
+const TWO_OPTIONS: readonly SegmentOption<Mode>[] = [
   { value: "chat", label: "Chat" },
   { value: "agent", label: "Agent" },
 ];
 
-const THREE_OPTIONS: readonly M3SegmentOption<Mode>[] = [
+const THREE_OPTIONS: readonly SegmentOption<Mode>[] = [
   { value: "chat", label: "Chat" },
   { value: "agent", label: "Agent" },
   { value: "context", label: "Context" },
 ];
 
-const THREE_WITH_DISABLED: readonly M3SegmentOption<Mode>[] = [
+const THREE_WITH_DISABLED: readonly SegmentOption<Mode>[] = [
   { value: "chat", label: "Chat" },
   { value: "agent", label: "Agent", disabled: true },
   { value: "context", label: "Context" },
@@ -181,7 +181,7 @@ function GroupHarness({
   disabled,
 }: {
   initial?: Mode | null;
-  options?: readonly M3SegmentOption<Mode>[];
+  options?: readonly SegmentOption<Mode>[];
   indicator?: boolean;
   variant?: "standard" | "connected";
   semantics?: "radio" | "tabs";
@@ -189,7 +189,7 @@ function GroupHarness({
 }) {
   const [value, setValue] = useState<Mode | null>(initial);
   return (
-    <M3SegmentedGroup<Mode>
+    <SegmentedGroup<Mode>
       label="Mode"
       options={options}
       value={value}
@@ -307,12 +307,12 @@ describe("Glide Select measurement", () => {
   });
 
   it("re-measures after a label change (EN → RU) without sliding", async () => {
-    const ru: readonly M3SegmentOption<Mode>[] = [
+    const ru: readonly SegmentOption<Mode>[] = [
       { value: "chat", label: "Чат" },
       { value: "agent", label: "Агент" },
     ];
     const { rerender } = render(
-      <M3SegmentedGroup<Mode>
+      <SegmentedGroup<Mode>
         label="Mode"
         options={TWO_OPTIONS}
         value="chat"
@@ -326,7 +326,7 @@ describe("Glide Select measurement", () => {
     fireResize();
 
     rerender(
-      <M3SegmentedGroup<Mode>
+      <SegmentedGroup<Mode>
         label="Mode"
         options={ru}
         value="chat"

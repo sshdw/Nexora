@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import M3Button from "./M3Button";
+import Button from "./Button";
 import { PlusIcon } from "./icons";
 import { useStrings } from "../lib/useLocale";
 
@@ -27,7 +27,7 @@ export default function NewConversationButton({
   const { t } = useStrings();
   const label = children ?? t("nav.newConversation");
   return (
-    <M3Button
+    <Button
       variant="primary"
       block
       className="h-9 justify-center"
@@ -38,6 +38,6 @@ export default function NewConversationButton({
     >
       <PlusIcon data-icon="inline-start" className="size-4" />
       <span>{label}</span>
-    </M3Button>
+    </Button>
   );
 }

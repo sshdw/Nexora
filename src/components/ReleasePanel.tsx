@@ -30,8 +30,8 @@ import {
 } from "../lib/tauri";
 import { formatBytes } from "../lib/format";
 import { useStrings, type Strings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
 import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
 export interface ReleasePanelProps {
@@ -320,16 +320,16 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
           <p className="nex-vcs-subtitle">{t("release.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button
+          <Button
             variant="quiet"
             onClick={() => void reload()}
             disabled={loading}
           >
             {loading ? t("release.refreshing") : t("release.refresh")}
-          </M3Button>
-          <M3Button variant="quiet" onClick={onClose}>
+          </Button>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
@@ -344,7 +344,7 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
             {notice}
           </p>
         )}
-        {loading && <M3LoadingIndicator label={t("release.loading")} />}
+        {loading && <LoadingIndicator label={t("release.loading")} />}
         {!loading && !error && status === null && (
           <p className="nex-agent-empty">{t("release.unavailable")}</p>
         )}
@@ -363,12 +363,12 @@ export default function ReleasePanel({ onClose }: ReleasePanelProps) {
                   <p className="nex-vcs-notice">{check.detail}</p>
                   {target && (
                     <div>
-                      <M3Button
+                      <Button
                         variant="quiet"
                         onClick={() => setIssueTarget(target)}
                       >
                         {t("release.fileIssue")}
-                      </M3Button>
+                      </Button>
                     </div>
                   )}
                 </li>

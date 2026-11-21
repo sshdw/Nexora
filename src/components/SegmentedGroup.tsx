@@ -51,7 +51,7 @@ import type { ReactNode } from "react";
 
 import { cn } from "../lib/utils";
 
-export interface M3SegmentOption<T extends string> {
+export interface SegmentOption<T extends string> {
   value: T;
   label: string;
   /** Per-option accessible name when the visible label is abbreviated. */
@@ -63,12 +63,12 @@ export interface M3SegmentOption<T extends string> {
   leading?: ReactNode;
 }
 
-export interface M3SegmentedGroupProps<T extends string> {
+export interface SegmentedGroupProps<T extends string> {
   /** Accessible group name (aria-label), or use `labelledBy` to point at a
    * visible heading id (e.g. the Settings theme label). */
   label?: string;
   labelledBy?: string;
-  options: readonly M3SegmentOption<T>[];
+  options: readonly SegmentOption<T>[];
   value: T | null;
   onChange: (value: T) => void;
   variant?: "standard" | "connected";
@@ -108,7 +108,7 @@ function cancelFrame(handle: number): void {
   }
 }
 
-export default function M3SegmentedGroup<T extends string>({
+export default function SegmentedGroup<T extends string>({
   label,
   labelledBy,
   options,
@@ -119,7 +119,7 @@ export default function M3SegmentedGroup<T extends string>({
   disabled = false,
   indicator = true,
   className = "",
-}: M3SegmentedGroupProps<T>) {
+}: SegmentedGroupProps<T>) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const readyRef = useRef(false);
@@ -356,7 +356,7 @@ export default function M3SegmentedGroup<T extends string>({
             aria-checked={!isTabs ? selected : undefined}
             aria-label={option.ariaLabel}
             className={cn(
-              "relative z-10 inline-flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap transition-colors outline-none",
+              "relative z-10 inline-flex min-w-0 items-center gap-1.5 text-sm whitespace-nowrap transition-colors outline-none motion-reduce:transition-none",
               "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
               "disabled:pointer-events-none disabled:opacity-50",
               isConnected

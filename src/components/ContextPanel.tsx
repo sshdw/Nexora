@@ -46,7 +46,7 @@ import {
   type ConversationContextStats,
 } from "../lib/tauri";
 import { DiffView } from "./AgentRunSteps";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import LoadingIndicator from "./LoadingIndicator";
 import {
   CONTEXT_BUDGET_MAX,
   CONTEXT_BUDGET_MIN,
@@ -547,7 +547,7 @@ export default function ContextPanel({
           {t("vcs.changedTitle", { n: files.length })}
         </h3>
         {filesLoading ? (
-          <M3LoadingIndicator label={t("ctx.loadingFiles")} size="sm" />
+          <LoadingIndicator label={t("ctx.loadingFiles")} size="sm" />
         ) : filesError !== null ? (
           <p className="nex-composer-error" role="alert">
             {filesError}

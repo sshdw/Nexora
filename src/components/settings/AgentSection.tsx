@@ -8,7 +8,7 @@ import type { AutonomyStore } from "../../lib/useAutonomy";
 import type { SpendLimitStore } from "../../lib/useSpendLimit";
 import { useStrings } from "../../lib/useLocale";
 import AccessProfileControl from "../AccessProfileControl";
-import M3SegmentedGroup from "../M3SegmentedGroup";
+import SegmentedGroup from "../SegmentedGroup";
 import { AUTONOMY_LABELS, AUTONOMY_MODES } from "./model";
 import SettingSourceBadge from "./SettingSourceBadge";
 
@@ -75,7 +75,7 @@ export default function AgentSection({
           </span>
           <SettingSourceBadge entry={resolvedEntries?.["agent.autonomy"]} />
         </div>
-        <M3SegmentedGroup
+        <SegmentedGroup
           labelledBy="autonomy-label"
           value={effectiveAutonomy ?? autonomy.mode}
           onChange={(mode) => void onAutonomyChange(mode)}

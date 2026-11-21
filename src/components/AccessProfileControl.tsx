@@ -1,6 +1,6 @@
 import type { AccessProfileStore } from "../lib/useAccessProfile";
 import { useStrings } from "../lib/useLocale";
-import M3SegmentedGroup from "./M3SegmentedGroup";
+import SegmentedGroup from "./SegmentedGroup";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
 export default function AccessProfileControl({
   store,
@@ -18,7 +18,7 @@ export default function AccessProfileControl({
       {showLabel && (
         <span className="nex-settings-label">{t("access.label")}</span>
       )}
-      <M3SegmentedGroup
+      <SegmentedGroup
         label={t("access.label")}
         semantics="radio"
         indicator={false}

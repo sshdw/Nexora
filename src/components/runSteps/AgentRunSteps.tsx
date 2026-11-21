@@ -14,8 +14,8 @@ import type {
 import type { FileCheckpoint } from "../../lib/tauri";
 import { tp, tr } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
-import M3Toolbar from "../M3Toolbar";
+import Button from "../Button";
+import Toolbar from "../Toolbar";
 import MessageMarkdown from "../MessageMarkdown";
 import ThinkingBlock from "../ThinkingBlock";
 import { CheckIcon, TaskIcon } from "../icons";
@@ -645,39 +645,39 @@ function AgentRunSteps({
             </span>
           </button>
         )}
-        <M3Toolbar
+        <Toolbar
           label={t("agent.controlsAria", { id: run.run_id })}
           className="nex-agent-run-actions"
         >
           {isRunning && onPause && (
-            <M3Button
+            <Button
               variant="quiet"
               size="sm"
               onClick={() => onPause(run.run_id)}
             >
               {t("agent.pause")}
-            </M3Button>
+            </Button>
           )}
           {isPaused && onResume && (
-            <M3Button
+            <Button
               variant="secondary"
               size="sm"
               onClick={() => onResume(run.run_id)}
             >
               {t("agent.resume")}
-            </M3Button>
+            </Button>
           )}
           {isActive && (
-            <M3Button
+            <Button
               variant="quiet"
               size="sm"
               onClick={() => onCancel(run.run_id)}
             >
               {t("agent.cancel")}
-            </M3Button>
+            </Button>
           )}
           {(run.status === "budget_exhausted" || isInterrupted) && (
-            <M3Button
+            <Button
               variant="secondary"
               size="sm"
               disabled={isInterrupted && hasActiveRun}
@@ -685,9 +685,9 @@ function AgentRunSteps({
               onClick={() => onContinue(run.run_id)}
             >
               {t("agent.continue")}
-            </M3Button>
+            </Button>
           )}
-        </M3Toolbar>
+        </Toolbar>
       </div>
 
       {/* The error block: what happened / what survived / next action, in
@@ -777,7 +777,7 @@ function AgentRunSteps({
           </div>
           {!approvalElapsed && (
             <div className="nex-agent-approval-actions">
-              <M3Button
+              <Button
                 variant="primary"
                 size="sm"
                 onClick={() =>
@@ -785,10 +785,10 @@ function AgentRunSteps({
                 }
               >
                 {t("agent.allowOnce")}
-              </M3Button>
+              </Button>
               {pending.name !== "execute_command" &&
                 pending.metadata?.allow_for_run && (
-                  <M3Button
+                  <Button
                     variant="quiet"
                     size="sm"
                     onClick={() =>
@@ -801,14 +801,14 @@ function AgentRunSteps({
                     }
                   >
                     {t("agent.allowRun")}
-                  </M3Button>
+                  </Button>
                 )}
               {/* Deny is a GHOST, not a red button (O-02: "Approve primary,
                   Deny ghost"). Declining is the safe answer, so it must not
                   wear the error colour that the brief reserves for states;
                   one filled control per decision keeps the primary obvious
                   without making the refusal look dangerous. */}
-              <M3Button
+              <Button
                 variant="quiet"
                 size="sm"
                 onClick={() =>
@@ -816,7 +816,7 @@ function AgentRunSteps({
                 }
               >
                 {t("agent.deny")}
-              </M3Button>
+              </Button>
             </div>
           )}
           {pendingDeadline && remaining !== null && (
@@ -1037,22 +1037,22 @@ function AgentRunSteps({
                       {t("agent.checkpointConflictBody")}
                     </p>
                     <div className="nex-agent-checkpoint-conflict-actions">
-                      <M3Button
+                      <Button
                         variant="primary"
                         size="sm"
                         disabled={revertingKey !== null}
                         onClick={() => void executeRevert(conflict.target, true)}
                       >
                         {t("agent.checkpointForceRevert")}
-                      </M3Button>
-                      <M3Button
+                      </Button>
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={revertingKey !== null}
                         onClick={() => setConflict(null)}
                       >
                         {t("agent.checkpointCancelRevert")}
-                      </M3Button>
+                      </Button>
                     </div>
                   </div>
                 )}
@@ -1074,7 +1074,7 @@ function AgentRunSteps({
                             })}
                           </span>
                           {hasUnreverted && onRevertTurn && (
-                            <M3Button
+                            <Button
                               variant="secondary"
                               size="sm"
                               disabled={revertingKey !== null}
@@ -1085,7 +1085,7 @@ function AgentRunSteps({
                               {revertingKey === turnKey
                                 ? t("agent.checkpointReverting")
                                 : t("agent.checkpointRevertTurn")}
-                            </M3Button>
+                            </Button>
                           )}
                         </div>
                         <div className="nex-agent-checkpoint-list">
@@ -1129,7 +1129,7 @@ function AgentRunSteps({
                                     )}
                                   </div>
                                   <div className="nex-agent-checkpoint-actions">
-                                    <M3Button
+                                    <Button
                                       variant="quiet"
                                       size="sm"
                                       aria-expanded={diffOpen}
@@ -1139,14 +1139,14 @@ function AgentRunSteps({
                                       {diffOpen
                                         ? t("agent.checkpointHideDiff")
                                         : t("agent.checkpointShowDiff")}
-                                    </M3Button>
+                                    </Button>
                                     {reverted ? (
                                       <span className="nex-tag nex-agent-checkpoint-reverted">
                                         {t("agent.checkpointReverted")}
                                       </span>
                                     ) : (
                                       onRevertCheckpoint && (
-                                        <M3Button
+                                        <Button
                                           variant="quiet"
                                           size="sm"
                                           disabled={revertingKey !== null}
@@ -1160,7 +1160,7 @@ function AgentRunSteps({
                                           {revertingKey === fileKey
                                             ? t("agent.checkpointReverting")
                                             : t("agent.checkpointRevertFile")}
-                                        </M3Button>
+                                        </Button>
                                       )
                                     )}
                                   </div>

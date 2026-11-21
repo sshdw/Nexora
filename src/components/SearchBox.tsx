@@ -6,7 +6,7 @@ import { getLocale, tr } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 import { Input } from "./ui/input";
 import { Spinner } from "./ui/spinner";
-import M3Button from "./M3Button";
+import Button from "./Button";
 import { SearchIcon } from "./icons";
 
 export interface SearchBoxProps {
@@ -181,7 +181,7 @@ export default function SearchBox({
                     {t("search.groupConversations")}
                   </p>
                   {results.conversations.map((conversation) => (
-                    <M3Button
+                    <Button
                       key={`conversation-${conversation.id}`}
                       variant="quiet"
                       // The canonical button primitive, not a raw
@@ -203,7 +203,7 @@ export default function SearchBox({
                           ? t("search.metaArchived")
                           : t("search.metaConversation")}
                       </span>
-                    </M3Button>
+                    </Button>
                   ))}
                 </>
               )}
@@ -213,7 +213,7 @@ export default function SearchBox({
                     {t("search.groupMessages")}
                   </p>
                   {results.message_matches.map((message) => (
-                    <M3Button
+                    <Button
                       key={`message-${message.id}`}
                       variant="quiet"
                       className="h-auto w-full flex-col items-start gap-0.5 px-2 py-1.5 text-left"
@@ -230,7 +230,7 @@ export default function SearchBox({
                       <span className="w-full truncate text-xs text-muted-foreground font-normal">
                         {message.content}
                       </span>
-                    </M3Button>
+                    </Button>
                   ))}
                 </>
               )}

@@ -25,8 +25,8 @@ import { useCallback, useMemo, useState } from "react";
 import type { AgentTask } from "../lib/tauri";
 import type { TasksStore, TaskView } from "../lib/useTasks";
 import { useStrings, type Strings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
 
 type ColumnStatus = AgentTask["status"];
 type MoveTarget = "pending" | "completed" | "failed" | "cancelled";
@@ -165,7 +165,7 @@ export default function KanbanBoard({
         </div>
       )}
       {store.loading && store.tasks.length === 0 ? (
-        <M3LoadingIndicator label={t("common.loading")} />
+        <LoadingIndicator label={t("common.loading")} />
       ) : (
         <div className="nex-kanban" role="group" aria-label={t("kanban.board")}>
           {COLUMNS.map((status) => {
@@ -244,7 +244,7 @@ export default function KanbanBoard({
                             {MOVE_TARGETS.filter((target) =>
                               canMove(view.task.status, target)
                             ).map((target) => (
-                              <M3Button
+                              <Button
                                 key={target}
                                 variant="quiet"
                                 size="sm"
@@ -257,14 +257,14 @@ export default function KanbanBoard({
                                 {t("kanban.moveTo", {
                                   status: columnLabel(target, t),
                                 })}
-                              </M3Button>
+                              </Button>
                             ))}
                           </div>
                         )}
                         {block && (
                           <div className="nex-kanban-denied" role="alert">
                             <span>{block.message}</span>
-                            <M3Button
+                            <Button
                               variant="quiet"
                               size="sm"
                               disabled={busy}
@@ -273,7 +273,7 @@ export default function KanbanBoard({
                               }
                             >
                               {t("kanban.takeOver")}
-                            </M3Button>
+                            </Button>
                           </div>
                         )}
                       </article>

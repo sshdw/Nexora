@@ -313,7 +313,7 @@ describe("quiet control tone — no control takes the UA's `buttontext` (Defect 
    *  roots) that resolved to BLACK — the tab close ×, the `+`, Split and
    *  the pane header's export glyph were invisible on the strip's
    *  elevated bar (measured on real Tauri frames). `ghost` is the variant
-   *  all four use (M3Button `quiet` → ghost, M3IconButton → ghost), and
+   *  all four use (Button `quiet` → ghost, IconButton → ghost), and
    *  it declares NO rest `text-*` — that absence is the bug's mechanism.
    *  Their rest tone now comes from the one base-layer fallback in
    *  src/index.css; the hover brighten from the utility asserted below.

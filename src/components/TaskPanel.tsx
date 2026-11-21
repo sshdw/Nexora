@@ -22,9 +22,9 @@ import type { AgentTask, AgentTaskStep } from "../lib/tauri";
 import { useStrings, type Strings } from "../lib/useLocale";
 import ConfirmDialog from "./ConfirmDialog";
 import KanbanBoard from "./KanbanBoard";
-import M3Button from "./M3Button";
-import M3SegmentedGroup from "./M3SegmentedGroup";
-import M3LoadingIndicator from "./M3LoadingIndicator";
+import Button from "./Button";
+import SegmentedGroup from "./SegmentedGroup";
+import LoadingIndicator from "./LoadingIndicator";
 import { UNDO_WINDOW_MS, useSnackbar } from "./SnackbarHost";
 
 export interface TaskPanelProps {
@@ -324,7 +324,7 @@ export default function TaskPanel({
           <p className="nex-vcs-subtitle">{t("task.subtitle")}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3SegmentedGroup
+          <SegmentedGroup
             label={t("kanban.viewLabel")}
             semantics="tabs"
             value={view}
@@ -335,13 +335,13 @@ export default function TaskPanel({
             ]}
           />
           {view === "list" && (
-            <M3Button variant="quiet" onClick={openCreate}>
+            <Button variant="quiet" onClick={openCreate}>
               {t("task.new")}
-            </M3Button>
+            </Button>
           )}
-          <M3Button variant="quiet" onClick={onClose}>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
@@ -470,24 +470,24 @@ export default function TaskPanel({
                   </>
                 )}
                 <div className="nex-vcs-header-actions">
-                  <M3Button
+                  <Button
                     variant="primary"
                     size="sm"
                     disabled={busyId !== null || form.title.trim() === ""}
                     onClick={() => void submitForm()}
                   >
                     {editingId !== null ? t("task.save") : t("task.create")}
-                  </M3Button>
-                  <M3Button variant="quiet" size="sm" onClick={closeForm}>
+                  </Button>
+                  <Button variant="quiet" size="sm" onClick={closeForm}>
                     {t("common.cancel")}
-                  </M3Button>
+                  </Button>
                 </div>
               </div>
             </section>
           )}
 
           {store.loading && visibleTasks.length === 0 ? (
-            <M3LoadingIndicator label={t("common.loading")} />
+            <LoadingIndicator label={t("common.loading")} />
           ) : visibleTasks.length === 0 ? (
             <div className="nex-agent-empty">
               <p>{t("task.noTasksTitle")}</p>
@@ -527,16 +527,16 @@ export default function TaskPanel({
                   <div className="nex-agent-terminal-body">
                     <div className="nex-vcs-header-actions">
                       {running ? (
-                        <M3Button
+                        <Button
                           variant="destructive"
                           size="sm"
                           disabled={busy}
                           onClick={() => void handleStop(view.task.id)}
                         >
                           {t("task.stop")}
-                        </M3Button>
+                        </Button>
                       ) : (
-                        <M3Button
+                        <Button
                           variant="primary"
                           size="sm"
                           disabled={busy || !canRun}
@@ -544,26 +544,26 @@ export default function TaskPanel({
                           onClick={() => void handleRun(view)}
                         >
                           {t("task.run")}
-                        </M3Button>
+                        </Button>
                       )}
-                      <M3Button
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={busy || running}
                         onClick={() => openEdit(view)}
                       >
                         {t("task.edit")}
-                      </M3Button>
-                      <M3Button
+                      </Button>
+                      <Button
                         variant="quiet"
                         size="sm"
                         disabled={busy || running}
                         onClick={() => setDeleteTarget(view)}
                       >
                         {t("task.delete")}
-                      </M3Button>
+                      </Button>
                       {view.steps.length > 0 && (
-                        <M3Button
+                        <Button
                           variant="quiet"
                           size="sm"
                           onClick={() => toggleSteps(view.task.id)}
@@ -571,10 +571,10 @@ export default function TaskPanel({
                           {expandedSteps[view.task.id]
                             ? t("task.hideSteps")
                             : t("task.showSteps")}
-                        </M3Button>
+                        </Button>
                       )}
                       {view.task.report !== null && (
-                        <M3Button
+                        <Button
                           variant="quiet"
                           size="sm"
                           onClick={() => toggleReport(view.task.id)}
@@ -582,7 +582,7 @@ export default function TaskPanel({
                           {expandedReport[view.task.id]
                             ? t("task.hideReport")
                             : t("task.showReport")}
-                        </M3Button>
+                        </Button>
                       )}
                     </div>
                     {expandedSteps[view.task.id] === true && (

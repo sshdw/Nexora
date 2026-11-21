@@ -40,9 +40,9 @@ import { useEffect, useState } from "react";
 
 import { useActivity } from "../lib/useActivity";
 import { useStrings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
-import M3SegmentedGroup from "./M3SegmentedGroup";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
+import SegmentedGroup from "./SegmentedGroup";
 import ActivityTab from "./activityHealth/ActivityTab";
 import HealthTab from "./activityHealth/HealthTab";
 import SystemSection from "./activityHealth/SystemSection";
@@ -128,21 +128,21 @@ export default function ActivityHealthPanel({
           <p className="nex-activity-subtitle">{t("activity.subtitle")}</p>
         </div>
         <div className="nex-activity-header-actions">
-          <M3Button
+          <Button
             variant="quiet"
             size="sm"
             onClick={activity.reload}
             title={t("activity.refreshTitle")}
           >
             {t("vcs.refresh")}
-          </M3Button>
-          <M3Button variant="quiet" size="sm" onClick={onClose}>
+          </Button>
+          <Button variant="quiet" size="sm" onClick={onClose}>
             {t("common.close")}
-          </M3Button>
+          </Button>
         </div>
       </header>
       <div className="nex-activity-tabs">
-        <M3SegmentedGroup<ActivityHealthTab>
+        <SegmentedGroup<ActivityHealthTab>
           label={t("activity.tabsLabel")}
           semantics="tabs"
           options={[
@@ -165,7 +165,7 @@ export default function ActivityHealthPanel({
             onKindChange={setKind}
           />
         ) : healthLoading ? (
-          <M3LoadingIndicator label={t("activity.loadingHealth")} />
+          <LoadingIndicator label={t("activity.loadingHealth")} />
         ) : (
           <>
             <HealthTab

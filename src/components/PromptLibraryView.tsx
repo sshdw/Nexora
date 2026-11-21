@@ -10,9 +10,9 @@
 
 import { useEffect, useState } from "react";
 
-import M3Button from "./M3Button";
-import M3IconButton from "./M3IconButton";
-import M3Toolbar from "./M3Toolbar";
+import Button from "./Button";
+import IconButton from "./IconButton";
+import Toolbar from "./Toolbar";
 import ModalShell from "./Modal";
 import NexoraMark from "./NexoraMark";
 import { PencilIcon, SearchIcon, TrashIcon } from "./icons";
@@ -130,12 +130,12 @@ export default function PromptLibraryView({
           <h2 className="nex-prompt-library-title">{t("prompts.title")}</h2>
           <p className="nex-prompt-library-subtitle">{t("prompts.subtitle")}</p>
         </div>
-        <M3Button variant="quiet" onClick={onClose}>
+        <Button variant="quiet" onClick={onClose}>
           {t("common.backToConversations")}
-        </M3Button>
+        </Button>
       </header>
 
-      <M3Toolbar label={t("prompts.toolbar")} className="nex-prompt-toolbar">
+      <Toolbar label={t("prompts.toolbar")} className="nex-prompt-toolbar">
         <div className="nex-search nex-prompt-search">
           <label htmlFor="nex-prompt-search-input" className="nex-sr-only">
             {t("prompts.searchLabel")}
@@ -152,15 +152,15 @@ export default function PromptLibraryView({
             spellCheck={false}
           />
         </div>
-        <M3Button
+        <Button
           variant="primary"
           expressive
           onClick={openCreate}
           disabled={saving}
         >
           {t("prompts.newPrompt")}
-        </M3Button>
-      </M3Toolbar>
+        </Button>
+      </Toolbar>
 
       <div className="nex-prompt-library-body">
         {deleteCancelled && (
@@ -187,13 +187,13 @@ export default function PromptLibraryView({
         ) : store.error && !deleteCancelled && editor === null ? (
           <div className="nex-prompt-error nex-fade-in" role="alert">
             <span className="nex-prompt-error-text">{store.error.message}</span>
-            <M3Button
+            <Button
               variant="quiet"
               size="sm"
               onClick={() => void store.reload()}
             >
               {t("common.retry")}
-            </M3Button>
+            </Button>
           </div>
         ) : store.prompts.length === 0 && filtered.length === 0 ? (
           <div className="nex-prompt-empty nex-empty-enter">
@@ -205,14 +205,14 @@ export default function PromptLibraryView({
             </h3>
             <p className="nex-prompt-empty-text">{t("prompts.emptyText")}</p>
             <div className="nex-empty-actions">
-              <M3Button
+              <Button
                 variant="primary"
                 expressive
                 onClick={openCreate}
                 disabled={saving}
               >
                 {t("prompts.newPrompt")}
-              </M3Button>
+              </Button>
             </div>
           </div>
         ) : filtered.length === 0 ? (
@@ -236,7 +236,7 @@ export default function PromptLibraryView({
                 </div>
                 <span className="nex-prompt-preview">{prompt.content}</span>
                 <div className="nex-prompt-card-foot">
-                  <M3Button
+                  <Button
                     variant="primary"
                     size="sm"
                     onClick={() => handleUse(prompt)}
@@ -249,21 +249,21 @@ export default function PromptLibraryView({
                     }
                   >
                     {t("prompts.use")}
-                  </M3Button>
+                  </Button>
                   <span className="nex-prompt-card-foot-spacer" />
-                  <M3Toolbar
+                  <Toolbar
                     label={t("prompts.toolsAria", { title: prompt.title })}
                     className="nex-prompt-card-tools"
                   >
-                    <M3IconButton
+                    <IconButton
                       size="sm"
                       label={t("prompts.editAria", { title: prompt.title })}
                       onClick={() => openEdit(prompt)}
                       disabled={saving}
                     >
                       <PencilIcon />
-                    </M3IconButton>
-                    <M3IconButton
+                    </IconButton>
+                    <IconButton
                       size="sm"
                       danger
                       label={t("prompts.deleteAria", { title: prompt.title })}
@@ -271,8 +271,8 @@ export default function PromptLibraryView({
                       disabled={saving}
                     >
                       <TrashIcon />
-                    </M3IconButton>
-                  </M3Toolbar>
+                    </IconButton>
+                  </Toolbar>
                 </div>
               </li>
             ))}
@@ -386,10 +386,10 @@ function PromptEditor({
       </div>
 
       <div className="nex-dialog-actions">
-        <M3Button variant="quiet" onClick={onCancel} disabled={saving}>
+        <Button variant="quiet" onClick={onCancel} disabled={saving}>
           {t("common.cancel")}
-        </M3Button>
-        <M3Button
+        </Button>
+        <Button
           variant="primary"
           loading={saving}
           disabled={editor.title.trim() === "" || editor.content.trim() === ""}
@@ -398,7 +398,7 @@ function PromptEditor({
           {editor.editing
             ? t("prompts.saveChanges")
             : t("prompts.createPrompt")}
-        </M3Button>
+        </Button>
       </div>
     </ModalShell>
   );

@@ -28,8 +28,8 @@ import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import ConfirmDialog from "./ConfirmDialog";
-import M3IconButton from "./M3IconButton";
-import M3Toolbar from "./M3Toolbar";
+import IconButton from "./IconButton";
+import Toolbar from "./Toolbar";
 import {
   ArchiveIcon,
   ExportIcon,
@@ -185,11 +185,11 @@ export default function SessionsPanel({
               </span>
             </button>
             <div className="nex-sessions-row-actions">
-              <M3Toolbar
+              <Toolbar
                 label={t("list.itemActions", { title: conversation.title })}
                 className="nex-sessions-actions"
               >
-                <M3IconButton
+                <IconButton
                   size="sm"
                   tooltipPortal
                   label={t("list.actionRename")}
@@ -197,9 +197,9 @@ export default function SessionsPanel({
                   onClick={() => beginRename(conversation)}
                 >
                   <PencilIcon />
-                </M3IconButton>
+                </IconButton>
                 {isArchived ? (
-                  <M3IconButton
+                  <IconButton
                     size="sm"
                     tooltipPortal
                     label={t("list.actionRestore")}
@@ -207,9 +207,9 @@ export default function SessionsPanel({
                     onClick={() => void onRestore(conversation.id)}
                   >
                     <UnarchiveIcon />
-                  </M3IconButton>
+                  </IconButton>
                 ) : (
-                  <M3IconButton
+                  <IconButton
                     size="sm"
                     tooltipPortal
                     label={t("list.actionArchive")}
@@ -217,9 +217,9 @@ export default function SessionsPanel({
                     onClick={() => void onArchive(conversation.id)}
                   >
                     <ArchiveIcon />
-                  </M3IconButton>
+                  </IconButton>
                 )}
-                <M3IconButton
+                <IconButton
                   size="sm"
                   tooltipPortal
                   label={t("list.actionExport")}
@@ -227,8 +227,8 @@ export default function SessionsPanel({
                   onClick={() => onExport(conversation.id)}
                 >
                   <ExportIcon />
-                </M3IconButton>
-                <M3IconButton
+                </IconButton>
+                <IconButton
                   size="sm"
                   tooltipPortal
                   danger
@@ -237,8 +237,8 @@ export default function SessionsPanel({
                   onClick={() => setPendingDelete(conversation)}
                 >
                   <TrashIcon />
-                </M3IconButton>
-              </M3Toolbar>
+                </IconButton>
+              </Toolbar>
             </div>
           </>
         )}

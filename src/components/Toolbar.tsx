@@ -1,31 +1,24 @@
-//! M3E toolbars — docked row + floating selection popover (library).
+//! Toolbars — docked row + floating selection popover (library).
 //!
-//! OFFICIALLY-supported desktop pattern ([toolbars], [bars-docked],
-//! [doc-cards]; skill components map row 15): docked rows carry persistent
-//! chrome; floating toolbars appear only as selection-context popovers
-//! anchored to the selection. Floating enters with scale+fade from the
-//! anchor on medium2 · emphasized-decelerate (skill motion.md §7,
-//! .nex-pop-enter); reduced motion resolves to fade-only/instant via the
-//! motion.css gate. Both variants expose role="toolbar" with arrow-key
-//! movement between focusable children and Esc-to-dismiss on floating.
+//! Docked rows carry persistent chrome; floating toolbars appear only
+//! as selection-context popovers anchored to the selection. Floating
+//! enters with scale+fade from the anchor via `.nex-pop-enter`; reduced
+//! motion resolves to fade-only/instant via the motion.css gate. Both
+//! variants expose role="toolbar" with arrow-key movement between
+//! focusable children and Esc-to-dismiss on floating.
 //!
-//! NO LOCAL DROPDOWN — checked, not skipped (#230 Phase 2). The phase
-//! note asked for this component's hand-rolled dropdown to move to
-//! `ui/popover`; there is none, and there never was: `git log -Sdropdown
-//! -- src/components/M3Toolbar.tsx` is empty across the file's history,
-//! and the file holds no menu state, trigger or list role. The `floating`
+//! NO LOCAL DROPDOWN — checked, not skipped (#230 Phase 2). The `floating`
 //! variant is a selection-context popover the CONSUMER positions and
 //! dismisses (see the props below), not a dropdown this component owns.
 //! A dropdown added here later must use `ui/popover` (Radix, vendored,
-//! already themed) rather than a local open/close flag — that is the
-//! whole reason the ui/ popover exists in this stack.
+//! already themed) rather than a local open/close flag.
 
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export interface M3ToolbarProps {
+export interface ToolbarProps {
   /** Accessible group name (required). */
   label: string;
   variant?: "docked" | "floating";
@@ -45,7 +38,7 @@ export interface M3ToolbarProps {
   children: ReactNode;
 }
 
-export default function M3Toolbar({
+export default function Toolbar({
   label,
   variant = "docked",
   style,
@@ -53,7 +46,7 @@ export default function M3Toolbar({
   autoFocus = true,
   className = "",
   children,
-}: M3ToolbarProps) {
+}: ToolbarProps) {
   const barRef = useRef<HTMLDivElement>(null);
   const floating = variant === "floating";
   // Element focused before the floating popover mounted — restored on
@@ -134,8 +127,8 @@ export default function M3Toolbar({
       onKeyDown={handleKeyDown}
       className={
         (floating
-          ? "nex-m3-toolbar-floating nex-pop-enter"
-          : "nex-m3-toolbar-docked") + (className ? " " + className : "")
+          ? "nex-toolbar-floating nex-pop-enter"
+          : "nex-toolbar-docked") + (className ? " " + className : "")
       }
     >
       {children}

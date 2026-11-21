@@ -12,8 +12,8 @@ import type {
 } from "../../lib/tauri";
 import { formatRelativeTime } from "../../lib/format";
 import { useStrings } from "../../lib/useLocale";
-import M3Button from "../M3Button";
-import M3LoadingIndicator from "../M3LoadingIndicator";
+import Button from "../Button";
+import LoadingIndicator from "../LoadingIndicator";
 import { formatBytes } from "./format";
 
 export interface SystemSectionProps {
@@ -59,7 +59,7 @@ export default function SystemSection({
           {bundleError}
         </p>
       ) : bundle === null ? (
-        <M3LoadingIndicator label={t("diag.loading")} />
+        <LoadingIndicator label={t("diag.loading")} />
       ) : (
         <ul className="nex-activity-list">
           <li className="nex-activity-row">
@@ -138,9 +138,9 @@ export default function SystemSection({
       )}
       {bundle !== null && (
         <div className="nex-activity-row-meta">
-          <M3Button variant="quiet" size="sm" onClick={onCopy}>
+          <Button variant="quiet" size="sm" onClick={onCopy}>
             {t("diag.copy")}
-          </M3Button>
+          </Button>
           {copied && <span>{t("diag.copied")}</span>}
           {copyFailed && <span role="alert">{t("common.copyFailed")}</span>}
           {!copied && !copyFailed && <span>{t("diag.copyHint")}</span>}
@@ -148,14 +148,14 @@ export default function SystemSection({
       )}
       <h3 className="nex-activity-section-title">{t("diag.updateSection")}</h3>
       <div className="nex-activity-row-meta">
-        <M3Button
+        <Button
           variant="quiet"
           size="sm"
           onClick={onCheckUpdate}
           disabled={updateBusy}
         >
           {updateBusy ? t("diag.checking") : t("diag.check")}
-        </M3Button>
+        </Button>
         {updateError !== null ? (
           <span role="alert">{t("diag.updateUnavailable")}</span>
         ) : update === null ? (
@@ -187,14 +187,14 @@ export default function SystemSection({
       </h3>
       <p className="nex-activity-muted">{t("diag.snapshotHint")}</p>
       <div className="nex-activity-row-meta">
-        <M3Button
+        <Button
           variant="quiet"
           size="sm"
           onClick={onSnapshot}
           disabled={snapshotBusy}
         >
           {snapshotBusy ? t("diag.snapshotBusy") : t("diag.snapshot")}
-        </M3Button>
+        </Button>
         {snapshotError !== null && <span role="alert">{snapshotError}</span>}
         {snapshot !== null && (
           <span>

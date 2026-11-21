@@ -6,8 +6,8 @@
 
 import { useEffect, useRef } from "react";
 
-import M3Button from "./M3Button";
-import M3IconButton from "./M3IconButton";
+import Button from "./Button";
+import IconButton from "./IconButton";
 import { useStrings } from "../lib/useLocale";
 import { CloseIcon, TerminalIcon } from "./icons";
 
@@ -147,21 +147,21 @@ export default function ConversationTabs({
                   </span>
                 )}
               </button>
-              <M3IconButton
+              <IconButton
                 size="sm"
                 label={t("tabs.closeTab", { title: tab.title })}
                 className="nex-tab-close"
                 onClick={() => onClose(tab.id)}
               >
                 <CloseIcon />
-              </M3IconButton>
+              </IconButton>
             </div>
           );
         })}
       </div>
       <div className="nex-tabstrip-actions">
         {onToggleTerminal && (
-          <M3Button
+          <Button
             variant="quiet"
             size="sm"
             onClick={onToggleTerminal}
@@ -170,9 +170,9 @@ export default function ConversationTabs({
           >
             <TerminalIcon size={16} />
             {t("term.toggleLabel")}
-          </M3Button>
+          </Button>
         )}
-        <M3Button
+        <Button
           variant="quiet"
           size="sm"
           onClick={onToggleSplit}
@@ -184,7 +184,7 @@ export default function ConversationTabs({
           title={t("tabs.splitTitle")}
         >
           {splitOpen ? t("app.splitClose") : t("app.split")}
-        </M3Button>
+        </Button>
       </div>
     </div>
   );

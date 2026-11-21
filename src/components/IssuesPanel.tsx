@@ -49,9 +49,9 @@ import type {
 } from "../lib/tauri";
 import { useGh } from "../lib/useGh";
 import { useStrings, type Strings } from "../lib/useLocale";
-import M3Button from "./M3Button";
-import M3LoadingIndicator from "./M3LoadingIndicator";
-import M3SegmentedGroup from "./M3SegmentedGroup";
+import Button from "./Button";
+import LoadingIndicator from "./LoadingIndicator";
+import SegmentedGroup from "./SegmentedGroup";
 
 export interface IssuesPanelProps {
   onClose: () => void;
@@ -194,9 +194,9 @@ function JobLog({ job, log, loading, onShowLog }: JobLogProps): ReactNode {
       );
     }
     return (
-      <M3Button variant="quiet" size="sm" onClick={() => onShowLog(job)}>
+      <Button variant="quiet" size="sm" onClick={() => onShowLog(job)}>
         {t("gh.showLog")}
-      </M3Button>
+      </Button>
     );
   }
   if (log.log_needs_auth) {
@@ -245,7 +245,7 @@ function ActionsView({
 }: ActionsViewProps): ReactNode {
   const { t } = useStrings();
   if (loading && runs.length === 0) {
-    return <M3LoadingIndicator label={t("gh.loading")} />;
+    return <LoadingIndicator label={t("gh.loading")} />;
   }
   if (runs.length === 0) {
     return <p className="nex-agent-empty">{t("gh.emptyActions")}</p>;
@@ -264,13 +264,13 @@ function ActionsView({
       <ul className="nex-vcs-file-list" aria-label={t("gh.listAria")}>
         {runs.map((run) => (
           <li key={run.id} className="nex-vcs-file-row">
-            <M3Button
+            <Button
               variant="quiet"
               onClick={() => onSelectRun(run.id)}
               aria-expanded={selectedRunId === run.id}
             >
               {run.name} #{run.id}
-            </M3Button>{" "}
+            </Button>{" "}
             <span className="nex-tag nex-tag-mono">
               {conclusionTag(run.conclusion, t)}
             </span>{" "}
@@ -367,7 +367,7 @@ function ActionsView({
               )}
               {runFixable(selectedRun) && (
                 <div className="nex-vcs-header-actions">
-                  <M3Button
+                  <Button
                     variant="primary"
                     size="sm"
                     disabled={fixBusy !== null}
@@ -376,7 +376,7 @@ function ActionsView({
                     {fixBusy === selectedRun.id
                       ? t("gh.creatingFixTask")
                       : t("gh.createFixTask")}
-                  </M3Button>
+                  </Button>
                 </div>
               )}
               {fixCreated !== null && (
@@ -441,7 +441,7 @@ function RunnersView({
         </div>
       )}
       {loading && runners.length === 0 ? (
-        <M3LoadingIndicator label={t("gh.runnersLoading")} />
+        <LoadingIndicator label={t("gh.runnersLoading")} />
       ) : needsAuth ? (
         <p className="nex-vcs-notice" role="note">
           {t("gh.runnersNeedToken")}
@@ -610,7 +610,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
           <p className="nex-vcs-subtitle">{subtitle}</p>
         </div>
         <div className="nex-vcs-header-actions">
-          <M3Button
+          <Button
             variant="quiet"
             onClick={() => {
               if (kind === "actions") {
@@ -625,15 +625,15 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
             disabled={loading}
           >
             {loading ? t("gh.refreshing") : t("gh.refresh")}
-          </M3Button>
-          <M3Button variant="quiet" onClick={onClose}>
+          </Button>
+          <Button variant="quiet" onClick={onClose}>
             {t("common.backToConversations")}
-          </M3Button>
+          </Button>
         </div>
       </header>
 
       <div className="nex-vcs-body">
-        <M3SegmentedGroup<Kind>
+        <SegmentedGroup<Kind>
           label={t("gh.kindLabel")}
           semantics="tabs"
           options={[
@@ -648,7 +648,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
           }}
         />
         {kind !== "actions" ? (
-          <M3SegmentedGroup<GhState>
+          <SegmentedGroup<GhState>
             label={t("gh.stateLabel")}
             options={[
               { value: "open", label: t("gh.stateOpen") },
@@ -675,7 +675,7 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
         <RateNote rate={rate} />
 
         {loading && items.length === 0 && (
-          <M3LoadingIndicator label={t("gh.loading")} />
+          <LoadingIndicator label={t("gh.loading")} />
         )}
         {kind === "actions" ? (
           actionsNoRemote ? (
@@ -741,13 +741,13 @@ export default function IssuesPanel({ onClose }: IssuesPanelProps) {
             <ul className="nex-vcs-file-list" aria-label={t("gh.listAria")}>
               {(kind === "issues" ? issues : pulls).map((item) => (
                 <li key={item.number} className="nex-vcs-file-row">
-                  <M3Button
+                  <Button
                     variant="quiet"
                     onClick={() => gh.selectItem(item.number)}
                     aria-expanded={selected === item.number}
                   >
                     #{item.number} · {item.title}
-                  </M3Button>{" "}
+                  </Button>{" "}
                   <span className="nex-tag nex-tag-mono">
                     {stateTag(item.state, t)}
                   </span>{" "}

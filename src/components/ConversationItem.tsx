@@ -2,9 +2,9 @@ import { memo, useState } from "react";
 
 import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "../lib/tauri";
-import M3IconButton from "./M3IconButton";
-import M3RailItem from "./M3RailItem";
-import M3Toolbar from "./M3Toolbar";
+import IconButton from "./IconButton";
+import RailItem from "./RailItem";
+import Toolbar from "./Toolbar";
 import { Input } from "./ui/input";
 import { useStrings } from "../lib/useLocale";
 import { useSnackbar } from "./SnackbarHost";
@@ -34,7 +34,7 @@ export interface ConversationItemProps {
 // icon actions, and an inline rename that replaces the title in place. No
 // badges, counters, snippets or pins.
 //
-// The row rides the shared M3RailItem primitive (thin light tick + tone step
+// The row rides the shared RailItem primitive (thin light tick + tone step
 // when selected — never a colour fill), and the two facts that were
 // colliding in the old markup are now structural rather than stylistic:
 //   - the title is the ONLY truncating box (`min-w-0 flex-1 truncate`), and
@@ -145,7 +145,7 @@ function ConversationItem({
       data-selected={selected ? "true" : undefined}
       className="relative"
     >
-      <M3RailItem
+      <RailItem
         label={conversation.title}
         active={selected}
         onClick={() => onSelect(conversation.id)}
@@ -166,7 +166,7 @@ function ConversationItem({
         >
           {conversation.title}
         </span>
-      </M3RailItem>
+      </RailItem>
       {/* Compact icon actions, docked at the row's trailing edge. The group
           overlays the row rather than reserving width for it, so the title
           never reflows on hover; it carries its own surface and the date
@@ -175,28 +175,28 @@ function ConversationItem({
           `visibility`, so the four buttons stay in the tab order and
           focusing one reveals the group. */}
       <div data-slot="row-actions">
-        <M3Toolbar
+        <Toolbar
           label={t("list.itemActions", { title: conversation.title })}
           className="gap-0.5"
         >
-          <M3IconButton
+          <IconButton
             size="md"
             label={t("list.actionExport")}
             onClick={() => onExport(conversation.id)}
             disabled={busy}
           >
             <ExportIcon />
-          </M3IconButton>
-          <M3IconButton
+          </IconButton>
+          <IconButton
             size="md"
             label={t("list.actionRename")}
             onClick={beginRename}
             disabled={busy}
           >
             <PencilIcon />
-          </M3IconButton>
+          </IconButton>
           {archived ? (
-            <M3IconButton
+            <IconButton
               size="md"
               label={t("list.actionRestore")}
               onClick={() => {
@@ -205,9 +205,9 @@ function ConversationItem({
               disabled={busy}
             >
               <UnarchiveIcon />
-            </M3IconButton>
+            </IconButton>
           ) : (
-            <M3IconButton
+            <IconButton
               size="md"
               label={t("list.actionArchive")}
               onClick={() => {
@@ -241,9 +241,9 @@ function ConversationItem({
               disabled={busy}
             >
               <ArchiveIcon />
-            </M3IconButton>
+            </IconButton>
           )}
-          <M3IconButton
+          <IconButton
             size="md"
             danger
             label={t("list.actionDelete")}
@@ -251,8 +251,8 @@ function ConversationItem({
             disabled={busy}
           >
             <TrashIcon />
-          </M3IconButton>
-        </M3Toolbar>
+          </IconButton>
+        </Toolbar>
       </div>
     </li>
   );

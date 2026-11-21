@@ -27,7 +27,7 @@ import { useEffect, useState } from "react";
 import { gitInfo } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
-import M3IconButton from "./M3IconButton";
+import IconButton from "./IconButton";
 import {
   Popover,
   PopoverContent,
@@ -275,7 +275,7 @@ export default function WorkspaceContextRow({
                       <span className="nex-workspace-menu-path">{path}</span>
                     </span>
                   </button>
-                  <M3IconButton
+                  <IconButton
                     size="sm"
                     label={t("roots.remove")}
                     title={t("roots.removeTitle")}
@@ -283,7 +283,7 @@ export default function WorkspaceContextRow({
                     onClick={() => void removeRoot(path)}
                   >
                     <CloseIcon />
-                  </M3IconButton>
+                  </IconButton>
                 </li>
               ))}
             </ul>
