@@ -422,8 +422,9 @@ impl AgentRunRegistry {
             .get(&run_id)
             .cloned();
         if let Some(mgr) = subagents {
+            let pending = mgr.pending_scope_info(call_id);
             if mgr.resolve_approval(call_id, decision, scope) {
-                return (ResolveOutcome::Resolved, None);
+                return (ResolveOutcome::Resolved, pending);
             }
         }
         (ResolveOutcome::NoPendingApproval, None)
@@ -440,12 +441,22 @@ impl AgentRunRegistry {
         run_id: i64,
         call_id: &str,
     ) -> Option<(String, Option<String>)> {
-        let runs = self
+        let entry = self
             .runs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let entry = runs.get(&run_id)?;
-        entry.gate.pending_info(call_id)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned()?;
+        if let Some(info) = entry.gate.pending_info(call_id) {
+            return Some(info);
+        }
+        let subagents = self
+            .subagents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&run_id)
+            .cloned()?;
+        subagents.pending_scope_info(call_id)
     }
 
     /// Read-only live snapshot of the active run in `conversation_id` (G-15).

@@ -3,6 +3,7 @@
 
 use super::ToolRegistry;
 use crate::application::agent::permissions::RunPreset;
+use crate::application::agent::roles::TaskCapability;
 use crate::application::execution::ToolDefinition;
 
 impl ToolRegistry {
@@ -97,6 +98,28 @@ impl ToolRegistry {
         };
         if include_subagents {
             defs.extend(Self::subagent_definitions());
+        }
+        defs
+    }
+
+    /// Tool definitions exposed to the model for a run, further filtered by an
+    /// optional [`TaskCapability`] ceiling (`P34`).
+    ///
+    /// Keeping `preset` unchanged while filtering via `capability` lets
+    /// `ReadOnly` / `WorkspaceWrite` subagents hide disallowed tools (such as
+    /// `execute_command`) without switching away from a `Coding` parent's
+    /// preset-scoped permission rules.
+    pub(crate) fn definitions_for_run_with_capability(
+        preset: RunPreset,
+        is_plan: bool,
+        capability: Option<TaskCapability>,
+        mcp_tools: &[ToolDefinition],
+        include_subagents: bool,
+    ) -> Vec<ToolDefinition> {
+        let mut defs =
+            Self::definitions_for_run_full(preset, is_plan, mcp_tools, include_subagents);
+        if let Some(cap) = capability {
+            defs.retain(|def| cap.allows_tool(&def.name));
         }
         defs
     }

@@ -1199,7 +1199,7 @@ fn emit_subagent_tool_step(
     let (Some(subagent_id), Some(seq_counter)) = (ctx.subagent_id, ctx.subagent_step_seq) else {
         return;
     };
-    let seq = seq_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    let seq = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
     let target = permissions::extract_path(&call.name, &call.arguments).or_else(|| {
         serde_json::from_str::<serde_json::Value>(&call.arguments)
             .ok()

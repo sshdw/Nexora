@@ -207,6 +207,9 @@ pub(crate) struct AgentRunner<'a> {
     subagent_depth: u8,
     /// Subagent identifier when running inside a child subagent.
     subagent_id: Option<String>,
+    /// Shared monotonic step sequence counter for child `SubagentStep` frames
+    /// so `send_subagent_message` continuations never reset to 0.
+    subagent_step_seq: Option<Arc<AtomicUsize>>,
     /// Optional sink capturing non-system messages at end of run so
     /// `send_subagent_message` can continue inside the same context.
     history_sink: Option<Arc<Mutex<Vec<AiMessage>>>>,
@@ -284,6 +287,7 @@ impl<'a> AgentRunner<'a> {
             subagent_manager: None,
             subagent_depth: 0,
             subagent_id: None,
+            subagent_step_seq: None,
             history_sink: None,
         }
     }
@@ -314,6 +318,15 @@ impl<'a> AgentRunner<'a> {
     #[must_use]
     pub(crate) fn with_subagent_id(mut self, id: String) -> Self {
         self.subagent_id = Some(id);
+        self
+    }
+
+    /// Share a persistent monotonic step sequence counter for child
+    /// `AgentRunEvent::SubagentStep` frames across `send_subagent_message`
+    /// continuations.
+    #[must_use]
+    pub(crate) fn with_subagent_step_seq(mut self, seq: Arc<AtomicUsize>) -> Self {
+        self.subagent_step_seq = Some(seq);
         self
     }
 
@@ -865,13 +878,19 @@ impl<'a> AgentRunner<'a> {
             .map(|rt| rt.definitions())
             .unwrap_or_default();
         let include_subagents = self.subagent_manager.is_some() && self.subagent_depth == 0;
-        let tools: Arc<Vec<ToolDefinition>> = Arc::new(ToolRegistry::definitions_for_run_full(
-            self.preset,
-            self.is_plan,
-            &mcp_defs,
-            include_subagents,
-        ));
-        let subagent_step_seq = AtomicUsize::new(0);
+        let tools: Arc<Vec<ToolDefinition>> =
+            Arc::new(ToolRegistry::definitions_for_run_with_capability(
+                self.preset,
+                self.is_plan,
+                self.capability,
+                &mcp_defs,
+                include_subagents,
+            ));
+        let fallback_step_seq = AtomicUsize::new(0);
+        let subagent_step_seq: &AtomicUsize = self
+            .subagent_step_seq
+            .as_deref()
+            .unwrap_or(&fallback_step_seq);
         // A control never cancelled the plan: when the runner has no attached
         // control it dispatches tools through a never-firing token so the
         // undisputed Task 3.1 behaviour is preserved exactly.
@@ -1208,7 +1227,7 @@ impl<'a> AgentRunner<'a> {
                 rec.model_turn(&response.content, Some(duration_ms), response.usage);
             }
             if let Some(sid) = self.subagent_id.as_deref() {
-                let seq = subagent_step_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                let seq = subagent_step_seq.fetch_add(1, Ordering::SeqCst) + 1;
                 let redacted = super::injection::redact_secrets(&response.content).0;
                 let (preview, _, _) =
                     step_preview_opt((!redacted.trim().is_empty()).then_some(redacted.as_str()));
@@ -1349,7 +1368,7 @@ impl<'a> AgentRunner<'a> {
                 subagent_manager: self.subagent_manager.as_ref(),
                 subagent_depth: self.subagent_depth,
                 subagent_id: self.subagent_id.as_deref(),
-                subagent_step_seq: self.subagent_id.as_ref().map(|_| &subagent_step_seq),
+                subagent_step_seq: self.subagent_id.as_ref().map(|_| subagent_step_seq),
             };
             let dispatch_outcome =
                 dispatch::dispatch_tool_calls(&ctx, &tool_calls, &mut messages, &mut record);

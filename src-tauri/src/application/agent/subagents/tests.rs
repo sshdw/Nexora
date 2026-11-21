@@ -2,13 +2,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::application::agent::access::{AccessContext, AccessProfile, PROFILE_KEY};
 use crate::application::agent::approval::{ApprovalGate, AutonomyMode};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
-use crate::application::agent::permissions::{is_subagent_tool, RunPreset};
+use crate::application::agent::permissions::{
+    self, is_subagent_tool, ApprovalResolveError, GroupScopeError, PermissionRule, PermissionStore,
+    RuleEffect, RunPreset,
+};
+use crate::application::agent::registry::{ActiveAgentRun, AgentRunRegistry};
 use crate::application::agent::runner::AgentRunner;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
@@ -872,5 +876,554 @@ fn parent_runner_exposes_subagent_tools_only_when_manager_attached() {
             .any(|e| matches!(e, AgentRunEvent::SubagentStep { .. })),
         "expected SubagentStep events"
     );
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn coding_scoped_deny_rule_still_blocks_read_only_and_workspace_write_subagents() {
+    let ws = temp_dir("coding-deny");
+    fs::create_dir_all(ws.join("private")).unwrap();
+    fs::create_dir_all(ws.join("protected")).unwrap();
+    fs::write(ws.join("private/secret.txt"), "top-secret-value").unwrap();
+    fs::write(ws.join("allowed.txt"), "ok").unwrap();
+
+    let store = PermissionStore::from_rules(vec![
+        PermissionRule {
+            id: 101,
+            preset: "coding".to_string(),
+            tool_pattern: "read_file".to_string(),
+            path_pattern: Some("private".to_string()),
+            effect: RuleEffect::Deny,
+            priority: 10,
+        },
+        PermissionRule {
+            id: 102,
+            preset: "coding".to_string(),
+            tool_pattern: "write_file".to_string(),
+            path_pattern: Some("protected".to_string()),
+            effect: RuleEffect::Deny,
+            priority: 10,
+        },
+    ]);
+
+    // Part A: ReadOnly subagent under Coding parent keeps Coding preset rules
+    // while hiding write/shell tools via TaskCapability + ToolRegistry.
+    let ro_turn = Arc::new(AtomicUsize::new(0));
+    let ro_turn_clone = Arc::clone(&ro_turn);
+    let (ro_exec, ro_recorded) = FnExecutor::new(move |req, _cancel| {
+        let t = ro_turn_clone.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            req.tools.iter().all(|d| d.name != "execute_command"
+                && d.name != "write_file"
+                && d.name != "edit_file"),
+            "ReadOnly subagent must hide shell and mutating tools from schema"
+        );
+        if t == 0 {
+            Ok(tool_reply(vec![make_call(
+                "r1",
+                "read_file",
+                &serde_json::json!({ "path": "private/secret.txt" }),
+            )]))
+        } else {
+            Ok(text_reply("read-only done"))
+        }
+    });
+    let ro_mgr = SubagentManager::new(SubagentManagerConfig {
+        parent_run_id: 50,
+        db: None,
+        executor: ro_exec,
+        workspace_root: ws.clone(),
+        provider: "openai".to_string(),
+        model: "gpt-5.4".to_string(),
+        effort: None,
+        credential: "secret".to_string(),
+        parent_control: RunControl::new(),
+        parent_gate: ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::Standard)),
+        parent_preset: RunPreset::Coding,
+        parent_is_plan: false,
+        permission_store: Some(store.clone()),
+        project_instructions: None,
+        run_flags: RunFlags::default(),
+        event_sender: None,
+        max_concurrency: 3,
+    });
+    let ro_out = ro_mgr
+        .dispatch_tool(
+            "spawn_subagent",
+            r#"{"task":"read secret","access":"read_only","wait":true}"#,
+        )
+        .unwrap();
+    assert!(ro_out.contains("\"status\":\"completed\""), "got {ro_out}");
+    let ro_reqs = ro_recorded.lock().unwrap();
+    let ro_obs = ro_reqs[1]
+        .messages
+        .iter()
+        .find_map(|m| m.tool_result.as_ref())
+        .map_or("", |r| r.content.as_str());
+    assert!(
+        ro_obs.contains("tool execution was denied"),
+        "coding-scoped Deny rule must block ReadOnly subagent read_file; got: {ro_obs}"
+    );
+    assert!(
+        !ro_obs.contains("top-secret-value"),
+        "denied file contents must never leak"
+    );
+    ro_mgr.shutdown_and_join();
+
+    // Part B: WorkspaceWrite subagent under Coding parent keeps Coding preset
+    // rules, hides execute_command from schema, and denies smuggled shell calls.
+    let ww_turn = Arc::new(AtomicUsize::new(0));
+    let ww_turn_clone = Arc::clone(&ww_turn);
+    let (ww_exec, ww_recorded) = FnExecutor::new(move |req, _cancel| {
+        let t = ww_turn_clone.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            req.tools.iter().any(|d| d.name == "write_file"),
+            "WorkspaceWrite subagent should expose write_file"
+        );
+        assert!(
+            req.tools.iter().all(|d| d.name != "execute_command"),
+            "WorkspaceWrite subagent must hide execute_command from schema"
+        );
+        if t == 0 {
+            Ok(tool_reply(vec![
+                make_call(
+                    "w1",
+                    "write_file",
+                    &serde_json::json!({ "path": "protected/out.txt", "content": "hacked" }),
+                ),
+                make_call(
+                    "sh1",
+                    "execute_command",
+                    &serde_json::json!({ "command": "echo forbidden" }),
+                ),
+            ]))
+        } else {
+            Ok(text_reply("workspace-write done"))
+        }
+    });
+    let ww_mgr = SubagentManager::new(SubagentManagerConfig {
+        parent_run_id: 51,
+        db: None,
+        executor: ww_exec,
+        workspace_root: ws.clone(),
+        provider: "openai".to_string(),
+        model: "gpt-5.4".to_string(),
+        effort: None,
+        credential: "secret".to_string(),
+        parent_control: RunControl::new(),
+        parent_gate: ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::Standard)),
+        parent_preset: RunPreset::Coding,
+        parent_is_plan: false,
+        permission_store: Some(store),
+        project_instructions: None,
+        run_flags: RunFlags::default(),
+        event_sender: None,
+        max_concurrency: 3,
+    });
+    let ww_out = ww_mgr
+        .dispatch_tool(
+            "spawn_subagent",
+            r#"{"task":"write protected","access":"workspace_write","wait":true}"#,
+        )
+        .unwrap();
+    assert!(ww_out.contains("\"status\":\"completed\""), "got {ww_out}");
+    assert!(
+        !ws.join("protected/out.txt").exists(),
+        "coding-scoped Deny rule must prevent WorkspaceWrite subagent from writing file"
+    );
+    let ww_reqs = ww_recorded.lock().unwrap();
+    let ww_obs: Vec<&str> = ww_reqs[1]
+        .messages
+        .iter()
+        .filter_map(|m| m.tool_result.as_ref().map(|r| r.content.as_str()))
+        .collect();
+    assert!(
+        ww_obs
+            .iter()
+            .any(|o| o.contains("tool execution was denied")),
+        "expected coding-scoped Deny observation for write_file, got: {ww_obs:?}"
+    );
+    assert!(
+        ww_obs
+            .iter()
+            .any(|o| o.contains("not available under task capability 'workspace_write'")),
+        "expected capability denial for smuggled execute_command, got: {ww_obs:?}"
+    );
+    ww_mgr.shutdown_and_join();
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn killed_worktree_subagent_skips_apply_to_parent_and_defers_cleanup_until_exit() {
+    let ws = temp_dir("wt-kill-gate");
+    init_git_repo(&ws);
+
+    let in_turn_1 = Arc::new((Mutex::new(false), Condvar::new()));
+    let release_turn_1 = Arc::new((Mutex::new(false), Condvar::new()));
+    let in_turn_1_clone = Arc::clone(&in_turn_1);
+    let release_turn_1_clone = Arc::clone(&release_turn_1);
+    let turn = Arc::new(AtomicUsize::new(0));
+    let turn_clone = Arc::clone(&turn);
+
+    let (exec, _) = FnExecutor::new(move |_req, _cancel| {
+        let t = turn_clone.fetch_add(1, Ordering::SeqCst);
+        if t == 0 {
+            Ok(tool_reply(vec![make_call(
+                "w1",
+                "write_file",
+                &serde_json::json!({
+                    "path": "shared.txt",
+                    "content": "line1\nmodified-by-killed-subagent\nline3\n"
+                }),
+            )]))
+        } else {
+            {
+                let (lock, cvar) = &*in_turn_1_clone;
+                *lock.lock().unwrap() = true;
+                cvar.notify_all();
+            }
+            {
+                let (lock, cvar) = &*release_turn_1_clone;
+                let mut go = lock.lock().unwrap();
+                while !*go {
+                    go = cvar.wait(go).unwrap();
+                }
+            }
+            // Deliberately ignore cancel and return Ok to verify apply_to_parent
+            // is gated on !killed && !child_control.is_cancelled().
+            Ok(text_reply("sneaky completion after kill"))
+        }
+    });
+
+    let (mgr, rx) = make_manager(
+        &ws,
+        exec,
+        RunControl::new(),
+        ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::Standard)),
+        3,
+    );
+    let mgr_for_approver = Arc::clone(&mgr);
+    let stop_approver = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::clone(&stop_approver);
+    let approver = std::thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) {
+            match rx.recv_timeout(Duration::from_millis(20)) {
+                Ok(AgentRunEvent::ApprovalRequested { call_id, .. }) => {
+                    let _ = mgr_for_approver.resolve_approval(
+                        &call_id,
+                        ApprovalDecision::Approved,
+                        None,
+                    );
+                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    let spawned = mgr
+        .dispatch_tool(
+            "spawn_subagent",
+            r#"{"task":"edit then stall","access":"workspace_write","use_worktree":true,"wait":false}"#,
+        )
+        .unwrap();
+    assert!(spawned.contains("sub-1"), "got {spawned}");
+
+    // Wait until turn 0's write_file completed and turn 1 is mid-flight.
+    {
+        let (lock, cvar) = &*in_turn_1;
+        let mut entered = lock.lock().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !*entered {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(!remaining.is_zero(), "timed out waiting for child turn 1");
+            let (next, _) = cvar.wait_timeout(entered, remaining).unwrap();
+            entered = next;
+        }
+    }
+
+    assert!(
+        !git_branch_list(&ws).is_empty(),
+        "worktree branch should exist while child is running"
+    );
+    assert!(mgr.kill_subagent("sub-1"));
+
+    // Worktree MUST NOT be cleaned up while the child thread is still mid-flight.
+    assert!(
+        !git_branch_list(&ws).is_empty(),
+        "kill_subagent must not race wt.cleanup() while the child thread is still active"
+    );
+
+    // Release child thread and wait for clean exit + deferred worktree cleanup.
+    {
+        let (lock, cvar) = &*release_turn_1;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+    stop_approver.store(true, Ordering::SeqCst);
+    let _ = approver.join();
+    mgr.shutdown_and_join();
+
+    assert_eq!(
+        fs::read_to_string(ws.join("shared.txt")).unwrap(),
+        "line1\nline2\nline3\n",
+        "killed subagent worktree patch MUST NOT be applied to parent workspace"
+    );
+    let snaps = mgr.snapshots();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].status, "cancelled");
+    assert!(!snaps[0].patch_applied);
+    assert!(
+        git_branch_list(&ws).is_empty(),
+        "worktree branch must be cleaned up once the child thread exits"
+    );
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn pending_scope_info_and_group_confirm_resolve_child_subagent_approval() {
+    let db = in_memory_database();
+    let ws = temp_dir("subagent-group-confirm");
+
+    let turn = Arc::new(AtomicUsize::new(0));
+    let turn_clone = Arc::clone(&turn);
+    let (exec, _) = FnExecutor::new(move |_req, _cancel| {
+        let t = turn_clone.fetch_add(1, Ordering::SeqCst);
+        if t == 0 {
+            Ok(tool_reply(vec![make_call(
+                "cw1",
+                "write_file",
+                &serde_json::json!({ "path": "docs/note.md", "content": "hello child" }),
+            )]))
+        } else {
+            Ok(text_reply("child wrote docs/note.md"))
+        }
+    });
+
+    let parent_control = RunControl::new();
+    let parent_gate = ApprovalGate::new(AutonomyMode::Supervised)
+        .with_access(AccessContext::fixed(AccessProfile::Standard));
+    let (mgr, rx) = make_manager(&ws, exec, parent_control.clone(), parent_gate.clone(), 3);
+
+    let registry = AgentRunRegistry::default();
+    registry.register(
+        42,
+        ActiveAgentRun {
+            conversation_id: 1,
+            control: parent_control,
+            gate: parent_gate,
+        },
+    );
+    registry.attach_subagents(42, Arc::clone(&mgr));
+
+    let spawned = mgr
+        .dispatch_tool(
+            "spawn_subagent",
+            r#"{"task":"write doc","access":"workspace_write","wait":false}"#,
+        )
+        .unwrap();
+    assert!(spawned.contains("sub-1"), "got {spawned}");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (call_id, expected_group) = loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for child ApprovalRequested event"
+        );
+        match rx.recv_timeout(remaining.min(Duration::from_millis(50))) {
+            Ok(AgentRunEvent::ApprovalRequested {
+                call_id,
+                group_key: Some(gk),
+                ..
+            }) => break (call_id, gk),
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("event channel closed"),
+        }
+    };
+
+    // 1. Read-only peek sees child pending approval without consuming it.
+    assert_eq!(
+        registry.pending_scope_info(42, &call_id),
+        Some(("write_file".to_string(), Some(expected_group.clone())))
+    );
+
+    // 2. Mismatched group:confirm echo fails closed with park intact.
+    let mismatch = permissions::resolve_approval(
+        &registry,
+        &db,
+        42,
+        &call_id,
+        true,
+        Some("group:confirm:coding:write_file:wrong"),
+    );
+    assert_eq!(
+        mismatch,
+        Err(ApprovalResolveError::Group(
+            GroupScopeError::ScopeMismatch {
+                expected: expected_group.clone(),
+            }
+        ))
+    );
+    assert_eq!(
+        registry.pending_scope_info(42, &call_id),
+        Some(("write_file".to_string(), Some(expected_group.clone())))
+    );
+
+    // 3. Exact group:confirm:<scope> resolves child park and persists allow rule.
+    let confirm_arg = format!("group:confirm:{expected_group}");
+    permissions::resolve_approval(&registry, &db, 42, &call_id, true, Some(&confirm_arg))
+        .expect("group:confirm for child subagent approval must succeed");
+
+    let waited = mgr
+        .dispatch_tool("wait_subagent", r#"{"subagent_id":"sub-1"}"#)
+        .unwrap();
+    assert!(waited.contains("\"status\":\"completed\""), "got {waited}");
+    assert_eq!(
+        fs::read_to_string(ws.join("docs/note.md")).unwrap(),
+        "hello child"
+    );
+
+    let expected_path_pattern = permissions::group_path_pattern(Some(&expected_group));
+    let persisted = permissions::list_rules(&db).expect("list rules");
+    assert!(
+        persisted.iter().any(|r| {
+            r.preset == "coding"
+                && r.tool_pattern == "write_file"
+                && r.path_pattern == expected_path_pattern
+                && r.effect == RuleEffect::Allow
+        }),
+        "expected persisted group allow rule for child subagent, got: {persisted:?}"
+    );
+
+    mgr.shutdown_and_join();
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn send_subagent_message_preserves_monotonic_step_seq_and_clears_stale_result_on_failure() {
+    let ws = temp_dir("continuation-seq-result");
+    let turn = Arc::new(AtomicUsize::new(0));
+    let turn_clone = Arc::clone(&turn);
+    let (exec, _) = FnExecutor::new(move |_req, _cancel| {
+        let t = turn_clone.fetch_add(1, Ordering::SeqCst);
+        match t {
+            0 => Ok(tool_reply(vec![make_call(
+                "ls-1",
+                "list_directory",
+                &serde_json::json!({}),
+            )])),
+            1 => Ok(text_reply("first turn succeeded")),
+            // Continuation turn hits max_turns=1 after emitting a model_turn + tool_call.
+            _ => Ok(tool_reply(vec![make_call(
+                "ls-2",
+                "list_directory",
+                &serde_json::json!({}),
+            )])),
+        }
+    });
+
+    let (mgr, rx) = make_manager(
+        &ws,
+        exec,
+        RunControl::new(),
+        ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::Standard)),
+        3,
+    );
+
+    let first = mgr
+        .dispatch_tool("spawn_subagent", r#"{"task":"initial pass","wait":true}"#)
+        .unwrap();
+    assert!(first.contains("first turn succeeded"), "got {first}");
+    let snap1 = &mgr.snapshots()[0];
+    assert_eq!(
+        snap1.result_summary.as_deref(),
+        Some("first turn succeeded")
+    );
+    let turn1_seqs: Vec<usize> = snap1.steps.iter().map(|s| s.seq).collect();
+    assert_eq!(turn1_seqs, vec![1, 2, 3]);
+
+    // Resumed turn fails via max_turns=1 after emitting more steps.
+    let second = mgr
+        .dispatch_tool(
+            "send_subagent_message",
+            r#"{"subagent_id":"sub-1","message":"follow up","max_turns":1,"wait":true}"#,
+        )
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&second).expect("valid json");
+    let sub = &parsed["subagents"][0];
+    assert_eq!(sub["status"], "failed", "got {second}");
+    assert!(
+        sub["result"].is_null(),
+        "failed continuation must clear prior turn's result, got {second}"
+    );
+
+    let snap2 = &mgr.snapshots()[0];
+    assert_eq!(snap2.status, "failed");
+    assert_eq!(
+        snap2.result_summary, None,
+        "failed continuation must clear prior turn's result_summary"
+    );
+    let all_seqs: Vec<usize> = snap2.steps.iter().map(|s| s.seq).collect();
+    assert_eq!(
+        all_seqs,
+        vec![1, 2, 3, 4, 5],
+        "step seq must increment monotonically across send_subagent_message continuations"
+    );
+
+    let streamed_seqs: Vec<usize> = rx
+        .try_iter()
+        .filter_map(|ev| match ev {
+            AgentRunEvent::SubagentStep { seq, .. } => Some(seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streamed_seqs, vec![1, 2, 3, 4, 5]);
+
+    mgr.shutdown_and_join();
+    let _ = fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn handle_spawn_and_propagate_mode_never_leave_child_above_parent_mode() {
+    let ws = temp_dir("spawn-mode-race");
+    for _ in 0..25 {
+        let (exec, _) = FnExecutor::new(|_req, _cancel| Ok(text_reply("ok")));
+        let parent_gate = ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::Standard));
+        let (mgr, _rx) = make_manager(&ws, exec, RunControl::new(), parent_gate.clone(), 3);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let b_mode = Arc::clone(&barrier);
+        let mgr_mode = Arc::clone(&mgr);
+        let gate_mode = parent_gate.clone();
+        let mode_thread = std::thread::spawn(move || {
+            b_mode.wait();
+            gate_mode.set_mode(AutonomyMode::Supervised);
+            mgr_mode.propagate_mode(AutonomyMode::Supervised);
+        });
+
+        barrier.wait();
+        let out = mgr
+            .dispatch_tool("spawn_subagent", r#"{"task":"race check","wait":false}"#)
+            .unwrap();
+        assert!(out.contains("sub-1"), "got {out}");
+        mode_thread.join().unwrap();
+
+        assert_eq!(parent_gate.mode(), AutonomyMode::Supervised);
+        assert_eq!(
+            mgr.child_mode_for_test("sub-1"),
+            Some(AutonomyMode::Supervised),
+            "child autonomy mode must never remain above parent mode after concurrent set_mode"
+        );
+        mgr.shutdown_and_join();
+    }
     let _ = fs::remove_dir_all(&ws);
 }

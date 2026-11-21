@@ -25,8 +25,8 @@
 pub(crate) mod worktree;
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -237,7 +237,7 @@ struct SubagentEntry {
     control: RunControl,
     gate: ApprovalGate,
     killed: bool,
-    worktree: Option<Arc<WorktreeIsolation>>,
+    step_seq: Arc<AtomicUsize>,
 }
 
 impl SubagentEntry {
@@ -364,6 +364,29 @@ impl SubagentManager {
         false
     }
 
+    /// Read-only peek at a parked child subagent approval's
+    /// `(tool_name, group_key)` without resolving it, so
+    /// `group:confirm:<scope>` persistent approval validation succeeds for
+    /// child subagents.
+    #[must_use]
+    pub(crate) fn pending_scope_info(&self, call_id: &str) -> Option<(String, Option<String>)> {
+        let gates: Vec<ApprovalGate> = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard
+                .entries
+                .values()
+                .filter(|e| e.status == SubagentStatus::Running)
+                .map(|e| e.gate.clone())
+                .collect()
+        };
+        gates
+            .into_iter()
+            .find_map(|gate| gate.pending_info(call_id))
+    }
+
     /// Return the first unresolved pending approval held by any running child
     /// subagent (so `inspect_run_live` remains truthful while a child parks).
     #[must_use]
@@ -383,6 +406,19 @@ impl SubagentManager {
         gates.into_iter().find_map(|gate| gate.pending_snapshot())
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn child_mode_for_test(&self, subagent_id: &str) -> Option<AutonomyMode> {
+        let gate = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.entries.get(subagent_id).map(|e| e.gate.clone())
+        }?;
+        Some(gate.mode())
+    }
+
     /// Propagate a parent autonomy-mode change to all active child gates
     /// (ensuring child autonomy never exceeds parent autonomy).
     pub(crate) fn propagate_mode(&self, mode: AutonomyMode) {
@@ -400,8 +436,11 @@ impl SubagentManager {
 
     /// Kill one individual subagent without cancelling the parent run.
     /// Returns `true` if `subagent_id` existed.
+    ///
+    /// Worktree cleanup is owned exclusively by the child turn thread so
+    /// `git worktree remove` never races mid-flight against an active child.
     pub(crate) fn kill_subagent(&self, subagent_id: &str) -> bool {
-        let (control, worktree, snapshot) = {
+        let (control, snapshot) = {
             let mut guard = self
                 .state
                 .lock()
@@ -411,7 +450,6 @@ impl SubagentManager {
             };
             entry.killed = true;
             let control = entry.control.clone();
-            let worktree = entry.worktree.take();
             if entry.status == SubagentStatus::Running {
                 entry.status = SubagentStatus::Cancelled;
                 entry.finished_at = Some(now_unix_secs());
@@ -421,26 +459,22 @@ impl SubagentManager {
             }
             let snapshot = entry.snapshot(false);
             self.changed.notify_all();
-            (control, worktree, snapshot)
+            (control, snapshot)
         };
         control.cancel();
-        if let Some(wt) = worktree {
-            wt.cleanup();
-        }
         self.emit_event(AgentRunEvent::SubagentUpdated { subagent: snapshot });
         true
     }
 
-    /// Cancel all running subagents (called when parent run cancels or ends)
-    /// and clean up any remaining temporary worktrees.
+    /// Cancel all running subagents (called when parent run cancels or ends).
+    /// Each child turn owns its temporary worktree and cleans it up upon exit.
     pub(crate) fn cancel_all(&self, shutdown: bool) {
-        let (controls, worktrees, snapshots) = {
+        let (controls, snapshots) = {
             let mut guard = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let mut controls = Vec::new();
-            let mut worktrees = Vec::new();
             let mut snapshots = Vec::new();
             for entry in guard.entries.values_mut() {
                 if entry.status == SubagentStatus::Running {
@@ -457,12 +491,9 @@ impl SubagentManager {
                     controls.push(entry.control.clone());
                     snapshots.push(entry.snapshot(false));
                 }
-                if let Some(wt) = entry.worktree.take() {
-                    worktrees.push(wt);
-                }
             }
             self.changed.notify_all();
-            (controls, worktrees, snapshots)
+            (controls, snapshots)
         };
         for control in controls {
             if shutdown {
@@ -471,16 +502,14 @@ impl SubagentManager {
                 control.cancel();
             }
         }
-        for wt in worktrees {
-            wt.cleanup();
-        }
         for snapshot in snapshots {
             self.emit_event(AgentRunEvent::SubagentUpdated { subagent: snapshot });
         }
     }
 
     /// Cancel any still-running subagents and join all child worker threads
-    /// cleanly (called when the parent run exits).
+    /// cleanly (called when the parent run exits). Each joined child thread
+    /// cleans up its owned worktree before returning.
     pub(crate) fn shutdown_and_join(&self) {
         self.cancel_all(false);
         let handles = {
@@ -492,21 +521,6 @@ impl SubagentManager {
         };
         for handle in handles {
             let _ = handle.join();
-        }
-        // Final defensive sweep of any worktrees.
-        let worktrees: Vec<Arc<WorktreeIsolation>> = {
-            let mut guard = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            guard
-                .entries
-                .values_mut()
-                .filter_map(|e| e.worktree.take())
-                .collect()
-        };
-        for wt in worktrees {
-            wt.cleanup();
         }
     }
 
@@ -578,19 +592,11 @@ impl SubagentManager {
 
         let title = derive_title(args.title.as_deref(), task);
 
-        let child_control = RunControl::new();
-        let child_access = self
-            .config
-            .parent_gate
-            .access()
-            .child(effective_cap.to_access_profile());
-        let child_gate = ApprovalGate::new(self.config.parent_gate.mode())
-            .with_access(child_access)
-            .with_timeout(self.config.parent_gate.timeout());
-        child_gate.set_token(child_control.token().clone());
-
-        // Reserve slot & check concurrency atomically.
-        let subagent_id = {
+        // Reserve slot & check concurrency atomically. Constructing `child_gate`
+        // from `parent_gate.mode()` under `self.state` serializes spawn against
+        // `propagate_mode` so a concurrent `agent_set_mode` cannot slip between
+        // reading the parent's mode and inserting the child entry.
+        let (subagent_id, worktree, snapshot) = {
             let mut guard = self
                 .state
                 .lock()
@@ -613,13 +619,24 @@ impl SubagentManager {
                     self.config.parent_run_id,
                     &id,
                 ) {
-                    Ok(wt) => Some(Arc::new(wt)),
+                    Ok(wt) => Some(wt),
                     Err(err) => return Ok(format!("Error: {err}")),
                 }
             } else {
                 None
             };
             let worktree_isolated = worktree.is_some();
+
+            let child_control = RunControl::new();
+            let child_access = self
+                .config
+                .parent_gate
+                .access()
+                .child(effective_cap.to_access_profile());
+            let child_gate = ApprovalGate::new(self.config.parent_gate.mode())
+                .with_access(child_access)
+                .with_timeout(self.config.parent_gate.timeout());
+            child_gate.set_token(child_control.token().clone());
 
             let entry = SubagentEntry {
                 id: id.clone(),
@@ -644,24 +661,25 @@ impl SubagentManager {
                 changed_files: Vec::new(),
                 steps: Vec::new(),
                 history: Vec::new(),
-                control: child_control.clone(),
-                gate: child_gate.clone(),
+                control: child_control,
+                gate: child_gate,
                 killed: false,
-                worktree,
+                step_seq: Arc::new(AtomicUsize::new(0)),
             };
             let snapshot = entry.snapshot(false);
             guard.order.push(id.clone());
             guard.entries.insert(id.clone(), entry);
-            self.emit_event(AgentRunEvent::SubagentUpdated { subagent: snapshot });
-            id
+            (id, worktree, snapshot)
         };
 
+        self.emit_event(AgentRunEvent::SubagentUpdated { subagent: snapshot });
         self.launch_child_turn(
             &subagent_id,
             task.to_string(),
             Vec::new(),
             max_turns,
             timeout_secs,
+            worktree,
         );
 
         if args.wait.unwrap_or(false) {
@@ -696,7 +714,7 @@ impl SubagentManager {
             return Ok("Error: send_subagent_message requires a non-empty 'message'".to_string());
         }
 
-        let (history, max_turns, timeout_secs, snapshot) = {
+        let (history, max_turns, timeout_secs, snapshot, worktree) = {
             let mut guard = self
                 .state
                 .lock()
@@ -733,7 +751,7 @@ impl SubagentManager {
                     self.config.parent_run_id,
                     &entry.id,
                 ) {
-                    Ok(wt) => Some(Arc::new(wt)),
+                    Ok(wt) => Some(wt),
                     Err(err) => return Ok(format!("Error: {err}")),
                 }
             } else {
@@ -762,11 +780,12 @@ impl SubagentManager {
 
             entry.effective_capability = effective_cap;
             entry.worktree_isolated = worktree.is_some();
-            entry.worktree = worktree;
             entry.control = child_control;
             entry.gate = child_gate;
             entry.status = SubagentStatus::Running;
             entry.finished_at = None;
+            entry.result = None;
+            entry.result_summary = None;
             entry.error = None;
             entry.patch_applied = false;
             entry.patch_conflict = false;
@@ -776,7 +795,7 @@ impl SubagentManager {
 
             let history = entry.history.clone();
             let snapshot = entry.snapshot(false);
-            (history, max_turns, timeout_secs, snapshot)
+            (history, max_turns, timeout_secs, snapshot, worktree)
         };
 
         self.emit_event(AgentRunEvent::SubagentUpdated { subagent: snapshot });
@@ -786,6 +805,7 @@ impl SubagentManager {
             history,
             max_turns,
             timeout_secs,
+            worktree,
         );
 
         if args.wait.unwrap_or(true) {
@@ -970,29 +990,37 @@ impl SubagentManager {
         prior_history: Vec<AiMessage>,
         max_turns: usize,
         timeout_secs: u64,
+        worktree: Option<WorktreeIsolation>,
     ) {
-        let (model, effort, effective_cap, child_control, child_gate, worktree, child_workspace) = {
+        let Some((model, effort, effective_cap, child_control, child_gate, step_seq, aborted)) = ({
             let guard = self
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let Some(entry) = guard.entries.get(subagent_id) else {
-                return;
-            };
-            let ws = entry.worktree.as_ref().map_or_else(
-                || self.config.workspace_root.clone(),
-                |wt| wt.workspace_path().to_path_buf(),
-            );
-            (
-                entry.model.clone(),
-                entry.effort.clone(),
-                entry.effective_capability,
-                entry.control.clone(),
-                entry.gate.clone(),
-                entry.worktree.clone(),
-                ws,
-            )
+            guard.entries.get(subagent_id).map(|entry| {
+                (
+                    entry.model.clone(),
+                    entry.effort.clone(),
+                    entry.effective_capability,
+                    entry.control.clone(),
+                    entry.gate.clone(),
+                    Arc::clone(&entry.step_seq),
+                    entry.killed || entry.control.is_cancelled(),
+                )
+            })
+        }) else {
+            if let Some(wt) = worktree {
+                wt.cleanup();
+            }
+            return;
         };
+
+        if aborted {
+            if let Some(wt) = worktree {
+                wt.cleanup();
+            }
+            return;
+        }
 
         let mgr = Arc::clone(self);
         let id_owned = subagent_id.to_string();
@@ -1009,10 +1037,10 @@ impl SubagentManager {
                     &model,
                     effort.as_deref(),
                     effective_cap,
-                    child_control,
+                    &child_control,
                     child_gate,
-                    worktree.as_ref(),
-                    &child_workspace,
+                    step_seq,
+                    worktree,
                     max_turns,
                     timeout_secs,
                 );
@@ -1033,9 +1061,6 @@ impl SubagentManager {
                 entry.status = SubagentStatus::Failed;
                 entry.finished_at = Some(now_unix_secs());
                 entry.error = Some("Failed to spawn subagent worker thread".to_string());
-                if let Some(wt) = entry.worktree.take() {
-                    wt.cleanup();
-                }
                 let snap = entry.snapshot(false);
                 self.changed.notify_all();
                 drop(guard);
@@ -1053,13 +1078,17 @@ impl SubagentManager {
         model: &str,
         effort: Option<&str>,
         effective_cap: TaskCapability,
-        child_control: RunControl,
+        child_control: &RunControl,
         child_gate: ApprovalGate,
-        worktree: Option<&Arc<WorktreeIsolation>>,
-        child_workspace: &Path,
+        step_seq: Arc<AtomicUsize>,
+        worktree: Option<WorktreeIsolation>,
         max_turns: usize,
         timeout_secs: u64,
     ) {
+        let child_workspace: PathBuf = worktree.as_ref().map_or_else(
+            || self.config.workspace_root.clone(),
+            |wt| wt.workspace_path().to_path_buf(),
+        );
         // Condvar-backed watchdog so timeout cancels the child promptly and
         // exits immediately when the child completes early.
         let done_signal = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1158,19 +1187,20 @@ impl SubagentManager {
         };
 
         let history_sink = Arc::new(Mutex::new(Vec::<AiMessage>::new()));
-        let child_preset = if effective_cap.allows_shell() {
-            self.config.parent_preset
-        } else {
-            RunPreset::Document
-        };
-        let mut runner = AgentRunner::new(self.config.executor.as_ref(), child_workspace)
+        // Keep the parent's RunPreset unchanged so `coding`-scoped Deny/Ask
+        // permission rules remain enforced on `ReadOnly` / `WorkspaceWrite`
+        // subagents; disallowed tools are hidden via `ToolRegistry` and denied
+        // structurally via `TaskCapability`.
+        let child_preset = self.config.parent_preset;
+        let mut runner = AgentRunner::new(self.config.executor.as_ref(), &child_workspace)
             .with_plan(effective_cap == TaskCapability::ReadOnly)
             .with_capability(effective_cap)
             .with_subagent_depth(MAX_SUBAGENT_DEPTH)
             .with_subagent_id(subagent_id.to_string())
+            .with_subagent_step_seq(step_seq)
             .with_history_sink(Arc::clone(&history_sink))
             .with_max_iterations(max_turns)
-            .with_control(child_control)
+            .with_control(child_control.clone())
             .with_approval_gate(child_gate)
             .with_preset(child_preset)
             .with_history(prior_history)
@@ -1221,8 +1251,21 @@ impl SubagentManager {
         let mut patch_error: Option<String> = None;
         let mut changed_files = Vec::new();
 
+        let is_killed = {
+            let guard = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard.entries.get(subagent_id).is_none_or(|e| e.killed)
+        };
+
         if let Some(wt) = worktree {
-            if outcome.is_ok() && !was_timed_out && !self.config.parent_control.is_cancelled() {
+            if outcome.is_ok()
+                && !was_timed_out
+                && !is_killed
+                && !child_control.is_cancelled()
+                && !self.config.parent_control.is_cancelled()
+            {
                 match wt.apply_to_parent(&self.patch_apply_lock) {
                     PatchTransferOutcome::NoChanges => {}
                     PatchTransferOutcome::Applied {
@@ -1255,7 +1298,6 @@ impl SubagentManager {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let snap = if let Some(entry) = guard.entries.get_mut(subagent_id) {
-                entry.worktree = None;
                 if !captured_history.is_empty() {
                     entry.history = captured_history;
                 }
@@ -1321,17 +1363,6 @@ impl SubagentManager {
 impl Drop for SubagentManager {
     fn drop(&mut self) {
         self.cancel_all(false);
-        let worktrees: Vec<Arc<WorktreeIsolation>> = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entries
-            .values_mut()
-            .filter_map(|e| e.worktree.take())
-            .collect();
-        for wt in worktrees {
-            wt.cleanup();
-        }
     }
 }
 
