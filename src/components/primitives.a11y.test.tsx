@@ -68,7 +68,17 @@ describe("Native primitives accessibility and reduced-motion", () => {
 
   it("Toolbar supports arrow/Home/End keyboard navigation and floating Escape dismiss with focus restore", () => {
     const onDismiss = vi.fn();
-    render(
+    const { rerender } = render(
+      <div>
+        <button type="button">Trigger</button>
+      </div>
+    );
+
+    const trigger = screen.getByRole("button", { name: "Trigger" });
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    rerender(
       <div>
         <button type="button">Trigger</button>
         <Toolbar label="Actions" variant="floating" onDismiss={onDismiss}>
@@ -98,5 +108,6 @@ describe("Native primitives accessibility and reduced-motion", () => {
 
     fireEvent.keyDown(toolbar, { key: "Escape" });
     expect(onDismiss).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(trigger);
   });
 });

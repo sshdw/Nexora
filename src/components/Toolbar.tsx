@@ -127,8 +127,8 @@ export default function Toolbar({
       onKeyDown={handleKeyDown}
       className={
         (floating
-          ? "nex-m3-toolbar-floating nex-pop-enter"
-          : "nex-m3-toolbar-docked") + (className ? " " + className : "")
+          ? "nex-toolbar-floating nex-pop-enter"
+          : "nex-toolbar-docked") + (className ? " " + className : "")
       }
     >
       {children}

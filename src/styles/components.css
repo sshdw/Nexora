@@ -1372,12 +1372,12 @@
    popover z-step, scale+fade enter from the anchor on
    medium2 · emphasized-decelerate (via .nex-pop-enter; reduced
    motion: fade-only/instant). ---- */
-.nex-m3-toolbar-docked {
+.nex-toolbar-docked {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
 }
-.nex-m3-toolbar-floating {
+.nex-toolbar-floating {
   position: absolute;
   z-index: var(--nex-sys-z-popover);
   display: flex;
@@ -1385,8 +1385,9 @@
   gap: var(--space-xs);
   padding: var(--space-xs);
   border-radius: var(--shape-medium);
-  background: var(--color-surface-floating);
-  border: 1px solid var(--color-outline-variant);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
   box-shadow: var(--nex-sys-elevation-level1);
 }
 
