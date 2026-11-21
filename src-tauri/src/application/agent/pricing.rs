@@ -76,10 +76,42 @@ pub(crate) fn rate_for_id(model: &str) -> Option<(u64, u64)> {
     rate_for_model_id(model)
 }
 
+/// Compute the billed cost at an explicit per-1M-token rate pair, accounting
+/// for prompt-cached input tokens (S11-09).
+///
+/// Cached input tokens are billed at a conservative 50% of the input rate
+/// (ceiling-rounded, saturating) so the spend guardrail reflects prompt-cache
+/// savings without ever under-accounting across providers (`OpenAI` 50%,
+/// Anthropic 10%, Gemini 25%). When `cached_tokens == 0`, this is identical to
+/// [`cost_micro_with_rate`].
+#[must_use]
+pub(crate) fn cost_micro_with_cached_rate(
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+    input_micro_per_1m: u64,
+    output_micro_per_1m: u64,
+) -> u64 {
+    let cached = cached_tokens.min(input_tokens);
+    let uncached = input_tokens.saturating_sub(cached);
+    let uncached_cost = ceil_cost(uncached, input_micro_per_1m);
+    let cached_cost = ceil_cost(cached, input_micro_per_1m / 2);
+    let out_cost = ceil_cost(output_tokens, output_micro_per_1m);
+    uncached_cost
+        .saturating_add(cached_cost)
+        .saturating_add(out_cost)
+}
+
 /// Convenience wrapper for [`TokenUsage`].
 #[must_use]
 pub(crate) fn cost_for_usage(usage: TokenUsage) -> u64 {
-    cost_micro(usage.input_tokens, usage.output_tokens)
+    cost_micro_with_cached_rate(
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_tokens,
+        POLICY_DEFAULT_INPUT_MICRO_PER_1M,
+        POLICY_DEFAULT_OUTPUT_MICRO_PER_1M,
+    )
 }
 
 /// Whether `model` is a known-free tier ID, billed at $0.
@@ -119,10 +151,23 @@ pub(crate) fn cost_micro_for_model(model: &str, input_tokens: u64, output_tokens
     cost_micro(input_tokens, output_tokens)
 }
 
-/// Convenience wrapper for [`TokenUsage`] with model-aware free-tier billing.
+/// Convenience wrapper for [`TokenUsage`] with model-aware free-tier billing
+/// and prompt-cache savings (S11-09).
 #[must_use]
 pub(crate) fn cost_for_model_usage(model: &str, usage: TokenUsage) -> u64 {
-    cost_micro_for_model(model, usage.input_tokens, usage.output_tokens)
+    if is_free_model(model) {
+        return 0;
+    }
+    if let Some((input_rate, output_rate)) = rate_for_model_id(model) {
+        return cost_micro_with_cached_rate(
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_tokens,
+            input_rate,
+            output_rate,
+        );
+    }
+    cost_for_usage(usage)
 }
 
 fn ceil_cost(tokens: u64, price_per_1m: u64) -> u64 {
@@ -198,6 +243,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 2_000,
             output_tokens: 3_000,
+            cached_tokens: 0,
         };
         assert_eq!(cost_for_usage(usage), cost_micro(2_000, 3_000));
     }
@@ -216,6 +262,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 2_000,
             output_tokens: 3_000,
+            cached_tokens: 0,
         };
         // `:free` suffix (OpenRouter / xKiro free tier).
         for model in [
@@ -257,6 +304,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
+            cached_tokens: 0,
         };
         for model in [
             "gpt-5.6-terra",
@@ -292,6 +340,7 @@ mod tests {
                     TokenUsage {
                         input_tokens: 1_000,
                         output_tokens: 1_000,
+                        cached_tokens: 0
                     }
                 ) > 0,
                 "{model} must bill nonzero"
@@ -308,6 +357,7 @@ mod tests {
         let zero = TokenUsage {
             input_tokens: 0,
             output_tokens: 0,
+            cached_tokens: 0,
         };
         // Zero tokens cost zero for free and paid IDs alike.
         assert_eq!(cost_for_model_usage("qwen/qwen3.5-plus:free", zero), 0);
@@ -323,7 +373,8 @@ mod tests {
                 "gpt-5.6-terra",
                 TokenUsage {
                     input_tokens: u64::MAX,
-                    output_tokens: u64::MAX
+                    output_tokens: u64::MAX,
+                    cached_tokens: 0
                 }
             ),
             u64::MAX,
@@ -334,7 +385,8 @@ mod tests {
                 "mimo-v2.5-free",
                 TokenUsage {
                     input_tokens: u64::MAX,
-                    output_tokens: u64::MAX
+                    output_tokens: u64::MAX,
+                    cached_tokens: 0
                 }
             ),
             0,
@@ -362,6 +414,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
+            cached_tokens: 0,
         };
         // Listed native IDs bill their table estimate, not a guessed rate.
         assert_eq!(
@@ -389,8 +442,32 @@ mod tests {
         let zero = TokenUsage {
             input_tokens: 0,
             output_tokens: 0,
+            cached_tokens: 0,
         };
         assert_eq!(cost_for_model_usage("gpt-5.6-terra", zero), 0);
         assert_eq!(cost_for_model_usage("test-model", zero), 0);
+    }
+
+    #[test]
+    fn s11_09_cached_tokens_reduce_input_cost() {
+        let uncached = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            cached_tokens: 0,
+        };
+        let half_cached = TokenUsage {
+            input_tokens: 1_000_000,
+            output_tokens: 0,
+            cached_tokens: 1_000_000,
+        };
+        assert_eq!(cost_for_usage(uncached), POLICY_DEFAULT_INPUT_MICRO_PER_1M);
+        assert_eq!(
+            cost_for_usage(half_cached),
+            POLICY_DEFAULT_INPUT_MICRO_PER_1M / 2
+        );
+        assert!(
+            cost_for_model_usage("claude-sonnet-5", half_cached)
+                < cost_for_model_usage("claude-sonnet-5", uncached)
+        );
     }
 }

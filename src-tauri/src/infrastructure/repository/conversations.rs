@@ -205,6 +205,25 @@ impl ConversationRepository<'_> {
         Ok(())
     }
 
+    /// Atomically update `title` only when the current persisted title still
+    /// matches `expected_title` (S11-06 default-title guard).
+    ///
+    /// Returns `true` if the row was updated, `false` if the conversation no
+    /// longer exists or was already renamed.
+    pub(crate) fn rename_if_title_matches(
+        &self,
+        id: i64,
+        expected_title: &str,
+        new_title: &str,
+    ) -> Result<bool> {
+        let conn = self.conn()?;
+        let rows = conn.execute(
+            "UPDATE conversations SET title = ?3 WHERE id = ?1 AND title = ?2",
+            params![id, expected_title, new_title],
+        )?;
+        Ok(rows > 0)
+    }
+
     /// Delete a conversation by `id`.
     ///
     /// Deleting a non-existent `id` is a no-op. Cascading deletion of linked

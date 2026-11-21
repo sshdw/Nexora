@@ -163,6 +163,7 @@ fn usage_of(input: u64, output: u64) -> TokenUsage {
     TokenUsage {
         input_tokens: input,
         output_tokens: output,
+        cached_tokens: 0,
     }
 }
 

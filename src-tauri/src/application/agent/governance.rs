@@ -494,6 +494,7 @@ mod tests {
         let usage = crate::application::execution::TokenUsage {
             input_tokens: 1,
             output_tokens: 0,
+            cached_tokens: 0,
         };
         assert_eq!(hooked.cost_for("openai", usage), 999_999_999);
 
@@ -516,6 +517,7 @@ mod tests {
         let usage = TokenUsage {
             input_tokens: 1_000_000,
             output_tokens: 1_000_000,
+            cached_tokens: 0,
         };
         // Default (no hook): the live rate-table estimate for the model ID —
         // listed IDs bill their table rate, unlisted IDs the policy default.

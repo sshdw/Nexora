@@ -111,6 +111,42 @@ pub(crate) fn restore_conversation(id: i64, db: State<'_, Database>) -> Result<(
 /// resolves with the response or rejects with a classified error.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
+struct ConversationTitleUpdatedPayload {
+    conversation_id: i64,
+    title: String,
+}
+
+/// Trigger asynchronous auto-title generation after the first user message in
+/// Chat or Agent mode, emitting `"conversation-title-updated"` on success.
+pub(crate) fn maybe_spawn_auto_title(
+    app: &AppHandle,
+    db: &Database,
+    conversation_id: i64,
+    first_prompt: &str,
+    provider: &str,
+    model: &str,
+) {
+    let emit_handle = app.clone();
+    crate::application::conversations::spawn_auto_title_generation(
+        db.clone(),
+        conversation_id,
+        first_prompt.to_string(),
+        provider.to_string(),
+        model.to_string(),
+        move |id, title| {
+            let _ = emit_handle.emit(
+                "conversation-title-updated",
+                ConversationTitleUpdatedPayload {
+                    conversation_id: id,
+                    title,
+                },
+            );
+        },
+    );
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 struct ChatStreamEventFrame {
     conversation_id: i64,
     kind: &'static str,
@@ -120,7 +156,7 @@ struct ChatStreamEventFrame {
 
 #[tauri::command]
 // Independently named arguments preserve the existing IPC contract.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn send_message(
     app: AppHandle,
     conversation_id: i64,
@@ -219,6 +255,16 @@ pub(crate) async fn send_message(
             // Local usage ledger (counts only): one best-effort tick per
             // sent message — a ledger failure never fails the send.
             crate::application::privacy::record(db.inner(), "message");
+            // S11-06: asynchronously generate a concise title after the first
+            // user message without blocking the response.
+            maybe_spawn_auto_title(
+                &app,
+                db.inner(),
+                conversation_id,
+                &content,
+                &provider,
+                &model,
+            );
         }
         result
     })

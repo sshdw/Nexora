@@ -313,14 +313,37 @@ struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    system: Vec<AnthropicSystemBlock>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     tools: Vec<AnthropicWireTool>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     output_config: Option<AnthropicOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     stream: Option<bool>,
+}
+
+/// Anthropic prompt-caching breakpoint marker (`{"type": "ephemeral"}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+impl AnthropicCacheControl {
+    const fn ephemeral() -> Self {
+        Self { kind: "ephemeral" }
+    }
+}
+
+/// One top-level `system` text block with optional prompt caching.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AnthropicSystemBlock {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 #[derive(Debug, Serialize)]
@@ -331,12 +354,14 @@ struct AnthropicOutputConfig {
 /// Anthropic-native tool definition (Messages `tools` array).
 ///
 /// Mirrors the Anthropic wire contract:
-/// `{ "name", "description", "input_schema": <JSON Schema> }`.
+/// `{ "name", "description", "input_schema": <JSON Schema>, "cache_control"? }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct AnthropicWireTool {
     name: String,
     description: String,
     input_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
 }
 
 /// One Anthropic chat message. Only `user` and `assistant` roles are valid
@@ -401,7 +426,15 @@ struct AnthropicSource {
 /// top-level `system` parameter; `user` and `assistant` messages map to the
 /// corresponding Anthropic `messages.role` and remain in chronological order.
 fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
-    let system = collect_system(&request.messages);
+    let system = collect_system(&request.messages)
+        .map(|text| {
+            vec![AnthropicSystemBlock {
+                kind: "text",
+                text,
+                cache_control: Some(AnthropicCacheControl::ephemeral()),
+            }]
+        })
+        .unwrap_or_default();
     let messages: Vec<AnthropicMessage> = request
         .messages
         .iter()
@@ -425,13 +458,18 @@ fn anthropic_request(request: &AiRequest) -> AnthropicRequest {
             content: anthropic_content(message),
         })
         .collect();
+    let tool_count = request.tools.len();
     let tools: Vec<AnthropicWireTool> = request
         .tools
         .iter()
-        .map(|tool| AnthropicWireTool {
+        .enumerate()
+        .map(|(idx, tool)| AnthropicWireTool {
             name: tool.name.clone(),
             description: tool.description.clone(),
             input_schema: tool.parameters.clone(),
+            // Place the ephemeral cache breakpoint on the final tool so the
+            // entire tool-definition prefix is cached across turns (S11-09).
+            cache_control: (idx + 1 == tool_count).then(AnthropicCacheControl::ephemeral),
         })
         .collect();
     let max_tokens = request
@@ -563,11 +601,16 @@ struct AnthropicResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct AnthropicUsage {
     #[serde(default)]
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: u64,
+    #[serde(default)]
+    cache_creation_input_tokens: u64,
 }
 
 /// One content block from an Anthropic response.
@@ -635,12 +678,17 @@ fn to_ai_response(response: AnthropicResponse) -> Result<AiResponse, AnthropicEr
         text_parts.join("")
     };
     let usage = response.usage.and_then(|u| {
-        if u.input_tokens == 0 && u.output_tokens == 0 {
+        let total_input = u
+            .input_tokens
+            .saturating_add(u.cache_read_input_tokens)
+            .saturating_add(u.cache_creation_input_tokens);
+        if total_input == 0 && u.output_tokens == 0 {
             None
         } else {
             Some(TokenUsage {
-                input_tokens: u.input_tokens,
+                input_tokens: total_input,
                 output_tokens: u.output_tokens,
+                cached_tokens: u.cache_read_input_tokens,
             })
         }
     });
@@ -724,6 +772,8 @@ struct AnthropicStreamAccumulator {
     saw_text_or_tool: bool,
     input_tokens: u64,
     output_tokens: u64,
+    cached_tokens: u64,
+    cache_creation_tokens: u64,
     next_tool_index: usize,
     active_tools: std::collections::BTreeMap<usize, PendingAnthropicTool>,
     finished_tools: Vec<PendingAnthropicTool>,
@@ -737,6 +787,8 @@ impl AnthropicStreamAccumulator {
             saw_text_or_tool: false,
             input_tokens: 0,
             output_tokens: 0,
+            cached_tokens: 0,
+            cache_creation_tokens: 0,
             next_tool_index: 0,
             active_tools: std::collections::BTreeMap::new(),
             finished_tools: Vec::new(),
@@ -854,6 +906,10 @@ impl AnthropicStreamAccumulator {
                     if let Some(usage) = msg.usage {
                         self.input_tokens = self.input_tokens.max(usage.input_tokens);
                         self.output_tokens = self.output_tokens.max(usage.output_tokens);
+                        self.cached_tokens = self.cached_tokens.max(usage.cache_read_input_tokens);
+                        self.cache_creation_tokens = self
+                            .cache_creation_tokens
+                            .max(usage.cache_creation_input_tokens);
                     }
                 }
             }
@@ -878,6 +934,10 @@ impl AnthropicStreamAccumulator {
                 if let Some(usage) = payload.usage {
                     self.input_tokens = self.input_tokens.max(usage.input_tokens);
                     self.output_tokens = self.output_tokens.max(usage.output_tokens);
+                    self.cached_tokens = self.cached_tokens.max(usage.cache_read_input_tokens);
+                    self.cache_creation_tokens = self
+                        .cache_creation_tokens
+                        .max(usage.cache_creation_input_tokens);
                 }
             }
             _ => {}
@@ -907,12 +967,17 @@ impl AnthropicStreamAccumulator {
         if !self.saw_text_or_tool && tool_calls.is_empty() && self.text.is_empty() {
             return Err(AnthropicError::UnexpectedResponse);
         }
-        let usage = if self.input_tokens == 0 && self.output_tokens == 0 {
+        let total_input = self
+            .input_tokens
+            .saturating_add(self.cached_tokens)
+            .saturating_add(self.cache_creation_tokens);
+        let usage = if total_input == 0 && self.output_tokens == 0 {
             None
         } else {
             Some(TokenUsage {
-                input_tokens: self.input_tokens,
+                input_tokens: total_input,
                 output_tokens: self.output_tokens,
+                cached_tokens: self.cached_tokens,
             })
         };
         Ok(AiResponse {
@@ -1053,8 +1118,14 @@ mod tests {
     fn system_message_is_mapped_to_top_level_field() {
         let body = anthropic_request(&sample_request());
         // The system instruction is extracted into the top-level `system`
-        // parameter, not emitted as a message.
-        assert_eq!(body.system.as_deref(), Some("You are a helpful assistant."));
+        // parameter with ephemeral prompt caching, not emitted as a message.
+        assert_eq!(body.system.len(), 1);
+        assert_eq!(body.system[0].kind, "text");
+        assert_eq!(body.system[0].text, "You are a helpful assistant.");
+        assert_eq!(
+            body.system[0].cache_control,
+            Some(AnthropicCacheControl::ephemeral())
+        );
         assert!(body.messages.iter().all(|m| m.role != "system"));
     }
 
@@ -1100,8 +1171,15 @@ mod tests {
         assert_eq!(value["model"], "claude-sonnet-5");
         assert_eq!(value["max_tokens"], DEFAULT_MAX_TOKENS);
 
-        // System content is a top-level field, not a message.
-        assert_eq!(value["system"], "You are a helpful assistant.");
+        // System content is a top-level cached text block array, not a message.
+        assert_eq!(
+            value["system"],
+            serde_json::json!([{
+                "type": "text",
+                "text": "You are a helpful assistant.",
+                "cache_control": { "type": "ephemeral" }
+            }])
+        );
         let has_system_role = value["messages"]
             .as_array()
             .expect("messages is an array")
@@ -1139,7 +1217,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
         assert!(value.get("system").is_none());
-        assert!(body.system.is_none());
+        assert!(body.system.is_empty());
     }
 
     #[test]
@@ -1168,10 +1246,18 @@ mod tests {
             request_timeout: None,
         };
         let body = anthropic_request(&request);
-        assert_eq!(body.system.as_deref(), Some("First rule.\n\nSecond rule."));
+        assert_eq!(body.system.len(), 1);
+        assert_eq!(body.system[0].text, "First rule.\n\nSecond rule.");
         let value: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
-        assert_eq!(value["system"], "First rule.\n\nSecond rule.");
+        assert_eq!(
+            value["system"],
+            serde_json::json!([{
+                "type": "text",
+                "text": "First rule.\n\nSecond rule.",
+                "cache_control": { "type": "ephemeral" }
+            }])
+        );
     }
 
     #[test]
@@ -2307,11 +2393,88 @@ mod tests {
             resp.usage,
             Some(TokenUsage {
                 input_tokens: 12,
-                output_tokens: 9
+                output_tokens: 9,
+                cached_tokens: 0
             })
         );
         let evs = events.into_inner().expect("lock");
         assert!(evs.contains(&StreamEvent::ThinkingDelta("step 1".to_string())));
         assert!(evs.contains(&StreamEvent::TextDelta("Done.".to_string())));
+    }
+
+    #[test]
+    fn s11_09_anthropic_cache_control_serialized_on_system_and_last_tool() {
+        let mut req = sample_request();
+        req.tools = std::sync::Arc::new(vec![
+            ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolDefinition {
+                name: "edit_file".to_string(),
+                description: "Edit a file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ]);
+        let body = anthropic_request(&req);
+        let value: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&body).expect("serialize")).expect("parse");
+
+        assert_eq!(value["system"][0]["cache_control"]["type"], "ephemeral");
+        assert!(value["tools"][0].get("cache_control").is_none());
+        assert_eq!(value["tools"][1]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn s11_09_anthropic_parses_cached_tokens_non_streaming_and_streaming() {
+        let json = r#"{
+            "model": "claude-sonnet-5",
+            "content": [{"type": "text", "text": "cached reply"}],
+            "usage": {
+                "input_tokens": 200,
+                "cache_read_input_tokens": 1500,
+                "cache_creation_input_tokens": 300,
+                "output_tokens": 45
+            }
+        }"#;
+        let parsed: AnthropicResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed).expect("to_ai");
+        assert_eq!(
+            ai.usage,
+            Some(TokenUsage {
+                input_tokens: 2000,
+                output_tokens: 45,
+                cached_tokens: 1500,
+            })
+        );
+
+        let mut acc = AnthropicStreamAccumulator::new("claude-sonnet-5");
+        let start_ev: AnthropicSsePayload = serde_json::from_str(
+            r#"{"type":"message_start","message":{"model":"claude-sonnet-5","usage":{"input_tokens":100,"cache_read_input_tokens":900,"output_tokens":1}}}"#,
+        )
+        .expect("start");
+        let delta_text: AnthropicSsePayload = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}"#,
+        )
+        .expect("delta");
+        let end_ev: AnthropicSsePayload =
+            serde_json::from_str(r#"{"type":"message_delta","usage":{"output_tokens":15}}"#)
+                .expect("end");
+        acc.apply_event(Some("message_start"), start_ev, &|_| {})
+            .unwrap();
+        acc.apply_event(Some("content_block_delta"), delta_text, &|_| {})
+            .unwrap();
+        acc.apply_event(Some("message_delta"), end_ev, &|_| {})
+            .unwrap();
+        let streamed = acc.finish().expect("finish");
+        assert_eq!(
+            streamed.usage,
+            Some(TokenUsage {
+                input_tokens: 1000,
+                output_tokens: 15,
+                cached_tokens: 900,
+            })
+        );
     }
 }

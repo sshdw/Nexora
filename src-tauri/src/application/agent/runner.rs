@@ -969,6 +969,7 @@ impl<'a> AgentRunner<'a> {
                     Ok(true) => governor.observe(Some(TokenUsage {
                         input_tokens: estimated,
                         output_tokens: 0,
+                        cached_tokens: 0,
                     })),
                     Ok(false) => {}
                     Err(err) => {
@@ -2973,6 +2974,7 @@ pub(crate) mod test_support {
             usage: Some(TokenUsage {
                 input_tokens: input,
                 output_tokens: output,
+                cached_tokens: 0,
             }),
         }
     }
@@ -2985,6 +2987,7 @@ pub(crate) mod test_support {
             usage: Some(TokenUsage {
                 input_tokens: input,
                 output_tokens: output,
+                cached_tokens: 0,
             }),
         }
     }

@@ -3294,6 +3294,7 @@ mod tests {
             governor.observe(Some(TokenUsage {
                 input_tokens: usable.saturating_add(1),
                 output_tokens: 0,
+                cached_tokens: 0,
             }));
             match governor.decide(&history, wired) {
                 ContextAction::Compact(reason) => assert_eq!(
@@ -3313,6 +3314,7 @@ mod tests {
         dormant.observe(Some(TokenUsage {
             input_tokens: u64::MAX,
             output_tokens: 0,
+            cached_tokens: 0,
         }));
         assert_eq!(
             dormant.decide(&history, 0),
@@ -5626,6 +5628,7 @@ mod tests {
                 usage: Some(crate::application::execution::TokenUsage {
                     input_tokens: 9_000,
                     output_tokens: 100,
+                    cached_tokens: 0,
                 }),
             }),
             Ok(text_response("1. Goal\nGoal item 0")),

@@ -320,6 +320,7 @@ fn usage_response(content: &str, input: u64, output: u64) -> AiResponse {
         usage: Some(TokenUsage {
             input_tokens: input,
             output_tokens: output,
+            cached_tokens: 0,
         }),
     }
 }
@@ -359,6 +360,7 @@ fn tool_usage(
         Some(TokenUsage {
             input_tokens: input,
             output_tokens: output,
+            cached_tokens: 0,
         }),
     )
 }
@@ -746,6 +748,7 @@ fn e2e_full_agent_journey() {
     let usage = Some(TokenUsage {
         input_tokens: 1_000,
         output_tokens: 500,
+        cached_tokens: 0,
     });
     let executor = Arc::new(ScriptedExecutor::new(vec![
         Ok(tool_response(

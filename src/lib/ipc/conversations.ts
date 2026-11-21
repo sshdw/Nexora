@@ -77,6 +77,13 @@ export interface ToolCall {
 export interface TokenUsage {
   input_tokens: number;
   output_tokens: number;
+  cached_tokens?: number;
+}
+
+/** Payload emitted on `conversation-title-updated` when auto-title completes (S11-06). */
+export interface ConversationTitleUpdatedPayload {
+  conversation_id: number;
+  title: string;
 }
 
 /** Normalized AI response returned by `send_message`. */

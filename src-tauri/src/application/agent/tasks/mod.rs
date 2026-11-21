@@ -347,6 +347,7 @@ mod tests {
             usage: Some(crate::application::execution::TokenUsage {
                 input_tokens,
                 output_tokens,
+                cached_tokens: 0,
             }),
         }
     }

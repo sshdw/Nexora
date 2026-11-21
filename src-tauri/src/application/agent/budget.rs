@@ -122,6 +122,7 @@ pub(crate) fn estimate_usage(messages: &[AiMessage], response_content: &str) -> 
     TokenUsage {
         input_tokens: assembly::messages_size_tokens(messages).max(1),
         output_tokens: compaction::estimate_tokens(response_content).max(1),
+        cached_tokens: 0,
     }
 }
 
@@ -609,6 +610,7 @@ mod tests {
                 usage: Some(TokenUsage {
                     input_tokens: 200_000,
                     output_tokens: 0,
+                    cached_tokens: 0,
                 }),
             }),
             Ok(text_response("done")),
@@ -663,6 +665,7 @@ mod tests {
         let estimate = TokenUsage {
             input_tokens: 1_000,
             output_tokens: 500,
+            cached_tokens: 0,
         };
         super::check_spend_guard(&budget, "m", Some(estimate), &mut spent, None, None)
             .expect("no limit, no trip");

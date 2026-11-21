@@ -1173,6 +1173,7 @@ mod tests {
             Some(TokenUsage {
                 input_tokens: 120,
                 output_tokens: 34,
+                cached_tokens: 0,
             }),
         );
         record.model_turn("unreported", None, None);
