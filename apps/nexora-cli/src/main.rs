@@ -153,8 +153,10 @@ fn run(cli: &Cli) -> Result<String, CliError> {
             AuthCommands::Set { provider } => auth::set(provider),
         },
         None => {
-            // No TUI in this build — say so on stderr, point at real commands,
-            // and fail loudly rather than silently succeeding at nothing.
+            // Non-TTY fallback: a piped/redirected invocation keeps the plain
+            // usage guidance and exits 2 (CliExitCode::Usage). The TUI is
+            // entered only on an interactive terminal, via `tui::run` in
+            // `main`, never from this arm.
             Err(CliError::validation(
                 "interactive mode is not available in this build; try `nexora --help` or `nexora doctor`",
             ))

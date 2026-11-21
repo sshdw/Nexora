@@ -27,7 +27,8 @@ fn muted(app: &App) -> Style {
     }
 }
 
-/// Style for the current-focus marker. Grey + underline when colour is on.
+/// Style for the current-focus marker: a white foreground when colour is on,
+/// plain text otherwise. Still monochrome — no hue and no underline.
 fn active(app: &App) -> Style {
     if app.caps.color {
         Style::new().fg(Color::White)
