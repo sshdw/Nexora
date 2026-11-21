@@ -10,9 +10,12 @@ export const ru: Record<StringKey, string> = {
   "sandbox.checking": "Проверка изоляции…",
   "sandbox.verified": "Изоляция подтверждена",
   "sandbox.consent": "Согласие на каждую команду",
-  "sandbox.hint": "Обычные команды могут запускаться автоматически в режиме Standard. Опасные команды требуют согласия. Оболочка может изменять существующие обычные файлы; создание, удаление и переименование запрещены.",
-  "sandbox.failed": "Изоляция не подтверждена. Каждая команда требует согласия.",
-  "sandbox.unavailable": "Статус песочницы недоступен. Каждая команда требует согласия.",
+  "sandbox.hint":
+    "Обычные команды могут запускаться автоматически в режиме Standard. Опасные команды требуют согласия. Оболочка может изменять существующие обычные файлы; создание, удаление и переименование запрещены.",
+  "sandbox.failed":
+    "Изоляция не подтверждена. Каждая команда требует согласия.",
+  "sandbox.unavailable":
+    "Статус песочницы недоступен. Каждая команда требует согласия.",
 
   "access.legacyAutonomy": "Прежняя настройка автономности",
   "access.label": "Профиль доступа",
@@ -190,7 +193,8 @@ export const ru: Record<StringKey, string> = {
   "conv.responding": "Ассистент отвечает",
   "conv.agentWorking": "Агент работает",
   "conv.attachmentMissing": "Нет файла",
-  "conv.attachmentsWaitForRun": "Вложения сохранены в черновике. Дождитесь завершения запуска или удалите их перед уточнением или добавлением в очередь.",
+  "conv.attachmentsWaitForRun":
+    "Вложения сохранены в черновике. Дождитесь завершения запуска или удалите их перед уточнением или добавлением в очередь.",
   "conv.attachedFiles": "Прикреплённые файлы",
   "conv.removeFile": "Убрать {name}",
   "conv.messagePlaceholder": "Спросите что угодно или опишите задачу",
@@ -277,11 +281,14 @@ export const ru: Record<StringKey, string> = {
   "prompt.diffPath": "Путь к файлу или пустое поле для всего рабочего дерева",
   "prompt.symbol": "Точное имя символа",
   "prompt.preview": "Предпросмотр",
-  "prompt.omitted": "Часть элементов пропущена из-за ограничений доступа или размера.",
+  "prompt.omitted":
+    "Часть элементов пропущена из-за ограничений доступа или размера.",
   "prompt.reviewAction": "Посмотреть изменения для проверки в режиме чтения",
   "prompt.reviewTitle": "Проверка изменений рабочего дерева",
-  "prompt.reviewScope": "Проверка использует изменения из предпросмотра и выполняется в чате без инструментов. Чтобы проверить только один отслеживаемый файл, укажите его путь.",
-  "prompt.reviewPartial": "Предпросмотр неполный. На проверку будут отправлены только показанные изменения.",
+  "prompt.reviewScope":
+    "Проверка использует изменения из предпросмотра и выполняется в чате без инструментов. Чтобы проверить только один отслеживаемый файл, укажите его путь.",
+  "prompt.reviewPartial":
+    "Предпросмотр неполный. На проверку будут отправлены только показанные изменения.",
   "prompt.sendReview": "Отправить на проверку",
   "prompt.reviewFailed": "Не удалось отправить изменения на проверку.",
   "prompt.manageSkills": "Просмотр навыков и управление ими",
@@ -291,10 +298,13 @@ export const ru: Record<StringKey, string> = {
   "prompt.kind.symbol": "Добавить строки с символом из файла",
   "prompt.included": "Контекст этого сообщения",
   "prompt.remove": "Убрать {name} из сообщения",
-  "prompt.noShell": "Для запроса агента с выбранным контекстом запуск команд недоступен.",
-  "prompt.undoAction": "Отменить последнюю операцию агента с контрольными точками",
+  "prompt.noShell":
+    "Для запроса агента с выбранным контекстом запуск команд недоступен.",
+  "prompt.undoAction":
+    "Отменить последнюю операцию агента с контрольными точками",
   "prompt.undoTitle": "Отменить последнюю сохранённую операцию?",
-  "prompt.undoBody": "Будет использовано контрольных точек: {count}. Nexora остановит отмену, если после создания точки файл изменился.",
+  "prompt.undoBody":
+    "Будет использовано контрольных точек: {count}. Nexora остановит отмену, если после создания точки файл изменился.",
   "prompt.undoEmpty": "Нет изменений агента, которые можно отменить.",
   "prompt.undoFailed": "Не удалось загрузить контрольные точки.",
   "conv.slashTriggerAria": "Слэш-команды",
@@ -501,14 +511,14 @@ export const ru: Record<StringKey, string> = {
   "ctx.compacting": "Сжатие…",
   "ctx.compactedNotice":
     "Контекст сжат (свёрнуто: {summarized}, сохранено: {retained}).",
-  "ctx.compactedScheduled":
-    "Сжатие запланировано перед следующим шагом.",
+  "ctx.compactedScheduled": "Сжатие запланировано перед следующим шагом.",
   "ctx.compactedNothing": "Пока нет более раннего контекста для сжатия.",
   "ctx.compactFailed": "Не удалось сжать контекст.",
   "ctx.compactedAt": "Сжатий: {count}",
   "ctx.preservedLabel": "Сохранены цель, план, решения и файлы",
   "agent.compacting": "Сжатие контекста…",
-  "agent.compacted": "Контекст сжат (свёрнуто: {summarized}, сохранено: {retained})",
+  "agent.compacted":
+    "Контекст сжат (свёрнуто: {summarized}, сохранено: {retained})",
   "agent.compactionFailed": "Сжатие пропущено",
 
   "settings.title": "Настройки",
@@ -599,31 +609,26 @@ export const ru: Record<StringKey, string> = {
   "settings.disconnect": "Отключить",
   "settings.chatgptOAuthHeading": "ChatGPT Plus / Pro OAuth (экспериментально)",
   "settings.chatgptOAuthNotice":
-    "Экспериментальная функция по явному согласию. Использует OAuth 2.0 + PKCE (S256) с локальным обратным вызовом 127.0.0.1 и хранит токены строго в системном хранилище ключей ОС (никогда в SQLite или логах). Подчиняется Условиям использования OpenAI и может измениться без уведомления.",
+    "Экспериментальная функция по явному согласию. Когда вы выбираете подписку ChatGPT и отправляете запрос, Nexora передаёт OpenAI контекст диалога, включая относящуюся к запросу историю, вложения и результаты работы инструментов. Nexora хранит токены входа в системном хранилище ключей. Действуют условия OpenAI для входа через ChatGPT.",
   "settings.chatgptOAuthOptInLabel":
     "Я понимаю, что это экспериментальная функция и она подчиняется Условиям использования OpenAI",
   "settings.chatgptOAuthConnected": "OAuth подключён",
   "settings.chatgptOAuthNotConnected": "Не подключён",
   "settings.chatgptOAuthActiveHint":
-    "Активно для запросов OpenAI (имеет приоритет над API-ключом до отключения).",
-  "settings.chatgptOAuthSignIn": "Войти через ChatGPT (OAuth)",
+    "Выберите подписку ChatGPT в списке провайдеров, чтобы использовать лимит подписки.",
+  "settings.chatgptOAuthSignIn": "Продолжить с ChatGPT",
   "settings.chatgptOAuthSigningIn": "Ожидание браузера…",
   "settings.chatgptOAuthRefresh": "Обновить токен",
   "settings.chatgptOAuthDisconnect": "Отключить OAuth",
   "settings.chatgptOAuthProviderNote":
-    "OpenAI сейчас аутентифицирован через ChatGPT Plus/Pro OAuth (токены хранятся строго в хранилище ключей ОС).",
-  "settings.cliAdaptersHeading": "Внешние CLI-адаптеры (по выбору)",
-  "settings.cliAdaptersHint":
-    "Делегирует запросы вашим официально установленным и авторизованным CLI Codex или Claude в изолированном подпроцессе (очищенное окружение, контроль дерева процессов, жёсткий таймаут). Nexora никогда не читает закрытые OAuth-токены Claude Pro/Max и не передаёт API-ключи Nexora.",
-  "settings.cliAdaptersDetect": "Проверить заново",
-  "settings.cliAdaptersDetecting": "Проверка…",
-  "settings.cliAdapterInstalled": "Установлен",
-  "settings.cliAdapterNotDetected": "Не обнаружен",
-  "settings.cliAdapterEnabled": "Включён",
-  "settings.cliAdapterEnable": "Включить",
-  "settings.cliAdapterDisable": "Отключить",
-  "settings.cliAdapterProviderNote":
-    "Работает через официально установленный внешний CLI в чистом изолированном подпроцессе. API-ключи Nexora не используются и не передаются.",
+    "Запросы к этому провайдеру используют лимит подписки ChatGPT.",
+  "settings.chatgptOAuthOtherInstance":
+    "Вход через ChatGPT используется в другом экземпляре Nexora",
+  "settings.chatgptOAuthCheckAgain": "Проверить снова",
+  "settings.chatgptOAuthCleanupRequired": "Требуется очистка",
+  "settings.chatgptOAuthCleanupHint":
+    "Nexora не может использовать сохранённый доступ. Повторите очистку, чтобы подключиться заново.",
+  "settings.chatgptOAuthRetryCleanup": "Повторить очистку",
   "settings.dataHint":
     "Все данные приложения живут в одной локальной SQLite-базе на этом устройстве. Ничего никуда не синхронизируется. Отдельные разговоры и промпты управляются из боковой панели и библиотеки промптов.",
   "settings.transfer": "Перенос разговоров",
@@ -687,7 +692,8 @@ export const ru: Record<StringKey, string> = {
   "settings.mcpCommandPh": "например, npx или /usr/local/bin/mcp-server",
   "settings.mcpArgsLabel": "Аргументы (по одному на строку)",
   "settings.mcpArgsPh": "-y\n@example/mcp-server",
-  "settings.mcpEnvLabel": "Переменные окружения (KEY=VALUE, по одной на строку; без секретов)",
+  "settings.mcpEnvLabel":
+    "Переменные окружения (KEY=VALUE, по одной на строку; без секретов)",
   "settings.mcpEnvPh": "NODE_ENV=production",
   "settings.mcpUrlLabel": "URL конечной точки (https:// или localhost)",
   "settings.mcpUrlPh": "https://mcp.example.com/v1",
@@ -722,10 +728,12 @@ export const ru: Record<StringKey, string> = {
   "settings.mcpToolsNone": "Подключено — сервер не предоставил инструментов.",
   "settings.mcpValidationNameRequired": "Укажите имя сервера.",
   "settings.mcpValidationCommandRequired": "Укажите команду для stdio-сервера.",
-  "settings.mcpValidationUrlRequired": "Укажите URL для Streamable HTTP сервера.",
+  "settings.mcpValidationUrlRequired":
+    "Укажите URL для Streamable HTTP сервера.",
   "settings.mcpValidationOAuthRequired":
     "Для OAuth требуются URL авторизации, URL токенов и Client ID.",
-  "settings.mcpValidationEnvFormat": "Каждая строка окружения должна иметь формат KEY=VALUE.",
+  "settings.mcpValidationEnvFormat":
+    "Каждая строка окружения должна иметь формат KEY=VALUE.",
   "settings.presetTitle": "Пресет агента",
   "settings.presetHint":
     "Сохранённое переопределение пресета агента. Не задан — действует встроенный по умолчанию.",
@@ -1790,16 +1798,19 @@ export const ru: Record<StringKey, string> = {
   "agent.questionFreeTextPlaceholder": "Введите ответ…",
   "agent.questionSubmit": "Отправить ответ",
   "agent.questionSubmitting": "Отправка…",
-  "agent.questionValidationEmpty": "Выберите вариант или введите ответ перед отправкой.",
+  "agent.questionValidationEmpty":
+    "Выберите вариант или введите ответ перед отправкой.",
 
   "composer.clarifyNow": "Уточнить сейчас",
   "composer.clarifySent": "Уточнение отправлено в активный запуск.",
   "composer.queuePrompt": "В очередь",
-  "composer.livePlaceholder": "Добавить уточнение или поставить следующую задачу в очередь…",
+  "composer.livePlaceholder":
+    "Добавить уточнение или поставить следующую задачу в очередь…",
 
   "queue.title": "Очередь задач",
   "queue.count": "В очереди: {count}",
-  "queue.pausedBanner": "Очередь приостановлена — прошлый запуск не завершился успешно.",
+  "queue.pausedBanner":
+    "Очередь приостановлена — прошлый запуск не завершился успешно.",
   "queue.runNext": "Запустить следующую",
   "queue.moveUp": "Выше",
   "queue.moveDown": "Ниже",

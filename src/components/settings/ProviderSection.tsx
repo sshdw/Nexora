@@ -12,7 +12,7 @@ import type {
   SupportedProvider,
 } from "../../lib/tauri";
 import {
-  isCliAdapterProvider,
+  CHATGPT_PLAN_PROVIDER,
   validateCompatBaseUrl,
   type ProvidersStore,
 } from "../../lib/useProviders";
@@ -58,14 +58,18 @@ export default function ProviderSection({
   onScopeBlockedError,
 }: ProviderSectionProps) {
   const { t } = useStrings();
-  const activeModelId = customActive ? customValue.trim() : (effectiveModel ?? "");
+  const activeModelId = customActive
+    ? customValue.trim()
+    : (effectiveModel ?? "");
   const activeCapabilities: ConnectionModelCapabilities | null =
     selectedDefinition && activeModelId
       ? (store.capabilities?.find(
           (c) =>
             c.connection_id === selectedDefinition.name &&
             c.model_id === activeModelId
-        ) ?? store.selectedCapabilities ?? null)
+        ) ??
+        store.selectedCapabilities ??
+        null)
       : null;
 
   const [ctxDraft, setCtxDraft] = useState("");
@@ -75,6 +79,7 @@ export default function ProviderSection({
   const [attachmentsDraft, setAttachmentsDraft] = useState(false);
 
   const isCompat = selectedDefinition?.name === "openai_compat";
+  const isPlan = selectedDefinition?.name === CHATGPT_PLAN_PROVIDER;
   const [compatBaseUrl, setCompatBaseUrl] = useState("");
   const [compatModel, setCompatModel] = useState("");
   const [compatOrg, setCompatOrg] = useState("");
@@ -102,8 +107,7 @@ export default function ProviderSection({
       ? ("settings.compatErrMissingModel" as const)
       : null;
   const showCompatUrlError =
-    compatUrlError !== null &&
-    (compatSubmitted || compatBaseUrl.trim() !== "");
+    compatUrlError !== null && (compatSubmitted || compatBaseUrl.trim() !== "");
 
   const handleSaveCompat = () => {
     setCompatSubmitted(true);
@@ -239,16 +243,9 @@ export default function ProviderSection({
         </select>
       </div>
 
-      {selectedDefinition?.name === "openai" &&
-        store.chatgptOAuth?.connected && (
-          <p className="nex-optin-notice" role="status">
-            {t("settings.chatgptOAuthProviderNote")}
-          </p>
-        )}
-
-      {selectedDefinition && isCliAdapterProvider(selectedDefinition.name) && (
-        <p className="nex-optin-notice" role="note">
-          {t("settings.cliAdapterProviderNote")}
+      {isPlan && store.chatgptOAuth?.connected && (
+        <p className="nex-optin-notice" role="status">
+          {t("settings.chatgptOAuthProviderNote")}
         </p>
       )}
 
@@ -373,7 +370,11 @@ export default function ProviderSection({
         <select
           id="model-select"
           className="nex-select"
-          value={customActive ? "__custom__" : (effectiveModel ?? "")}
+          value={
+            !isPlan && customActive
+              ? "__custom__"
+              : (effectiveModel ?? selectedModels[0] ?? "")
+          }
           disabled={selectedModels.length === 0}
           onChange={(event) => onModelSelect(event.target.value)}
         >
@@ -386,14 +387,18 @@ export default function ProviderSection({
           )}
           {selectedModels.map((model) => (
             <option key={model} value={model}>
-              {model}
+              {(isPlan &&
+                store.chatgptOAuth?.models?.find((item) => item.slug === model)
+                  ?.display_name) ||
+                model}
             </option>
           ))}
-          {selectedModels.length > 0 && (
+          {!isPlan && selectedModels.length > 0 && (
             <option value="__custom__">{t("settings.customOpt")}</option>
           )}
         </select>
-        {selectedDefinition &&
+        {!isPlan &&
+          selectedDefinition &&
           store.refreshModelMetadata &&
           !(activeModelId && activeCapabilities) && (
             <div className="nex-capabilities-actions">
@@ -409,7 +414,7 @@ export default function ProviderSection({
           )}
       </div>
 
-      {customActive && selectedModels.length > 0 && (
+      {!isPlan && customActive && selectedModels.length > 0 && (
         <div className="nex-settings-field">
           <label className="nex-settings-label" htmlFor="model-custom">
             {t("settings.customModelLabel")}
@@ -444,7 +449,7 @@ export default function ProviderSection({
               <SettingSourceBadge
                 entry={resolvedEntries?.["provider.capability_overrides"]}
               />
-              {store.refreshModelMetadata && (
+              {!isPlan && store.refreshModelMetadata && (
                 <Button
                   variant="quiet"
                   onClick={() =>

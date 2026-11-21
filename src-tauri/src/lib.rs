@@ -81,8 +81,6 @@ pub fn run() {
             commands::providers::set_model_capability_override,
             commands::providers::clear_model_capability_override,
             commands::providers::refresh_provider_model_metadata,
-            commands::providers::detect_cli_adapters,
-            commands::providers::set_cli_adapter_enabled,
             commands::credentials::add_provider_credential,
             commands::credentials::update_provider_credential,
             commands::credentials::remove_provider_credential,

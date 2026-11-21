@@ -627,6 +627,8 @@ impl From<ChatGptOAuthError> for CommandError {
             | ChatGptOAuthError::TokenRefreshFailed
             | ChatGptOAuthError::ResponseTooLarge
             | ChatGptOAuthError::NotConnected
+            | ChatGptOAuthError::OtherInstance
+            | ChatGptOAuthError::RevocationUnconfirmed
             | ChatGptOAuthError::Cancelled => Self::new(ErrorKind::Request, err.to_string()),
         }
     }

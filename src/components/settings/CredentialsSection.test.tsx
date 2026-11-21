@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocaleProvider } from "../../lib/useLocale";
@@ -23,19 +23,9 @@ function makeStore(overrides: Partial<ProvidersStore> = {}): ProvidersStore {
       },
       {
         supported: {
-          name: "cli_codex",
-          display_name: "Codex CLI",
-          models: ["codex-cli-default"],
-        },
-        configured: false,
-        credentialed: false,
-        available: false,
-      },
-      {
-        supported: {
-          name: "cli_claude",
-          display_name: "Claude CLI",
-          models: ["claude-cli-default"],
+          name: "chatgpt_subscription",
+          display_name: "ChatGPT subscription",
+          models: ["gpt-6.2-sol"],
         },
         configured: false,
         credentialed: false,
@@ -65,38 +55,19 @@ function makeStore(overrides: Partial<ProvidersStore> = {}): ProvidersStore {
       expires_at: null,
       connected_at: null,
       auth_mode: "none",
+      problem: null,
+      models: [],
     },
     chatgptOAuthWorking: false,
     startChatGptOAuth: vi.fn(async () => true),
     refreshChatGptOAuth: vi.fn(async () => true),
     disconnectChatGptOAuth: vi.fn(async () => {}),
-    cliAdapters: [
-      {
-        id: "codex",
-        provider_name: "cli_codex",
-        display_name: "Codex CLI",
-        installed: true,
-        version: "codex 0.50.0",
-        enabled: false,
-      },
-      {
-        id: "claude",
-        provider_name: "cli_claude",
-        display_name: "Claude CLI",
-        installed: false,
-        version: null,
-        enabled: false,
-      },
-    ],
-    cliAdaptersLoading: false,
-    refreshCliAdapters: vi.fn(async () => {}),
-    toggleCliAdapter: vi.fn(async () => true),
     ...overrides,
   };
 }
 
-describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & External CLI Adapters", () => {
-  it("gates ChatGPT OAuth sign-in behind explicit experimental/ToS acknowledgment and excludes CLI adapters from API-key inputs", async () => {
+describe("CredentialsSection & ProviderSection — ChatGPT subscription", () => {
+  it("gates ChatGPT OAuth sign-in behind explicit experimental/ToS acknowledgment and gives the subscription no API-key input", () => {
     const store = makeStore();
     render(
       <LocaleProvider>
@@ -110,15 +81,10 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
       </LocaleProvider>
     );
 
-    // OpenAI API key input exists, but external CLI adapters never render API key inputs.
     expect(screen.getByLabelText("OpenAI API key")).toBeTruthy();
-    expect(screen.queryByLabelText("Codex CLI API key")).toBeNull();
-    expect(screen.queryByLabelText("Claude CLI API key")).toBeNull();
+    expect(screen.queryByLabelText("ChatGPT subscription API key")).toBeNull();
 
     // Auto-detects external CLI adapters on mount.
-    await waitFor(() => {
-      expect(store.refreshCliAdapters).toHaveBeenCalledTimes(1);
-    });
 
     // Experimental/ToS notice is shown and sign-in requires opt-in acknowledgment.
     expect(screen.getByText(/Opt-in experimental feature/i)).toBeTruthy();
@@ -127,11 +93,8 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
         name: "ChatGPT Plus / Pro OAuth (Experimental)",
       })
     ).toBeTruthy();
-    expect(
-      screen.getByRole("region", { name: "External CLI adapters (Opt-in)" })
-    ).toBeTruthy();
     const signInBtn = screen.getByRole("button", {
-      name: "Sign in with ChatGPT (OAuth)",
+      name: "Continue with ChatGPT",
     }) as HTMLButtonElement;
     expect(signInBtn.disabled).toBe(true);
 
@@ -162,20 +125,16 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
     expect(statusNode.textContent).toBe("Waiting for browser\u2026");
   });
 
-  it("renders connected ChatGPT OAuth controls (refresh + disconnect), hides API-key Disconnect when only OAuth is connected, and toggles CLI adapters", () => {
-    const base = makeStore();
+  it("renders connected ChatGPT OAuth controls independently of API keys", () => {
     const store = makeStore({
-      providers: base.providers.map((entry) =>
-        entry.supported.name === "openai"
-          ? { ...entry, configured: true, credentialed: false, available: true }
-          : entry
-      ),
       chatgptOAuth: {
         connected: true,
         has_refresh_token: true,
         expires_at: 1_900_000_000,
         connected_at: 1_899_996_400,
         auth_mode: "oauth",
+        problem: null,
+        models: [],
       },
     });
     render(
@@ -190,9 +149,6 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
       </LocaleProvider>
     );
 
-    // OpenAI row shows Connected via OAuth, but does not expose the API-key Disconnect button
-    // when no API key is stored in the keyring (credentialed === false).
-    expect(screen.getByText("Connected")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
 
     expect(screen.getByText("OAuth connected")).toBeTruthy();
@@ -201,21 +157,56 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
 
     fireEvent.click(screen.getByRole("button", { name: "Disconnect OAuth" }));
     expect(store.disconnectChatGptOAuth).toHaveBeenCalledTimes(1);
-
-    // Installed codex adapter can be enabled; not-detected claude adapter cannot.
-    expect(screen.getByText("codex 0.50.0")).toBeTruthy();
-    const enableBtns = screen.getAllByRole("button", {
-      name: "Enable",
-    }) as HTMLButtonElement[];
-    expect(enableBtns).toHaveLength(2);
-    expect(enableBtns[0]!.disabled).toBe(false);
-    expect(enableBtns[1]!.disabled).toBe(true);
-
-    fireEvent.click(enableBtns[0]!);
-    expect(store.toggleCliAdapter).toHaveBeenCalledWith("codex", true);
   });
 
-  it("shows honest status notices in ProviderSection for active ChatGPT OAuth and external CLI adapters", () => {
+  it("keeps a visible cleanup action when stored credentials cannot be used", () => {
+    const base = makeStore();
+    const store = makeStore({
+      chatgptOAuth: { ...base.chatgptOAuth!, problem: "cleanup_required" },
+    });
+    render(
+      <LocaleProvider>
+        <CredentialsSection
+          store={store}
+          draftKeys={{}}
+          onDraftChange={vi.fn()}
+          onConnect={vi.fn()}
+          onDisconnect={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+    expect(
+      screen.queryByRole("button", { name: "Continue with ChatGPT" })
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Retry cleanup" }));
+    expect(store.disconnectChatGptOAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("can recheck a session in use without offering destructive cleanup", () => {
+    const base = makeStore();
+    const store = makeStore({
+      chatgptOAuth: { ...base.chatgptOAuth!, problem: "other_instance" },
+    });
+    render(
+      <LocaleProvider>
+        <CredentialsSection
+          store={store}
+          draftKeys={{}}
+          onDraftChange={vi.fn()}
+          onConnect={vi.fn()}
+          onDisconnect={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+    expect(
+      screen.queryByRole("button", { name: "Continue with ChatGPT" })
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry cleanup" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    expect(store.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("identifies plan usage when the ChatGPT subscription provider is selected", () => {
     const store = makeStore({
       chatgptOAuth: {
         connected: true,
@@ -223,14 +214,16 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
         expires_at: 1_900_000_000,
         connected_at: 1_899_996_400,
         auth_mode: "oauth",
+        problem: null,
+        models: [],
       },
     });
 
-    const { rerender } = render(
+    render(
       <LocaleProvider>
         <ProviderSection
           store={store}
-          selectedDefinition={store.providers[0]!.supported}
+          selectedDefinition={store.providers[1]!.supported}
           selectedModels={["gpt-5.6-terra"]}
           effectiveModel="gpt-5.6-terra"
           customActive={false}
@@ -243,29 +236,6 @@ describe("CredentialsSection & ProviderSection — S11-11 Opt-in OAuth & Externa
       </LocaleProvider>
     );
 
-    expect(
-      screen.getByText(/authenticated via opt-in ChatGPT Plus\/Pro OAuth/i)
-    ).toBeTruthy();
-
-    rerender(
-      <LocaleProvider>
-        <ProviderSection
-          store={store}
-          selectedDefinition={store.providers[1]!.supported}
-          selectedModels={["codex-cli-default"]}
-          effectiveModel="codex-cli-default"
-          customActive={false}
-          customValue=""
-          onProviderChange={vi.fn()}
-          onModelSelect={vi.fn()}
-          onCustomDraftChange={vi.fn()}
-          onCustomCommit={vi.fn()}
-        />
-      </LocaleProvider>
-    );
-
-    expect(
-      screen.getByText(/officially installed external CLI in a clean isolated subprocess/i)
-    ).toBeTruthy();
+    expect(screen.getByText(/use your ChatGPT plan allowance/)).toBeTruthy();
   });
 });

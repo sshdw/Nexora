@@ -201,16 +201,14 @@ pub(crate) fn record(db: &Database, kind: &str) {
 /// Destination host for a supported provider name (static map over the
 /// hardcoded endpoints; the user-configured endpoint has no fixed host).
 fn endpoint_destination(name: &str) -> &'static str {
-    if name == openai::PROVIDER_NAME {
+    if name == openai::PROVIDER_NAME
+        || name == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME
+    {
         "api.openai.com"
     } else if name == anthropic::PROVIDER_NAME {
         "api.anthropic.com"
     } else if name == gemini::PROVIDER_NAME {
         "generativelanguage.googleapis.com"
-    } else if name == crate::infrastructure::providers::cli_adapter::CLI_CODEX_NAME
-        || name == crate::infrastructure::providers::cli_adapter::CLI_CLAUDE_NAME
-    {
-        "via local CLI → OpenAI/Anthropic cloud"
     } else if let Some(preset) =
         crate::infrastructure::providers::catalog::openai::find_preset(name)
     {

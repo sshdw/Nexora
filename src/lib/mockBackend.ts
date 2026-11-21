@@ -167,14 +167,9 @@ const supported = [
     models: [],
   },
   {
-    name: "cli_codex",
-    display_name: "Codex CLI",
-    models: ["codex-cli-default"],
-  },
-  {
-    name: "cli_claude",
-    display_name: "Claude CLI",
-    models: ["claude-cli-default"],
+    name: "chatgpt_subscription",
+    display_name: "ChatGPT subscription",
+    models: [],
   },
 ];
 const MOCK_DEFAULT_PROVIDER = supported[2].name;
@@ -935,6 +930,11 @@ async function invoke(
           settings.get("__mock_chatgpt_oauth_connected") === "true"
             ? now() - 60
             : null,
+        problem: null,
+        models:
+          settings.get("__mock_chatgpt_oauth_connected") === "true"
+            ? [{ slug: "gpt-6.2-sol", display_name: "GPT-6.2 Sol" }]
+            : [],
         auth_mode:
           settings.get("__mock_chatgpt_oauth_connected") === "true"
             ? "oauth"
@@ -942,11 +942,11 @@ async function invoke(
       };
     case "chatgpt_oauth_start": {
       settings.set("__mock_chatgpt_oauth_connected", "true");
-      if (!providers.some((p) => p.name === "openai")) {
+      if (!providers.some((p) => p.name === "chatgpt_subscription")) {
         providers.push({
           id: nextProviderId++,
-          name: "openai",
-          display_name: "OpenAI",
+          name: "chatgpt_subscription",
+          display_name: "ChatGPT subscription",
         });
       }
       return {
@@ -954,9 +954,11 @@ async function invoke(
         has_refresh_token: true,
         expires_at: now() + 3600,
         connected_at: now(),
+        problem: null,
+        models: [{ slug: "gpt-6.2-sol", display_name: "GPT-6.2 Sol" }],
         auth_mode: "oauth",
       };
-     }
+    }
     case "chatgpt_oauth_refresh": {
       if (settings.get("__mock_chatgpt_oauth_connected") !== "true") {
         throw {
@@ -969,57 +971,14 @@ async function invoke(
         has_refresh_token: true,
         expires_at: now() + 3600,
         connected_at: now() - 60,
+        problem: null,
+        models: [{ slug: "gpt-6.2-sol", display_name: "GPT-6.2 Sol" }],
         auth_mode: "oauth",
       };
     }
     case "chatgpt_oauth_disconnect":
       settings.delete("__mock_chatgpt_oauth_connected");
       return null;
-    case "detect_cli_adapters":
-      return [
-        {
-          id: "codex",
-          provider_name: "cli_codex",
-          display_name: "Codex CLI",
-          installed: true,
-          version: "codex 0.50.0",
-          enabled: providers.some((p) => p.name === "cli_codex"),
-        },
-        {
-          id: "claude",
-          provider_name: "cli_claude",
-          display_name: "Claude CLI",
-          installed: true,
-          version: "claude 1.0.0",
-          enabled: providers.some((p) => p.name === "cli_claude"),
-        },
-      ];
-    case "set_cli_adapter_enabled": {
-      const adapterId = String(args.adapterId ?? args.adapter_id ?? "");
-      const enabled = Boolean(args.enabled);
-      const map: Record<string, { name: string; display_name: string }> = {
-        codex: { name: "cli_codex", display_name: "Codex CLI" },
-        claude: { name: "cli_claude", display_name: "Claude CLI" },
-      };
-      const entry = map[adapterId];
-      if (!entry) {
-        throw {
-          kind: "invalidInput",
-          message: "adapter_id must be 'codex' or 'claude'",
-        };
-      }
-      const existingIdx = providers.findIndex((p) => p.name === entry.name);
-      if (enabled && existingIdx < 0) {
-        providers.push({
-          id: nextProviderId++,
-          name: entry.name,
-          display_name: entry.display_name,
-        });
-      } else if (!enabled && existingIdx >= 0) {
-        providers.splice(existingIdx, 1);
-      }
-      return enabled;
-    }
     case "get_compat_config":
       return {
         base_url: settings.get("openai_compat.base_url") ?? "",
@@ -1039,27 +998,53 @@ async function invoke(
       };
       const rawUrl = (cfg.base_url ?? "").trim();
       const rawModel = (cfg.model ?? "").trim();
-      if (!rawUrl) throw { kind: "invalidInput", message: "no base URL is configured" };
+      if (!rawUrl)
+        throw { kind: "invalidInput", message: "no base URL is configured" };
       let parsed: URL;
       try {
         parsed = new URL(rawUrl);
       } catch {
-        throw { kind: "invalidInput", message: "the base URL must use https (http is allowed only for localhost)" };
+        throw {
+          kind: "invalidInput",
+          message:
+            "the base URL must use https (http is allowed only for localhost)",
+        };
       }
       if (parsed.username || parsed.password) {
-        throw { kind: "invalidInput", message: "the base URL must not embed credentials; the API key belongs in the OS keyring" };
+        throw {
+          kind: "invalidInput",
+          message:
+            "the base URL must not embed credentials; the API key belongs in the OS keyring",
+        };
       }
-      const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname.toLowerCase());
-      if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocal)) {
-        throw { kind: "invalidInput", message: "the base URL must use https (http is allowed only for localhost)" };
+      const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(
+        parsed.hostname.toLowerCase()
+      );
+      if (
+        parsed.protocol !== "https:" &&
+        !(parsed.protocol === "http:" && isLocal)
+      ) {
+        throw {
+          kind: "invalidInput",
+          message:
+            "the base URL must use https (http is allowed only for localhost)",
+        };
       }
-      if (!rawModel) throw { kind: "invalidInput", message: "no model is configured" };
+      if (!rawModel)
+        throw { kind: "invalidInput", message: "no model is configured" };
       settings.set("openai_compat.base_url", rawUrl);
       settings.set("openai_compat.model", rawModel);
-      if (cfg.organization?.trim()) settings.set("openai_compat.organization", cfg.organization.trim());
+      if (cfg.organization?.trim())
+        settings.set("openai_compat.organization", cfg.organization.trim());
       else settings.delete("openai_compat.organization");
-      settings.set("openai_compat.headers_json", JSON.stringify(cfg.headers ?? []));
-      settings.set("openai_compat.supports_tools", cfg.supports_tools === false ? "false" : "true");
+      settings.set(
+        "openai_compat.headers_json",
+        JSON.stringify(cfg.headers ?? [])
+      );
+      settings.set(
+        "openai_compat.supports_tools",
+        cfg.supports_tools === false ? "false" : "true"
+      );
       return null;
     }
     case "compat_status": {
@@ -1068,11 +1053,14 @@ async function invoke(
       let baseUrlValid = false;
       try {
         const parsed = new URL(baseUrl);
-        const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsed.hostname.toLowerCase());
+        const isLocal = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(
+          parsed.hostname.toLowerCase()
+        );
         baseUrlValid =
           !parsed.username &&
           !parsed.password &&
-          (parsed.protocol === "https:" || (parsed.protocol === "http:" && isLocal));
+          (parsed.protocol === "https:" ||
+            (parsed.protocol === "http:" && isLocal));
       } catch {
         baseUrlValid = false;
       }
@@ -1081,9 +1069,14 @@ async function invoke(
         has_base_url: baseUrl.length > 0,
         base_url_valid: baseUrlValid,
         has_model: model.length > 0,
-        has_organization: Boolean((settings.get("openai_compat.organization") ?? "").trim()),
-        header_count: JSON.parse(settings.get("openai_compat.headers_json") ?? "[]").length,
-        supports_tools: (settings.get("openai_compat.supports_tools") ?? "true") !== "false",
+        has_organization: Boolean(
+          (settings.get("openai_compat.organization") ?? "").trim()
+        ),
+        header_count: JSON.parse(
+          settings.get("openai_compat.headers_json") ?? "[]"
+        ).length,
+        supports_tools:
+          (settings.get("openai_compat.supports_tools") ?? "true") !== "false",
         has_credential: hasCredential,
         ready: baseUrlValid && model.length > 0 && hasCredential,
       };
@@ -1165,8 +1158,7 @@ async function invoke(
             ov.supported_efforts !== undefined && ov.supported_efforts !== null
               ? ov.supported_efforts
               : base.supported_efforts,
-          supports_thinking:
-            ov.supports_thinking ?? base.supports_thinking,
+          supports_thinking: ov.supports_thinking ?? base.supports_thinking,
           supports_attachments:
             ov.supports_attachments ?? base.supports_attachments,
           supports_tools: ov.supports_tools ?? base.supports_tools,
@@ -1194,7 +1186,8 @@ async function invoke(
         if (scope === "project" && !mockWorkspaceRoot) {
           throw {
             kind: "invalidInput",
-            message: "an active project workspace is required to save project settings",
+            message:
+              "an active project workspace is required to save project settings",
           };
         }
         const targetStore = scope === "project" ? projectSettings : settings;
@@ -1206,7 +1199,8 @@ async function invoke(
           delete targetMap[`${connId}::${modelId}`];
           if (scope === "project") {
             const fallback = personalMap[`${connId}::${modelId}`];
-            if (fallback) overrideMap[`${connId}::${modelId}`] = fallback as never;
+            if (fallback)
+              overrideMap[`${connId}::${modelId}`] = fallback as never;
             else delete overrideMap[`${connId}::${modelId}`];
           } else if (!projectMap[`${connId}::${modelId}`]) {
             delete overrideMap[`${connId}::${modelId}`];
@@ -1237,9 +1231,10 @@ async function invoke(
     }
     case "get_resolved_settings":
       return buildMockResolvedSettings(
-        (args.sessionOverrides ?? args.session_overrides) as
-          | Record<string, string>
-          | null
+        (args.sessionOverrides ?? args.session_overrides) as Record<
+          string,
+          string
+        > | null
       );
     case "save_scoped_setting": {
       const scope = String(args.scope ?? "personal");
@@ -1256,7 +1251,8 @@ async function invoke(
       if (scope === "project" && !mockWorkspaceRoot) {
         throw {
           kind: "invalidInput",
-          message: "an active project workspace is required to save project settings",
+          message:
+            "an active project workspace is required to save project settings",
         };
       }
       if (
@@ -1271,8 +1267,10 @@ async function invoke(
       }
       if (scope === "project") {
         const strVal = val === null || val === undefined ? null : String(val);
-        const personalAccess = settings.get("agent.access_profile") ?? "standard";
-        const personalAutonomy = settings.get("agent.autonomy") ?? "semi_autonomous";
+        const personalAccess =
+          settings.get("agent.access_profile") ?? "standard";
+        const personalAutonomy =
+          settings.get("agent.autonomy") ?? "semi_autonomous";
         if (
           key === "agent.access_profile" &&
           strVal !== null &&
@@ -1298,7 +1296,8 @@ async function invoke(
         if (key === "flags.injection" && strVal === "false") {
           throw {
             kind: "permissionDenied",
-            message: "project config cannot disable prompt-injection protection",
+            message:
+              "project config cannot disable prompt-injection protection",
           };
         }
         if (strVal === null) projectSettings.delete(key);
@@ -1543,7 +1542,13 @@ async function invoke(
     }
     // ---- Agent workspace folder (1.3.0) ----
     case "get_sandbox_status":
-      return { workspace_root: mockWorkspaceRoot, state: "unavailable", posture: "PerCommandConsent", mechanism: null, reason: "Native OS verification is unavailable in the visual mock." };
+      return {
+        workspace_root: mockWorkspaceRoot,
+        state: "unavailable",
+        posture: "PerCommandConsent",
+        mechanism: null,
+        reason: "Native OS verification is unavailable in the visual mock.",
+      };
     case "get_workspace_root":
       return mockWorkspaceRoot;
     case "set_workspace_root": {
@@ -2018,7 +2023,9 @@ async function invoke(
     }
     case "kill_subagent": {
       const runId = Number(requireArg(args, "kill_subagent", "runId"));
-      const subagentId = String(requireArg(args, "kill_subagent", "subagentId"));
+      const subagentId = String(
+        requireArg(args, "kill_subagent", "subagentId")
+      );
       const active = activeRuns.get(runId);
       if (!active)
         throw {
@@ -2719,7 +2726,9 @@ async function invoke(
     }
     case "decide_run_plan": {
       const runId = Number(requireArg(args, "decide_run_plan", "runId"));
-      const rawDecision = String(requireArg(args, "decide_run_plan", "decision"));
+      const rawDecision = String(
+        requireArg(args, "decide_run_plan", "decision")
+      );
       const normalizedDecision: PlanDecisionKind =
         rawDecision === "yes" || rawDecision === "accepted"
           ? "accepted"
@@ -2742,7 +2751,10 @@ async function invoke(
         throw { kind: "notFound", message: `no plan found for run ${runId}` };
       }
       if (plan.decision_status !== "pending") {
-        throw { kind: "invalidInput", message: "plan decision already recorded" };
+        throw {
+          kind: "invalidInput",
+          message: "plan decision already recorded",
+        };
       }
       if (normalizedDecision === "custom_reply" && !reply) {
         throw {
@@ -2773,7 +2785,8 @@ async function invoke(
       }
       const ts = now();
       plan.decision_status = nextStatus;
-      plan.decision_reply = normalizedDecision === "custom_reply" ? reply : null;
+      plan.decision_reply =
+        normalizedDecision === "custom_reply" ? reply : null;
       plan.implemented_run_id = launchedRunId;
       plan.decided_at = ts;
       const run = agentRuns.find((r) => r.id === runId);
@@ -2839,7 +2852,8 @@ async function invoke(
           ? args.freeText.trim()
           : null;
       const row = mockRunQuestions.find(
-        (q) => q.id === questionId && q.run_id === runId && q.status === "pending"
+        (q) =>
+          q.id === questionId && q.run_id === runId && q.status === "pending"
       );
       if (!row) {
         throw { kind: "notFound", message: "question is not pending" };
@@ -2868,7 +2882,10 @@ async function invoke(
       const content = String(requireArg(args, "clarify_agent_run", "content"));
       const run = agentRuns.find((r) => r.id === runId);
       if (!run) {
-        throw { kind: "notFound", message: `no active agent run with id ${runId}` };
+        throw {
+          kind: "notFound",
+          message: `no active agent run with id ${runId}`,
+        };
       }
       emitAgentEvent({
         type: "governance",
@@ -2885,8 +2902,12 @@ async function invoke(
       const conversationId = Number(
         requireArg(args, "enqueue_work_item", "conversationId")
       );
-      const content = String(requireArg(args, "enqueue_work_item", "content")).trim();
-      const provider = String(requireArg(args, "enqueue_work_item", "provider"));
+      const content = String(
+        requireArg(args, "enqueue_work_item", "content")
+      ).trim();
+      const provider = String(
+        requireArg(args, "enqueue_work_item", "provider")
+      );
       const model = String(requireArg(args, "enqueue_work_item", "model"));
       const effort = typeof args.effort === "string" ? args.effort : null;
       const existing = mockWorkQueue.filter(
@@ -2914,15 +2935,21 @@ async function invoke(
         requireArg(args, "list_work_queue", "conversationId")
       );
       return mockWorkQueue
-        .filter((w) => w.conversation_id === conversationId && w.status === "queued")
+        .filter(
+          (w) => w.conversation_id === conversationId && w.status === "queued"
+        )
         .sort((a, b) => a.position - b.position || a.id - b.id);
     }
     case "update_work_queue_item": {
-      const itemId = Number(requireArg(args, "update_work_queue_item", "itemId"));
+      const itemId = Number(
+        requireArg(args, "update_work_queue_item", "itemId")
+      );
       const content = String(
         requireArg(args, "update_work_queue_item", "content")
       ).trim();
-      const item = mockWorkQueue.find((w) => w.id === itemId && w.status === "queued");
+      const item = mockWorkQueue.find(
+        (w) => w.id === itemId && w.status === "queued"
+      );
       if (!item) {
         throw { kind: "notFound", message: "queued item not found" };
       }
@@ -2953,8 +2980,12 @@ async function invoke(
       return queued.sort((a, b) => a.position - b.position || a.id - b.id);
     }
     case "cancel_work_queue_item": {
-      const itemId = Number(requireArg(args, "cancel_work_queue_item", "itemId"));
-      const item = mockWorkQueue.find((w) => w.id === itemId && w.status === "queued");
+      const itemId = Number(
+        requireArg(args, "cancel_work_queue_item", "itemId")
+      );
+      const item = mockWorkQueue.find(
+        (w) => w.id === itemId && w.status === "queued"
+      );
       if (!item) {
         throw { kind: "notFound", message: "queued item not found" };
       }
@@ -2967,7 +2998,9 @@ async function invoke(
         requireArg(args, "run_next_work_item", "conversationId")
       );
       const next = mockWorkQueue
-        .filter((w) => w.conversation_id === conversationId && w.status === "queued")
+        .filter(
+          (w) => w.conversation_id === conversationId && w.status === "queued"
+        )
         .sort((a, b) => a.position - b.position || a.id - b.id)[0];
       if (!next) return null;
       next.status = "completed";
@@ -3154,8 +3187,7 @@ async function invoke(
         text
           .replace(/sk-(?:ant-|proj-)?[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
           .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [REDACTED]");
-      const shouldFail =
-        /\bfail\b|\bexit\s+1\b|\berr\b/i.test(cmd);
+      const shouldFail = /\bfail\b|\bexit\s+1\b|\berr\b/i.test(cmd);
       const line1 = scrubMockSecrets(`[${cwd}] $ ${cmd}\n`);
       const line2 = shouldFail
         ? "stderr: mock non-zero exit status 1\n"
@@ -3252,7 +3284,7 @@ async function invoke(
         explanation:
           "Mock diagnosis: the command returned a non-zero exit status." +
           (out ? " Review the command path, arguments, and stderr above." : ""),
-        suggested_fix: "echo \"fixed\" && npm test",
+        suggested_fix: 'echo "fixed" && npm test',
         truncated_input: false,
       };
     }
@@ -3425,7 +3457,8 @@ async function invoke(
         status: "UU",
         ours: "local version\n",
         theirs: "incoming version\n",
-        working: "<<<<<<< HEAD\nlocal version\n=======\nincoming version\n>>>>>>> origin/main\n",
+        working:
+          "<<<<<<< HEAD\nlocal version\n=======\nincoming version\n>>>>>>> origin/main\n",
         truncated: false,
         binary: false,
       };
@@ -3440,7 +3473,8 @@ async function invoke(
         diff: "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1 +1 @@\n-old\n+new\n",
         truncated: false,
         redacted: false,
-        prompt: "/review\n\nReview the current working-tree changes (1 file(s)).\n",
+        prompt:
+          "/review\n\nReview the current working-tree changes (1 file(s)).\n",
       };
     default:
       fail(`Mock backend: unhandled command “${command}”.`);

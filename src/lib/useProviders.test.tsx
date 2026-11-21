@@ -59,6 +59,8 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       expires_at: null as number | null,
       connected_at: null as number | null,
       auth_mode: "none",
+      problem: null,
+      models: [],
     },
     refreshedByConnection: new Map<
       string,
@@ -126,32 +128,10 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
             expires_at: null,
             connected_at: null,
             auth_mode: "none",
+            problem: null,
+            models: [],
           };
           return null;
-        case "set_cli_adapter_enabled": {
-          const { adapterId, enabled } = args as {
-            adapterId: "codex" | "claude";
-            enabled: boolean;
-          };
-          const providerName =
-            adapterId === "codex" ? "cli_codex" : "cli_claude";
-          const displayName =
-            adapterId === "codex" ? "Codex CLI" : "Claude CLI";
-          if (enabled) {
-            if (!state.configured.some((p) => p.name === providerName)) {
-              state.configured.push({
-                id: state.configured.length + 20,
-                name: providerName,
-                display_name: displayName,
-              });
-            }
-          } else {
-            state.configured = state.configured.filter(
-              (p) => p.name !== providerName
-            );
-          }
-          return enabled;
-        }
         case "list_model_capabilities":
           return JSON.parse(JSON.stringify(state.capabilities));
         case "get_model_capabilities": {
@@ -161,8 +141,7 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           };
           return (
             state.capabilities.find(
-              (c) =>
-                c.connection_id === connectionId && c.model_id === modelId
+              (c) => c.connection_id === connectionId && c.model_id === modelId
             ) ?? {
               connection_id: connectionId,
               model_id: modelId,
@@ -186,21 +165,24 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           return {
             base_url: state.settings.get("openai_compat.base_url") ?? "",
             model: state.settings.get("openai_compat.model") ?? "",
-            organization: state.settings.get("openai_compat.organization") ?? null,
+            organization:
+              state.settings.get("openai_compat.organization") ?? null,
             headers: [],
             supports_tools:
               (state.settings.get("openai_compat.supports_tools") ?? "true") !==
               "false",
           };
         case "set_compat_config": {
-          const cfg = (args as {
-            config: {
-              base_url: string;
-              model: string;
-              organization: string | null;
-              supports_tools: boolean;
-            };
-          }).config;
+          const cfg = (
+            args as {
+              config: {
+                base_url: string;
+                model: string;
+                organization: string | null;
+                supports_tools: boolean;
+              };
+            }
+          ).config;
           state.settings.set("openai_compat.base_url", cfg.base_url);
           state.settings.set("openai_compat.model", cfg.model);
           if (cfg.organization) {
@@ -272,6 +254,8 @@ beforeEach(() => {
     expires_at: null,
     connected_at: null,
     auth_mode: "none",
+    problem: null,
+    models: [],
   };
   state.refreshedByConnection = new Map();
 });
@@ -633,109 +617,72 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
     expect(result.current.selectedProvider).toBe("openai");
   });
 
-  it("disconnect on openai when both API key and ChatGPT OAuth are connected removes only the API key and preserves OAuth, provider row, and selection", async () => {
+  it("disconnects ChatGPT without removing the OpenAI API key, row, or selection", async () => {
     state.chatgptOAuth = {
       connected: true,
       has_refresh_token: true,
       expires_at: 1_900_000_000,
       connected_at: 1_899_996_400,
       auth_mode: "oauth",
+      problem: null,
+      models: [],
     };
     const { result } = renderHook(() => useProviders());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.providers[0]).toMatchObject({
-      configured: true,
-      credentialed: true,
-      available: true,
-    });
-    expect(result.current.chatgptOAuth?.connected).toBe(true);
     mockInvoke.mockClear();
 
     await act(async () => {
-      await result.current.disconnect("openai");
+      await result.current.disconnectChatGptOAuth?.();
     });
 
-    expect(mockInvoke).toHaveBeenCalledWith("remove_provider_credential", {
-      provider: "openai",
-    });
-    expect(mockInvoke).not.toHaveBeenCalledWith("chatgpt_oauth_disconnect");
+    expect(mockInvoke).toHaveBeenCalledWith("chatgpt_oauth_disconnect");
+    expect(
+      mockInvoke.mock.calls.some(
+        ([command]) => command === "remove_provider_credential"
+      )
+    ).toBe(false);
     expect(
       mockInvoke.mock.calls.some(([command]) => command === "remove_provider")
     ).toBe(false);
-    expect(
-      mockInvoke.mock.calls.some(([command]) => command === "set_setting")
-    ).toBe(false);
-
     expect(result.current.selectedProvider).toBe("openai");
-    expect(result.current.selectedModel).toBe("gpt-5.2");
-    expect(result.current.chatgptOAuth?.connected).toBe(true);
-    expect(result.current.providers[0]).toMatchObject({
-      configured: true,
-      credentialed: false,
-      available: true,
-    });
+    expect(result.current.providers[0]).toMatchObject({ available: true });
+    expect(result.current.chatgptOAuth?.connected).toBe(false);
   });
 
-  it("toggleCliAdapter clears selection only after set_cli_adapter_enabled succeeds", async () => {
-    state.supported.push({
-      name: "cli_codex",
-      display_name: "Codex CLI",
-      models: ["codex-cli-default"],
-    });
-    state.configured.push({
-      id: 11,
-      name: "cli_codex",
-      display_name: "Codex CLI",
-    });
-    state.settings.set("provider.selected", "cli_codex");
-    state.settings.set("provider.model", "codex-cli-default");
-
+  it("keeps cleanup available when connection status cannot be read", async () => {
+    failNext.command = "chatgpt_oauth_status";
     const { result } = renderHook(() => useProviders());
     await waitFor(() => expect(result.current.loading).toBe(false));
-    expect(result.current.selectedProvider).toBe("cli_codex");
-    mockInvoke.mockClear();
-
-    // 1. When set_cli_adapter_enabled fails, selection must not be cleared.
-    failNext.command = "set_cli_adapter_enabled";
-    let ok = true;
-    await act(async () => {
-      ok = (await result.current.toggleCliAdapter?.("codex", false)) ?? true;
+    expect(result.current.chatgptOAuth).toMatchObject({
+      connected: false,
+      problem: "cleanup_required" as const,
     });
-    expect(ok).toBe(false);
-    expect(
-      mockInvoke.mock.calls.some(([command]) => command === "set_setting")
-    ).toBe(false);
-    expect(result.current.selectedProvider).toBe("cli_codex");
-
-    // 2. When set_cli_adapter_enabled succeeds, selection is cleared after the IPC call.
-    mockInvoke.mockClear();
-    await act(async () => {
-      ok = (await result.current.toggleCliAdapter?.("codex", false)) ?? false;
-    });
-    expect(ok).toBe(true);
-    const callOrder = mockInvoke.mock.calls.map(([cmd]) => cmd);
-    const toggleIdx = callOrder.indexOf("set_cli_adapter_enabled");
-    const clearIdx = callOrder.indexOf("set_setting");
-    expect(toggleIdx).toBeGreaterThanOrEqual(0);
-    expect(clearIdx).toBeGreaterThan(toggleIdx);
-    expect(result.current.selectedProvider).toBeNull();
+    expect(result.current.providers[0]).toMatchObject({ available: true });
   });
 });
 
 describe("useProviders — OpenAI-compatible validation & config", () => {
   it("enforces strict HTTPS except explicit localhost and rejects embedded credentials", () => {
-    expect(validateCompatBaseUrl("https://api.deepseek.com/v1/chat/completions")).toBeNull();
-    expect(validateCompatBaseUrl("http://localhost:11434/v1/chat/completions")).toBeNull();
-    expect(validateCompatBaseUrl("http://127.0.0.1:8080/v1/chat/completions")).toBeNull();
-    expect(validateCompatBaseUrl("http://[::1]:8080/v1/chat/completions")).toBeNull();
+    expect(
+      validateCompatBaseUrl("https://api.deepseek.com/v1/chat/completions")
+    ).toBeNull();
+    expect(
+      validateCompatBaseUrl("http://localhost:11434/v1/chat/completions")
+    ).toBeNull();
+    expect(
+      validateCompatBaseUrl("http://127.0.0.1:8080/v1/chat/completions")
+    ).toBeNull();
+    expect(
+      validateCompatBaseUrl("http://[::1]:8080/v1/chat/completions")
+    ).toBeNull();
 
     expect(validateCompatBaseUrl("")).toBe("settings.compatErrMissingUrl");
     expect(validateCompatBaseUrl("http://remote.example.com/v1")).toBe(
       "settings.compatErrInsecureHttp"
     );
-    expect(validateCompatBaseUrl("https://user:pass@remote.example.com/v1")).toBe(
-      "settings.compatErrCredentials"
-    );
+    expect(
+      validateCompatBaseUrl("https://user:pass@remote.example.com/v1")
+    ).toBe("settings.compatErrCredentials");
     expect(validateCompatBaseUrl("ftp://remote.example.com/v1")).toBe(
       "settings.compatErrInvalidUrl"
     );
@@ -759,13 +706,14 @@ describe("useProviders — OpenAI-compatible validation & config", () => {
 
     let saved = false;
     await act(async () => {
-      saved = (await result.current.saveCompatConfig?.({
-        base_url: "https://proxy.example.com/v1/chat/completions",
-        model: "custom-deepseek-v4",
-        organization: "org-1",
-        headers: [],
-        supports_tools: true,
-      })) ?? false;
+      saved =
+        (await result.current.saveCompatConfig?.({
+          base_url: "https://proxy.example.com/v1/chat/completions",
+          model: "custom-deepseek-v4",
+          organization: "org-1",
+          headers: [],
+          supports_tools: true,
+        })) ?? false;
     });
 
     expect(saved).toBe(true);

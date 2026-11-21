@@ -71,6 +71,11 @@ impl CredentialStore {
     /// unavailable, or [`CredentialError::Invalid`] if the credential cannot be
     /// stored as supplied.
     pub(crate) fn add(provider: &str, credential: &str) -> Result<(), CredentialError> {
+        if super::is_retired_cli_provider(provider)
+            || provider.trim() == super::chatgpt_plan::PROVIDER_NAME
+        {
+            return Err(CredentialError::Invalid);
+        }
         add_with(&KeyringBackend, provider, credential)
     }
 
@@ -99,6 +104,11 @@ impl CredentialStore {
     /// unavailable, or [`CredentialError::Invalid`] if the credential cannot be
     /// stored as supplied.
     pub(crate) fn update(provider: &str, credential: &str) -> Result<(), CredentialError> {
+        if super::is_retired_cli_provider(provider)
+            || provider.trim() == super::chatgpt_plan::PROVIDER_NAME
+        {
+            return Err(CredentialError::Invalid);
+        }
         update_with(&KeyringBackend, provider, credential)
     }
 
@@ -295,56 +305,34 @@ fn classify(err: &keyring::Error) -> CredentialError {
 }
 
 /// Resolve credential existence for execution (including opt-in `ChatGPT` OAuth
-/// for `openai` and credential-free external CLI adapters).
+/// for the separate subscription provider).
 fn provider_credential_exists_with(
     api_backend: &dyn CredentialBackend,
     oauth_backend: &dyn CredentialBackend,
     provider: &str,
 ) -> Result<bool, CredentialError> {
-    if super::cli_adapter::is_cli_adapter_provider(provider) {
-        return Ok(true);
+    if super::is_retired_cli_provider(provider) {
+        return Ok(false);
     }
-    if provider == super::openai::PROVIDER_NAME {
-        match super::chatgpt_oauth::ChatGptOAuthStore::is_connected_with(oauth_backend) {
-            Ok(true) => return Ok(true),
-            Ok(false) => {}
-            Err(_) => {
-                if exists_with_dyn(api_backend, provider).unwrap_or(false) {
-                    return Ok(true);
-                }
-                return Err(CredentialError::StorageUnavailable);
-            }
-        }
+    if provider == super::chatgpt_plan::PROVIDER_NAME {
+        return super::chatgpt_oauth::ChatGptOAuthStore::is_connected_with(oauth_backend)
+            .map_err(|_| CredentialError::StorageUnavailable);
     }
     exists_with_dyn(api_backend, provider)
 }
 
-/// Resolve the active credential for execution:
-/// - External CLI adapters (`cli_codex`, `cli_claude`) never receive Nexora
-///   keyring secrets and resolve to an empty placeholder.
-/// - `openai` prefers opt-in `ChatGPT` Plus/Pro OAuth (transparently refreshing
-///   expired tokens and storing rotated tokens in OS keyring) when connected,
-///   falling back to the stored `OpenAI` API key otherwise.
+/// Generic API keys and subscription credentials use independent namespaces.
 fn resolve_provider_credential_with(
     api_backend: &dyn CredentialBackend,
     oauth_backend: &dyn CredentialBackend,
-    oauth_config: &super::chatgpt_oauth::ChatGptOAuthConfig,
     provider: &str,
-    timeout: std::time::Duration,
 ) -> Result<Option<String>, CredentialError> {
-    if super::cli_adapter::is_cli_adapter_provider(provider) {
-        return Ok(Some(String::new()));
+    if super::is_retired_cli_provider(provider) {
+        return Ok(None);
     }
-    if provider == super::openai::PROVIDER_NAME {
-        match super::chatgpt_oauth::resolve_access_token_with(oauth_backend, oauth_config, timeout)
-        {
-            Ok(Some(access_token)) => return Ok(Some(access_token)),
-            Ok(None) => {}
-            Err(super::chatgpt_oauth::ChatGptOAuthError::KeyringUnavailable) => {
-                return Err(CredentialError::StorageUnavailable);
-            }
-            Err(_) => return Err(CredentialError::Invalid),
-        }
+    if provider == super::chatgpt_plan::PROVIDER_NAME {
+        return super::chatgpt_oauth::session_reference_with(oauth_backend)
+            .map_err(|_| CredentialError::StorageUnavailable);
     }
     read_with_dyn(api_backend, provider)
 }
@@ -373,17 +361,19 @@ fn exists_with_dyn(
 
 impl CredentialSource for CredentialStore {
     fn exists(&self, provider: &str) -> Result<bool, CredentialError> {
+        if provider == super::chatgpt_plan::PROVIDER_NAME {
+            super::chatgpt_oauth::ensure_desktop_lease()
+                .map_err(|_| CredentialError::StorageUnavailable)?;
+        }
         provider_credential_exists_with(&KeyringBackend, &KeyringBackend, provider)
     }
 
     fn read(&self, provider: &str) -> Result<Option<String>, CredentialError> {
-        resolve_provider_credential_with(
-            &KeyringBackend,
-            &KeyringBackend,
-            &super::chatgpt_oauth::ChatGptOAuthConfig::default(),
-            provider,
-            super::chatgpt_oauth::DEFAULT_OAUTH_HTTP_TIMEOUT,
-        )
+        if provider == super::chatgpt_plan::PROVIDER_NAME {
+            super::chatgpt_oauth::ensure_desktop_lease()
+                .map_err(|_| CredentialError::StorageUnavailable)?;
+        }
+        resolve_provider_credential_with(&KeyringBackend, &KeyringBackend, provider)
     }
 }
 
@@ -758,110 +748,54 @@ mod tests {
     }
 
     #[test]
-    fn openai_credential_resolution_prefers_opt_in_chatgpt_oauth_and_falls_back_to_api_key() {
+    fn subscription_and_api_keys_resolve_independently() {
         use crate::infrastructure::providers::chatgpt_oauth::{
-            ChatGptOAuthConfig, ChatGptOAuthStore, StoredChatGptOAuthTokens,
+            fixture_plan_identity, ChatGptOAuthStore, StoredChatGptOAuthTokens,
         };
-        use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
+        use crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME as PLAN;
         let api_backend = InMemoryBackend::new();
         let oauth_backend = InMemoryBackend::new();
-        let config = ChatGptOAuthConfig::default();
-
-        // Initially absent.
-        assert!(!provider_credential_exists_with(&api_backend, &oauth_backend, "openai").unwrap());
+        let resolve =
+            |name| resolve_provider_credential_with(&api_backend, &oauth_backend, name).unwrap();
+        add_with(&api_backend, "openai", "synthetic-openai-api-key").unwrap();
+        assert_eq!(resolve(PLAN), None);
         assert_eq!(
-            resolve_provider_credential_with(
-                &api_backend,
-                &oauth_backend,
-                &config,
-                "openai",
-                Duration::from_secs(5),
-            )
-            .unwrap(),
-            None
+            resolve("openai").as_deref(),
+            Some("synthetic-openai-api-key")
         );
 
-        // API key alone resolves to API key.
-        add_with(&api_backend, "openai", "sk-openai-api-key").unwrap();
-        assert!(provider_credential_exists_with(&api_backend, &oauth_backend, "openai").unwrap());
+        let mut tokens = StoredChatGptOAuthTokens {
+            access_token: "subscription-fixture-access".into(),
+            refresh_token: None,
+            expires_at: None,
+            token_type: Some("Bearer".into()),
+            scope: Some("chatgpt.tokens.use.direct".into()),
+            connected_at: 1234,
+            identity: None,
+        };
+        ChatGptOAuthStore::save_with(&oauth_backend, &tokens).unwrap();
         assert_eq!(
-            resolve_provider_credential_with(
-                &api_backend,
-                &oauth_backend,
-                &config,
-                "openai",
-                Duration::from_secs(5),
-            )
-            .unwrap()
-            .as_deref(),
-            Some("sk-openai-api-key")
+            resolve(PLAN),
+            None,
+            "legacy grant requires fresh Nexora consent"
         );
 
-        // Connecting opt-in ChatGPT OAuth takes precedence for OpenAI execution.
-        let future_exp = i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap()
-            + 3600;
-        ChatGptOAuthStore::save_with(
-            &oauth_backend,
-            &StoredChatGptOAuthTokens {
-                access_token: "chatgpt-oauth-access-token".to_string(),
-                refresh_token: Some("chatgpt-oauth-refresh".to_string()),
-                expires_at: Some(future_exp),
-                token_type: Some("Bearer".to_string()),
-                scope: None,
-                connected_at: future_exp - 3600,
-            },
-        )
-        .unwrap();
+        tokens.identity = Some(fixture_plan_identity());
+        ChatGptOAuthStore::save_with(&oauth_backend, &tokens).unwrap();
+        let reference = resolve(PLAN).expect("session reference");
+        assert!(reference.parse::<u64>().is_ok());
+        assert_ne!(reference, "subscription-fixture-access");
         assert_eq!(
-            resolve_provider_credential_with(
-                &api_backend,
-                &oauth_backend,
-                &config,
-                "openai",
-                Duration::from_secs(5),
-            )
-            .unwrap()
-            .as_deref(),
-            Some("chatgpt-oauth-access-token")
+            resolve("openai").as_deref(),
+            Some("synthetic-openai-api-key")
         );
-
-        // Disconnecting ChatGPT OAuth falls back to the stored OpenAI API key.
         ChatGptOAuthStore::clear_with(&oauth_backend).unwrap();
+        assert_eq!(resolve(PLAN), None);
         assert_eq!(
-            resolve_provider_credential_with(
-                &api_backend,
-                &oauth_backend,
-                &config,
-                "openai",
-                Duration::from_secs(5),
-            )
-            .unwrap()
-            .as_deref(),
-            Some("sk-openai-api-key")
+            resolve("openai").as_deref(),
+            Some("synthetic-openai-api-key")
         );
-
-        // External CLI adapters resolve without touching keyring secrets.
-        assert!(
-            provider_credential_exists_with(&api_backend, &oauth_backend, "cli_codex").unwrap()
-        );
-        assert_eq!(
-            resolve_provider_credential_with(
-                &api_backend,
-                &oauth_backend,
-                &config,
-                "cli_claude",
-                Duration::from_secs(5),
-            )
-            .unwrap()
-            .as_deref(),
-            Some("")
-        );
+        assert_eq!(resolve("cli_codex"), None);
+        assert_eq!(resolve("cli_claude"), None);
     }
 }

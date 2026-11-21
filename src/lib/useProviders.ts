@@ -12,7 +12,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
   type ChatGptOAuthStatus,
-  type CliAdapterStatus,
   type CommandError,
   type CompatConfig,
   type CompatStatus,
@@ -29,7 +28,6 @@ import {
   clearModelCapabilityOverride,
   compatStatus as fetchCompatStatus,
   createProvider,
-  detectCliAdapters,
   getCompatConfig,
   getModelCapabilities,
   getSetting,
@@ -39,7 +37,6 @@ import {
   refreshProviderModelMetadata,
   removeProvider,
   removeProviderCredential,
-  setCliAdapterEnabled,
   setCompatConfig as persistCompatConfig,
   setModelCapabilityOverride,
   setSetting,
@@ -54,12 +51,7 @@ const SELECTED_MODEL_KEY = "provider.model";
 const SELECTED_EFFORT_KEY = "provider.effort";
 const VALID_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 const OPENAI_COMPAT_PROVIDER = "openai_compat";
-const OPENAI_PROVIDER = "openai";
-
-/** True when `name` identifies an opt-in external CLI adapter (`S11-11b`). */
-export function isCliAdapterProvider(name: string): boolean {
-  return name === "cli_codex" || name === "cli_claude";
-}
+export const CHATGPT_PLAN_PROVIDER = "chatgpt_subscription";
 
 export type CompatUrlErrorKey =
   | "settings.compatErrMissingUrl"
@@ -249,16 +241,6 @@ export interface ProvidersStore {
   /** Disconnect opt-in ChatGPT OAuth (removes OS keyring tokens). */
   disconnectChatGptOAuth?: () => Promise<void>;
   /** Detected external CLI adapters (`codex` / `claude`) & opt-in state (`S11-11b`). */
-  cliAdapters?: CliAdapterStatus[];
-  /** True while probing installed external CLIs. */
-  cliAdaptersLoading?: boolean;
-  /** Re-probe installed external CLIs (`codex` / `claude`). */
-  refreshCliAdapters?: () => Promise<void>;
-  /** Explicitly opt in or opt out of an external CLI adapter (`codex` | `claude`). */
-  toggleCliAdapter?: (
-    adapterId: "codex" | "claude",
-    enabled: boolean
-  ) => Promise<boolean>;
 }
 
 export function useProviders(): ProvidersStore {
@@ -283,8 +265,6 @@ export function useProviders(): ProvidersStore {
   );
   const [chatgptOAuthWorking, setChatGptOAuthWorking] =
     useState<boolean>(false);
-  const [cliAdapters, setCliAdapters] = useState<CliAdapterStatus[]>([]);
-  const [cliAdaptersLoading, setCliAdaptersLoading] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<CommandError | null>(null);
   const [working, setWorking] = useState<boolean>(false);
@@ -296,18 +276,6 @@ export function useProviders(): ProvidersStore {
     ]);
     setCompatConfig(cfg);
     setCompatStatus(status);
-  }, []);
-
-  const refreshCliAdapters = useCallback(async (): Promise<void> => {
-    setCliAdaptersLoading(true);
-    try {
-      const detected = await detectCliAdapters().catch(
-        () => [] as CliAdapterStatus[]
-      );
-      setCliAdapters(Array.isArray(detected) ? detected : []);
-    } finally {
-      setCliAdaptersLoading(false);
-    }
   }, []);
 
   const reload = useCallback(async (): Promise<void> => {
@@ -328,8 +296,18 @@ export function useProviders(): ProvidersStore {
         getSetting(SELECTED_PROVIDER_KEY),
         getSetting(SELECTED_MODEL_KEY),
         getSetting(SELECTED_EFFORT_KEY).catch(() => null),
-        listModelCapabilities().catch(() => [] as ConnectionModelCapabilities[]),
-        chatgptOAuthStatus().catch(() => null),
+        listModelCapabilities().catch(
+          () => [] as ConnectionModelCapabilities[]
+        ),
+        chatgptOAuthStatus().catch(() => ({
+          connected: false,
+          has_refresh_token: false,
+          expires_at: null,
+          connected_at: null,
+          auth_mode: "none" as const,
+          problem: "cleanup_required" as const,
+          models: [],
+        })),
       ]);
       setSupported(defs);
       setConfiguredProviders(configured);
@@ -345,7 +323,7 @@ export function useProviders(): ProvidersStore {
       const credentialed = new Set<string>();
       await Promise.all(
         defs.map(async (provider) => {
-          if (isCliAdapterProvider(provider.name)) return;
+          if (provider.name === CHATGPT_PLAN_PROVIDER) return;
           if (await hasProviderCredential(provider.name))
             credentialed.add(provider.name);
         })
@@ -370,9 +348,7 @@ export function useProviders(): ProvidersStore {
             : null;
       const validEffort =
         effortSetting !== null &&
-        VALID_EFFORTS.includes(
-          effortSetting as (typeof VALID_EFFORTS)[number]
-        )
+        VALID_EFFORTS.includes(effortSetting as (typeof VALID_EFFORTS)[number])
           ? effortSetting
           : null;
       setSelectedProvider(validProvider);
@@ -384,8 +360,7 @@ export function useProviders(): ProvidersStore {
         validProvider &&
         validModel &&
         !capList.some(
-          (c) =>
-            c.connection_id === validProvider && c.model_id === validModel
+          (c) => c.connection_id === validProvider && c.model_id === validModel
         )
       ) {
         const single = await getModelCapabilities(
@@ -659,11 +634,6 @@ export function useProviders(): ProvidersStore {
       setWorking(true);
       setError(null);
       try {
-        if (name === OPENAI_PROVIDER && chatgptOAuth?.connected) {
-          await removeProviderCredential(name);
-          await reload();
-          return;
-        }
         // Clear the persisted selection first so it never points at a removed
         // provider (a selection is only valid while the provider is usable).
         if (selectedProvider === name) {
@@ -684,7 +654,7 @@ export function useProviders(): ProvidersStore {
         setWorking(false);
       }
     },
-    [configuredProviders, selectedProvider, chatgptOAuth, reload]
+    [configuredProviders, selectedProvider, reload]
   );
 
   const startChatGptOAuth = useCallback(async (): Promise<boolean> => {
@@ -711,72 +681,31 @@ export function useProviders(): ProvidersStore {
       setChatGptOAuth(next);
       return true;
     } catch (e) {
+      await reload();
       setError(toCommandError(e));
       return false;
     } finally {
       setChatGptOAuthWorking(false);
     }
-  }, []);
+  }, [reload]);
 
   const disconnectChatGptOAuth = useCallback(async (): Promise<void> => {
     setChatGptOAuthWorking(true);
     setError(null);
     try {
       await chatgptOAuthDisconnect();
-      setChatGptOAuth({
-        connected: false,
-        has_refresh_token: false,
-        expires_at: null,
-        connected_at: null,
-        auth_mode: "none",
-      });
-      if (!credentialedNames.has(OPENAI_PROVIDER)) {
-        if (selectedProvider === OPENAI_PROVIDER) {
-          await setSetting(SELECTED_PROVIDER_KEY, null);
-          await setSetting(SELECTED_MODEL_KEY, null);
-        }
-        const def = configuredProviders.find(
-          (provider) => provider.name === OPENAI_PROVIDER
-        );
-        if (def) {
-          await removeProvider(def.id);
-        }
+      if (selectedProvider === CHATGPT_PLAN_PROVIDER) {
+        await setSetting(SELECTED_PROVIDER_KEY, null);
+        await setSetting(SELECTED_MODEL_KEY, null);
       }
       await reload();
     } catch (e) {
+      await reload();
       setError(toCommandError(e));
     } finally {
       setChatGptOAuthWorking(false);
     }
-  }, [configuredProviders, credentialedNames, selectedProvider, reload]);
-
-  const toggleCliAdapter = useCallback(
-    async (adapterId: "codex" | "claude", enabled: boolean): Promise<boolean> => {
-      setWorking(true);
-      setError(null);
-      try {
-        const providerName = adapterId === "codex" ? "cli_codex" : "cli_claude";
-        const nextEnabled = await setCliAdapterEnabled(adapterId, enabled);
-        if (!nextEnabled && selectedProvider === providerName) {
-          await setSetting(SELECTED_PROVIDER_KEY, null);
-          await setSetting(SELECTED_MODEL_KEY, null);
-        }
-        setCliAdapters((prev) =>
-          prev.map((item) =>
-            item.id === adapterId ? { ...item, enabled: nextEnabled } : item
-          )
-        );
-        await reload();
-        return true;
-      } catch (e) {
-        setError(toCommandError(e));
-        return false;
-      } finally {
-        setWorking(false);
-      }
-    },
-    [selectedProvider, reload]
-  );
+  }, [selectedProvider, reload]);
 
   // Memoized derivation (NEX-FE-002 audit): without this the `providers`
   // array — and therefore the whole store — is a fresh reference every
@@ -787,18 +716,25 @@ export function useProviders(): ProvidersStore {
         const isConfigured = configuredProviders.some(
           (provider) => provider.name === definition.name
         );
-        const hasApiKey = credentialedNames.has(definition.name);
-        const hasOAuth =
-          definition.name === OPENAI_PROVIDER &&
-          Boolean(chatgptOAuth?.connected);
-        const isCli = isCliAdapterProvider(definition.name);
+        const credentialed =
+          definition.name === CHATGPT_PLAN_PROVIDER
+            ? Boolean(chatgptOAuth?.connected)
+            : credentialedNames.has(definition.name);
+        const models =
+          definition.name === CHATGPT_PLAN_PROVIDER
+            ? (chatgptOAuth?.models ?? []).map((model) => model.slug)
+            : definition.models;
         return {
-          supported: definition,
+          supported:
+            definition.name === CHATGPT_PLAN_PROVIDER
+              ? { ...definition, models }
+              : definition,
           configured: isConfigured,
-          credentialed: isCli ? isConfigured : hasApiKey,
-          available: isCli
-            ? isConfigured
-            : isConfigured && (hasApiKey || hasOAuth),
+          credentialed,
+          available:
+            isConfigured &&
+            credentialed &&
+            (definition.name !== CHATGPT_PLAN_PROVIDER || models.length > 0),
         };
       }),
     [supported, configuredProviders, credentialedNames, chatgptOAuth]
@@ -828,8 +764,6 @@ export function useProviders(): ProvidersStore {
       compatSaving,
       chatgptOAuth,
       chatgptOAuthWorking,
-      cliAdapters,
-      cliAdaptersLoading,
       loading,
       error,
       working,
@@ -847,8 +781,6 @@ export function useProviders(): ProvidersStore {
       startChatGptOAuth,
       refreshChatGptOAuth,
       disconnectChatGptOAuth,
-      refreshCliAdapters,
-      toggleCliAdapter,
     }),
     [
       providers,
@@ -862,8 +794,6 @@ export function useProviders(): ProvidersStore {
       compatSaving,
       chatgptOAuth,
       chatgptOAuthWorking,
-      cliAdapters,
-      cliAdaptersLoading,
       loading,
       error,
       working,
@@ -881,8 +811,6 @@ export function useProviders(): ProvidersStore {
       startChatGptOAuth,
       refreshChatGptOAuth,
       disconnectChatGptOAuth,
-      refreshCliAdapters,
-      toggleCliAdapter,
     ]
   );
 }

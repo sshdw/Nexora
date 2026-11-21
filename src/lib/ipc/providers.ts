@@ -159,6 +159,8 @@ export interface ChatGptOAuthStatus {
   expires_at: number | null;
   connected_at: number | null;
   auth_mode: "oauth" | "none";
+  problem: "cleanup_required" | "other_instance" | null;
+  models: { slug: string; display_name: string }[];
 }
 
 /** Read secret-free ChatGPT OAuth status from the OS keyring. */
@@ -181,41 +183,10 @@ export function chatgptOAuthDisconnect(): Promise<void> {
   return invoke<void>("chatgpt_oauth_disconnect");
 }
 
-// ---- Opt-in External CLI Adapters (`S11-11b`) --------------------------
-// Delegates strictly to officially installed `codex` / `claude` CLIs in a
-// clean isolated subprocess; never reads Nexora API keys or closed OAuth tokens.
-
-/** Secret-free availability and opt-in status for an external CLI adapter. */
-export interface CliAdapterStatus {
-  id: "codex" | "claude";
-  provider_name: string;
-  display_name: string;
-  installed: boolean;
-  version: string | null;
-  enabled: boolean;
-}
-
-/** Probe officially installed external CLIs (`codex`, `claude`) and return
- * their sanitized availability and opt-in state. */
-export function detectCliAdapters(): Promise<CliAdapterStatus[]> {
-  return invoke<CliAdapterStatus[]>("detect_cli_adapters");
-}
-
-/** Explicitly enable or disable an external CLI adapter (`codex` or `claude`). */
-export function setCliAdapterEnabled(
-  adapterId: string,
-  enabled: boolean
-): Promise<boolean> {
-  return invoke<boolean>("set_cli_adapter_enabled", { adapterId, enabled });
-}
-
 // ---- (connection_id, model_id) Capability Catalog & Provenance --------
 
 export type CapabilityProvenance =
-  | "manual_override"
-  | "api_metadata"
-  | "built_in_catalog"
-  | "unknown";
+  "manual_override" | "api_metadata" | "built_in_catalog" | "unknown";
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh";
 
@@ -265,15 +236,12 @@ export function setModelCapabilityOverride(
   overrideSpec: ModelCapabilityOverride | null,
   scope?: SettingScope
 ): Promise<ConnectionModelCapabilities> {
-  return invoke<ConnectionModelCapabilities>(
-    "set_model_capability_override",
-    {
-      connectionId,
-      modelId,
-      overrideSpec,
-      scope: scope ?? null,
-    }
-  );
+  return invoke<ConnectionModelCapabilities>("set_model_capability_override", {
+    connectionId,
+    modelId,
+    overrideSpec,
+    scope: scope ?? null,
+  });
 }
 
 /** Clear a manual capability override for `(connectionId, modelId)` in `scope`. */

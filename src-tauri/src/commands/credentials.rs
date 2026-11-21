@@ -25,13 +25,13 @@ use tauri_plugin_opener::OpenerExt;
 use crate::application::providers::{ProviderError, ProviderService};
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::providers::chatgpt_oauth::{
-    refresh_tokens, run_oauth_login_flow, ChatGptOAuthError, ChatGptOAuthStatus, ChatGptOAuthStore,
-    DEFAULT_OAUTH_CALLBACK_TIMEOUT,
+    refresh_tokens, run_oauth_login_flow, ChatGptOAuthError, ChatGptOAuthProblem,
+    ChatGptOAuthStatus, ChatGptOAuthStore, DEFAULT_OAUTH_CALLBACK_TIMEOUT,
+};
+use crate::infrastructure::providers::chatgpt_plan::{
+    PROVIDER_DISPLAY_NAME as CHATGPT_PLAN_DISPLAY_NAME, PROVIDER_NAME as CHATGPT_PLAN_PROVIDER,
 };
 use crate::infrastructure::providers::credentials::CredentialStore;
-use crate::infrastructure::providers::openai::{
-    PROVIDER_DISPLAY_NAME as OPENAI_DISPLAY_NAME, PROVIDER_NAME as OPENAI_PROVIDER_NAME,
-};
 
 use super::error::{CommandError, ErrorKind};
 
@@ -45,26 +45,15 @@ fn is_provider_already_exists(err: &ProviderError) -> bool {
     )
 }
 
-fn ensure_openai_provider_row_or_rollback<R>(
-    service: &ProviderService<'_>,
-    rollback_oauth: R,
-) -> Result<(), CommandError>
-where
-    R: FnOnce(),
-{
-    let result = match service.read_by_name(OPENAI_PROVIDER_NAME) {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => match service.create(OPENAI_PROVIDER_NAME, OPENAI_DISPLAY_NAME) {
+fn ensure_chatgpt_plan_provider(service: &ProviderService<'_>) -> Result<(), CommandError> {
+    match service.read_by_name(CHATGPT_PLAN_PROVIDER)? {
+        Some(_) => Ok(()),
+        None => match service.create(CHATGPT_PLAN_PROVIDER, CHATGPT_PLAN_DISPLAY_NAME) {
             Ok(_) => Ok(()),
             Err(err) if is_provider_already_exists(&err) => Ok(()),
             Err(err) => Err(CommandError::from(err)),
         },
-        Err(err) => Err(CommandError::from(err)),
-    };
-    if result.is_err() {
-        rollback_oauth();
     }
-    result
 }
 
 /// Store a new credential for `provider` in the OS secure keyring (FR-014).
@@ -102,21 +91,33 @@ pub(crate) fn has_provider_credential(provider: String) -> Result<bool, CommandE
 /// Report secret-free opt-in `ChatGPT` Plus/Pro OAuth connection status from the
 /// OS secure keyring (`S11-11a`). Never returns tokens or secret material.
 #[tauri::command]
-pub(crate) fn chatgpt_oauth_status() -> Result<ChatGptOAuthStatus, CommandError> {
-    ChatGptOAuthStore::status().map_err(Into::into)
+pub(crate) async fn chatgpt_oauth_status() -> Result<ChatGptOAuthStatus, CommandError> {
+    tauri::async_runtime::spawn_blocking(|| {
+        ChatGptOAuthStore::status().unwrap_or_else(|error| ChatGptOAuthStatus {
+            problem: Some(if error == ChatGptOAuthError::OtherInstance {
+                ChatGptOAuthProblem::OtherInstance
+            } else {
+                ChatGptOAuthProblem::CleanupRequired
+            }),
+            ..ChatGptOAuthStatus::disconnected()
+        })
+    })
+    .await
+    .map_err(|_| CommandError::new(ErrorKind::Request, "ChatGPT connection status unavailable"))
 }
 
 /// Start the interactive opt-in `ChatGPT` Plus/Pro OAuth 2.0 + PKCE (`S256`)
 /// loopback flow (`S11-11a`). Stores tokens strictly in the OS secure keyring
-/// and ensures the `openai` provider metadata row exists so `OpenAI` becomes
-/// immediately selectable.
+/// and registers a separate subscription provider.
 #[tauri::command]
 pub(crate) async fn chatgpt_oauth_start(
     app: AppHandle,
 ) -> Result<ChatGptOAuthStatus, CommandError> {
     let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let status = run_oauth_login_flow(
+        let db = handle.state::<Database>();
+        ensure_chatgpt_plan_provider(&ProviderService::new(db.inner()))?;
+        run_oauth_login_flow(
             |auth_url| {
                 handle
                     .opener()
@@ -125,17 +126,7 @@ pub(crate) async fn chatgpt_oauth_start(
             },
             DEFAULT_OAUTH_CALLBACK_TIMEOUT,
         )
-        .map_err(CommandError::from)?;
-
-        // Ensure the `openai` provider metadata row exists so OpenAI is
-        // immediately usable without requiring a separate API key. If persisting
-        // the provider row fails, roll back the newly saved OAuth keyring tokens.
-        let db = handle.state::<Database>();
-        let service = ProviderService::new(db.inner());
-        ensure_openai_provider_row_or_rollback(&service, || {
-            let _ = ChatGptOAuthStore::clear();
-        })?;
-        Ok(status)
+        .map_err(CommandError::from)
     })
     .await;
 
@@ -173,6 +164,8 @@ pub(crate) async fn chatgpt_oauth_refresh() -> Result<ChatGptOAuthStatus, Comman
 /// Disconnect opt-in `ChatGPT` Plus/Pro OAuth by removing its OS keyring entry.
 /// Leaves any separate `OpenAI` API key untouched.
 #[tauri::command]
-pub(crate) fn chatgpt_oauth_disconnect() -> Result<(), CommandError> {
-    ChatGptOAuthStore::clear().map_err(Into::into)
+pub(crate) async fn chatgpt_oauth_disconnect() -> Result<(), CommandError> {
+    tauri::async_runtime::spawn_blocking(|| ChatGptOAuthStore::clear().map_err(CommandError::from))
+        .await
+        .map_err(|_| CommandError::new(ErrorKind::Request, "ChatGPT disconnect failed"))?
 }
