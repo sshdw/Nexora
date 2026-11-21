@@ -9,6 +9,7 @@
 
 mod command;
 mod definitions;
+mod diagnostics;
 mod executor;
 mod output;
 pub(crate) mod path_safety;

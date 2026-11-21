@@ -698,11 +698,14 @@ struct GenerateContentResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(clippy::struct_field_names)]
 struct GeminiUsage {
     #[serde(rename = "promptTokenCount", default)]
     prompt_token_count: u64,
     #[serde(rename = "candidatesTokenCount", default)]
     candidates_token_count: u64,
+    #[serde(rename = "cachedContentTokenCount", default)]
+    cached_content_token_count: u64,
 }
 
 /// One generation candidate from a Gemini response.
@@ -823,6 +826,7 @@ fn to_ai_response(
             Some(TokenUsage {
                 input_tokens: u.prompt_token_count,
                 output_tokens: u.candidates_token_count,
+                cached_tokens: u.cached_content_token_count,
             })
         }
     });
@@ -881,6 +885,7 @@ impl GeminiStreamAccumulator {
                 self.usage = Some(TokenUsage {
                     input_tokens: u.prompt_token_count,
                     output_tokens: u.candidates_token_count,
+                    cached_tokens: u.cached_content_token_count,
                 });
             }
         }
@@ -2540,7 +2545,8 @@ mod tests {
             resp.usage,
             Some(TokenUsage {
                 input_tokens: 14,
-                output_tokens: 6
+                output_tokens: 6,
+                cached_tokens: 0
             })
         );
         let evs = events.into_inner().expect("lock");
@@ -2621,7 +2627,8 @@ mod tests {
             resp.usage,
             Some(TokenUsage {
                 input_tokens: 21,
-                output_tokens: 8
+                output_tokens: 8,
+                cached_tokens: 0
             })
         );
         let evs = events.into_inner().expect("lock");
@@ -2631,6 +2638,29 @@ mod tests {
                 StreamEvent::TextDelta("Hello ".to_string()),
                 StreamEvent::TextDelta("world".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn s11_09_gemini_parses_cached_content_token_count() {
+        let json = r#"{
+            "modelVersion": "gemini-3.6-flash",
+            "candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+            "usageMetadata": {
+                "promptTokenCount": 2000,
+                "candidatesTokenCount": 50,
+                "cachedContentTokenCount": 1400
+            }
+        }"#;
+        let parsed: GenerateContentResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed, "gemini-3.6-flash").expect("to_ai");
+        assert_eq!(
+            ai.usage,
+            Some(TokenUsage {
+                input_tokens: 2000,
+                output_tokens: 50,
+                cached_tokens: 1400,
+            })
         );
     }
 }

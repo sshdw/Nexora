@@ -1046,6 +1046,14 @@ struct OpenAiUsage {
     prompt_tokens: u64,
     #[serde(default)]
     completion_tokens: u64,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenAiPromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1107,6 +1115,10 @@ fn to_ai_response(response: ChatCompletionResponse) -> Result<AiResponse, OpenAi
             Some(TokenUsage {
                 input_tokens: u.prompt_tokens,
                 output_tokens: u.completion_tokens,
+                cached_tokens: u
+                    .prompt_tokens_details
+                    .as_ref()
+                    .map_or(0, |d| d.cached_tokens),
             })
         }
     });
@@ -1209,6 +1221,10 @@ impl OpenAiStreamAccumulator {
                 self.usage = Some(TokenUsage {
                     input_tokens: u.prompt_tokens,
                     output_tokens: u.completion_tokens,
+                    cached_tokens: u
+                        .prompt_tokens_details
+                        .as_ref()
+                        .map_or(0, |d| d.cached_tokens),
                 });
             }
         }
@@ -3366,7 +3382,8 @@ mod tests {
             response.usage,
             Some(TokenUsage {
                 input_tokens: 10,
-                output_tokens: 5
+                output_tokens: 5,
+                cached_tokens: 0
             })
         );
         let evs = events.into_inner().expect("lock");
@@ -3488,5 +3505,28 @@ mod tests {
             assert!(evs.contains(&StreamEvent::ThinkingDelta("think".to_string())));
             assert!(evs.contains(&StreamEvent::TextDelta("ok".to_string())));
         }
+    }
+
+    #[test]
+    fn s11_09_openai_parses_cached_tokens_from_prompt_tokens_details() {
+        let json = r#"{
+            "model": "gpt-5.6-terra",
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 40,
+                "prompt_tokens_details": {"cached_tokens": 800}
+            }
+        }"#;
+        let parsed: ChatCompletionResponse = serde_json::from_str(json).expect("parse");
+        let ai = to_ai_response(parsed).expect("to_ai");
+        assert_eq!(
+            ai.usage,
+            Some(TokenUsage {
+                input_tokens: 1200,
+                output_tokens: 40,
+                cached_tokens: 800,
+            })
+        );
     }
 }

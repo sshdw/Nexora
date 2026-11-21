@@ -890,6 +890,7 @@ mod tests {
         TokenUsage {
             input_tokens,
             output_tokens: 0,
+            cached_tokens: 0,
         }
     }
 

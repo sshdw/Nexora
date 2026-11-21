@@ -795,6 +795,240 @@ impl<'a> ConversationService<'a> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// S11-06: Auto Chat/Session Title Generation
+// ---------------------------------------------------------------------------
+
+/// Default titles assigned to newly created conversations (EN, RU, DB schema).
+const DEFAULT_CONVERSATION_TITLES: &[&str] = &[
+    "New Conversation",
+    "Untitled Conversation",
+    "Новый разговор",
+];
+
+/// Hard wall-clock timeout for the background auto-title request.
+const AUTO_TITLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Maximum characters of the first prompt forwarded to the title generator.
+const AUTO_TITLE_PROMPT_EXCERPT_CHARS: usize = 500;
+
+/// Maximum characters kept in a generated title.
+const AUTO_TITLE_MAX_CHARS: usize = 60;
+
+/// Maximum characters kept in a fallback title trimmed from the first prompt.
+const AUTO_TITLE_FALLBACK_MAX_CHARS: usize = 48;
+
+/// Maximum words kept in a fallback title trimmed from the first prompt.
+const AUTO_TITLE_FALLBACK_MAX_WORDS: usize = 6;
+
+const AUTO_TITLE_SYSTEM_PROMPT: &str = "Generate a concise 3-6 word title for this conversation in the same language as the user's message. Output ONLY the title text, with no quotes, no markdown, no prefix, and no trailing punctuation.";
+
+/// Return `true` if `title` is still one of the default new-conversation names.
+#[must_use]
+pub(crate) fn is_default_conversation_title(title: &str) -> bool {
+    let trimmed = title.trim();
+    trimmed.is_empty()
+        || DEFAULT_CONVERSATION_TITLES
+            .iter()
+            .any(|default| default.eq_ignore_ascii_case(trimmed))
+}
+
+/// Build a clean fallback title from the first user prompt when LLM title
+/// generation fails or returns unusable output.
+#[must_use]
+pub(crate) fn fallback_title_from_prompt(prompt: &str) -> Option<String> {
+    let cleaned = prompt
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("")
+        .trim_start_matches(['#', '>', '-', '*', '`', '"', '\'']);
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    let mut truncated = false;
+    for (idx, word) in words.iter().enumerate() {
+        if idx >= AUTO_TITLE_FALLBACK_MAX_WORDS {
+            truncated = true;
+            break;
+        }
+        let next_chars = out.chars().count() + usize::from(!out.is_empty()) + word.chars().count();
+        if next_chars > AUTO_TITLE_FALLBACK_MAX_CHARS {
+            if out.is_empty() {
+                let prefix: String = word
+                    .chars()
+                    .take(AUTO_TITLE_FALLBACK_MAX_CHARS.saturating_sub(1))
+                    .collect();
+                out.push_str(&prefix);
+            }
+            truncated = true;
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(word);
+    }
+
+    let trimmed = out
+        .trim()
+        .trim_end_matches([',', ';', ':', '.', '-', '/', '!', '?']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    if truncated {
+        Some(format!("{trimmed}…"))
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Sanitize a provider-generated title: single line, no surrounding quotes or
+/// markdown/prefix noise, bounded to [`AUTO_TITLE_MAX_CHARS`].
+#[must_use]
+pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
+    let first_line = raw.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let mut candidate = first_line.trim_start_matches('#').trim();
+    for prefix in ["Title:", "title:", "TITLE:", "Название:", "Заголовок:"] {
+        if let Some(rest) = candidate.strip_prefix(prefix) {
+            candidate = rest.trim();
+        }
+    }
+    let stripped = candidate
+        .trim_matches(['"', '\'', '`', '«', '»', '*', '_'])
+        .trim();
+    let collapsed: String = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim_end_matches(['.', ':', ';', ',']).trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let bounded: String = trimmed.chars().take(AUTO_TITLE_MAX_CHARS).collect();
+    let final_title = bounded.trim();
+    if final_title.is_empty() {
+        None
+    } else {
+        Some(final_title.to_string())
+    }
+}
+
+fn should_attempt_auto_title(db: &Database, conversation_id: i64) -> Option<String> {
+    let conv = ConversationRepository::new(db)
+        .read(conversation_id)
+        .ok()??;
+    if !is_default_conversation_title(&conv.title) {
+        return None;
+    }
+    let user_count = MessageRepository::new(db)
+        .list_by_conversation(conversation_id)
+        .ok()?
+        .into_iter()
+        .filter(|m| m.role == ROLE_USER)
+        .count();
+    (user_count <= 1).then_some(conv.title)
+}
+
+/// Generate a concise title for `conversation_id` via `executor` (with silent
+/// fallback to a cleanly trimmed first prompt) and atomically persist it ONLY
+/// if the conversation still has its default title.
+///
+/// Never returns an error: any failure degrades silently to fallback or `None`.
+pub(crate) fn generate_and_apply_auto_title(
+    db: &Database,
+    executor: &dyn AiRequestExecutor,
+    conversation_id: i64,
+    first_prompt: &str,
+    provider: &str,
+    model: &str,
+) -> Option<String> {
+    let expected_default = should_attempt_auto_title(db, conversation_id)?;
+    let excerpt: String = first_prompt
+        .trim()
+        .chars()
+        .take(AUTO_TITLE_PROMPT_EXCERPT_CHARS)
+        .collect();
+    if excerpt.is_empty() {
+        return None;
+    }
+
+    let request = AiRequest {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        messages: std::sync::Arc::new(vec![
+            AiMessage {
+                role: AiRole::System,
+                content: AUTO_TITLE_SYSTEM_PROMPT.to_string(),
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            },
+            AiMessage {
+                role: AiRole::User,
+                content: excerpt,
+                attachments: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_result: None,
+            },
+        ]),
+        tools: std::sync::Arc::new(Vec::new()),
+        model_config: Some(
+            ModelConfig::new(model)
+                .with_max_tokens(Some(32))
+                .with_temperature(Some(0.3)),
+        ),
+        request_timeout: Some(AUTO_TITLE_TIMEOUT),
+    };
+
+    let candidate = executor
+        .execute(&request)
+        .ok()
+        .and_then(|resp| sanitize_generated_title(&resp.content))
+        .or_else(|| fallback_title_from_prompt(first_prompt))?;
+
+    if is_default_conversation_title(&candidate) {
+        return None;
+    }
+
+    let updated = ConversationRepository::new(db)
+        .rename_if_title_matches(conversation_id, &expected_default, &candidate)
+        .ok()?;
+    updated.then_some(candidate)
+}
+
+/// Spawn detached background auto-title generation after the first user
+/// message. Returns immediately without blocking the caller; invokes
+/// `on_updated(conversation_id, new_title)` only when the DB title was
+/// atomically updated from its default value.
+pub(crate) fn spawn_auto_title_generation(
+    db: Database,
+    conversation_id: i64,
+    first_prompt: String,
+    provider: String,
+    model: String,
+    on_updated: impl FnOnce(i64, String) + Send + 'static,
+) {
+    if should_attempt_auto_title(&db, conversation_id).is_none() {
+        return;
+    }
+    let _ = std::thread::Builder::new()
+        .name("nexora-auto-title".into())
+        .spawn(move || {
+            let service = RequestExecutionService::new(&db);
+            if let Some(title) = generate_and_apply_auto_title(
+                &db,
+                &service,
+                conversation_id,
+                &first_prompt,
+                &provider,
+                &model,
+            ) {
+                on_updated(conversation_id, title);
+            }
+        });
+}
+
 /// What to do when a historical attachment cannot be rebuilt from disk.
 ///
 /// Plain chat ([`ConversationService::ai_history`]) fails hard
@@ -2689,5 +2923,142 @@ mod tests {
         assert_eq!(std::fs::read(original).unwrap(), b"original");
         drop(drafts);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn title_stub_ok(text: &str) -> StubExecutor {
+        let captured = std::rc::Rc::new(std::cell::RefCell::new(None));
+        StubExecutor::succeeding(
+            AiResponse {
+                content: text.to_string(),
+                model: "gpt-5.6-terra".to_string(),
+                tool_calls: Vec::new(),
+                usage: None,
+            },
+            captured,
+        )
+    }
+
+    fn title_stub_err(provider: &str) -> StubExecutor {
+        let captured = std::rc::Rc::new(std::cell::RefCell::new(None));
+        StubExecutor::failing(provider.to_string(), captured)
+    }
+
+    #[test]
+    fn s11_06_auto_title_generates_and_updates_default_title() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let id = service.create("New Conversation").unwrap();
+        service
+            .persist_user_message(id, "Explain Rust borrow checker lifetimes")
+            .unwrap();
+
+        let executor = title_stub_ok("Rust Borrow Checker Lifetimes");
+        let updated = generate_and_apply_auto_title(
+            &db,
+            &executor,
+            id,
+            "Explain Rust borrow checker lifetimes",
+            "openai",
+            "gpt-5.6-terra",
+        );
+        assert_eq!(updated.as_deref(), Some("Rust Borrow Checker Lifetimes"));
+        let row = ConversationRepository::new(&db).read(id).unwrap().unwrap();
+        assert_eq!(row.title, "Rust Borrow Checker Lifetimes");
+    }
+
+    #[test]
+    fn s11_06_auto_title_never_overwrites_manual_rename() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let id = service.create("New Conversation").unwrap();
+        service.rename(id, "My Custom Session").unwrap();
+        service
+            .persist_user_message(id, "Explain Rust borrow checker")
+            .unwrap();
+
+        let executor = title_stub_ok("Should Not Apply");
+        let updated = generate_and_apply_auto_title(
+            &db,
+            &executor,
+            id,
+            "Explain Rust borrow checker",
+            "openai",
+            "gpt-5.6-terra",
+        );
+        assert_eq!(updated, None);
+        let row = ConversationRepository::new(&db).read(id).unwrap().unwrap();
+        assert_eq!(row.title, "My Custom Session");
+    }
+
+    #[test]
+    fn s11_06_auto_title_falls_back_silently_when_provider_fails() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let id = service.create("Новый разговор").unwrap();
+        service
+            .persist_user_message(
+                id,
+                "Помоги настроить кэширование промптов в Anthropic и OpenAI для агента",
+            )
+            .unwrap();
+
+        let executor = title_stub_err("anthropic");
+        let updated = generate_and_apply_auto_title(
+            &db,
+            &executor,
+            id,
+            "Помоги настроить кэширование промптов в Anthropic и OpenAI для агента",
+            "anthropic",
+            "claude-sonnet-5",
+        );
+        let title = updated.expect("fallback title produced");
+        assert!(title.starts_with("Помоги настроить"));
+        assert!(title.ends_with('…'));
+        let row = ConversationRepository::new(&db).read(id).unwrap().unwrap();
+        assert_eq!(row.title, title);
+    }
+
+    #[test]
+    fn s11_06_auto_title_skips_after_first_user_message() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let id = service.create("Untitled Conversation").unwrap();
+        service.persist_user_message(id, "First prompt").unwrap();
+        service.persist_user_message(id, "Second prompt").unwrap();
+
+        let executor = title_stub_ok("Late Title");
+        let updated = generate_and_apply_auto_title(
+            &db,
+            &executor,
+            id,
+            "Second prompt",
+            "openai",
+            "gpt-5.6-terra",
+        );
+        assert_eq!(updated, None);
+        let row = ConversationRepository::new(&db).read(id).unwrap().unwrap();
+        assert_eq!(row.title, "Untitled Conversation");
+    }
+
+    #[test]
+    fn s11_06_spawn_auto_title_returns_immediately_for_manual_title() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let id = service.create("Manual Title").unwrap();
+        service.persist_user_message(id, "Hello").unwrap();
+
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&called);
+        spawn_auto_title_generation(
+            db.clone(),
+            id,
+            "Hello".to_string(),
+            "openai".to_string(),
+            "gpt-5.6-terra".to_string(),
+            move |_, _| {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+        );
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

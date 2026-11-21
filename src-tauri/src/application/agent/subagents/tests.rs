@@ -129,6 +129,7 @@ fn text_reply(text: &str) -> AiResponse {
         usage: Some(TokenUsage {
             input_tokens: 10,
             output_tokens: 5,
+            cached_tokens: 0,
         }),
         tool_calls: Vec::new(),
     }
@@ -141,6 +142,7 @@ fn tool_reply(calls: Vec<ToolCall>) -> AiResponse {
         usage: Some(TokenUsage {
             input_tokens: 10,
             output_tokens: 5,
+            cached_tokens: 0,
         }),
         tool_calls: calls,
     }

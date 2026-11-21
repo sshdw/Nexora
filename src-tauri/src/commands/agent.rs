@@ -224,6 +224,9 @@ fn launch_run_from_shell(
         prompt_references.as_ref(),
         false,
     )?;
+    let title_prompt = content.clone();
+    let title_provider = provider.clone();
+    let title_model = model.clone();
     let request = AgentRunRequest {
         conversation_id,
         user_request: content,
@@ -234,7 +237,7 @@ fn launch_run_from_shell(
         spend_limit_micro_usd: target.spend_limit_micro_usd,
     };
 
-    service::start_run_with_options(
+    let run_id = service::start_run_with_options(
         db_ref,
         registry_arc,
         target.host,
@@ -250,7 +253,16 @@ fn launch_run_from_shell(
             ..RunLaunchOptions::default()
         },
     )
-    .map_err(CommandError::from)
+    .map_err(CommandError::from)?;
+    super::conversations::maybe_spawn_auto_title(
+        app,
+        db_ref,
+        conversation_id,
+        &title_prompt,
+        &title_provider,
+        &title_model,
+    );
+    Ok(run_id)
 }
 
 fn advance_work_queue_on_completion(

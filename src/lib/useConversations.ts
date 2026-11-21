@@ -6,10 +6,12 @@
 //! preserves the order received.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import {
   type CommandError,
   type Conversation,
+  type ConversationTitleUpdatedPayload,
   archiveConversation,
   createConversation,
   deleteConversationPermanently,
@@ -134,6 +136,37 @@ export function useConversations(): ConversationsStore {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // S11-06: live-update conversation titles in ConversationTabs and
+  // SessionsPanel as soon as background auto-title generation completes.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    const setup = async (): Promise<void> => {
+      try {
+        const stop = await listen<ConversationTitleUpdatedPayload>(
+          "conversation-title-updated",
+          (event) => {
+            const { conversation_id, title } = event.payload;
+            setConversations((prev) =>
+              prev.map((c) => (c.id === conversation_id ? { ...c, title } : c))
+            );
+          }
+        );
+        if (cancelled) stop();
+        else unlisten = stop;
+      } catch {
+        // Non-Tauri / test environment without event bridge; next reload syncs.
+      }
+    };
+
+    void setup();
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   // Memoized store identity (NEX-FE-002 audit): whole-object consumers
   // (effect deps, memoized props) otherwise see a new reference every render.

@@ -309,12 +309,15 @@ pub enum AiRole {
 /// `None` on [`AiResponse::usage`] means the provider response carried no
 /// usage block (streaming or usage-less response) — this is not an error and
 /// is counted as $0 by the spend guard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
     /// Input (prompt) tokens billed for this turn.
     pub input_tokens: u64,
     /// Output (completion) tokens billed for this turn.
     pub output_tokens: u64,
+    /// Prompt tokens served from a provider-side prompt cache (S11-09).
+    #[serde(default)]
+    pub cached_tokens: u64,
 }
 
 /// Normalized reasoning/thinking effort levels supported across providers.

@@ -212,8 +212,12 @@ impl ToolRegistry {
                 on_stream,
             ),
             "read_file" => Self::read_file(&args, workspace_root, bound, started),
-            "write_file" => Self::write_file(&args, workspace_root, bound, checkpoints, started),
-            "edit_file" => Self::edit_file(&args, workspace_root, bound, checkpoints, started),
+            "write_file" => {
+                Self::write_file(&args, workspace_root, token, bound, checkpoints, started)
+            }
+            "edit_file" => {
+                Self::edit_file(&args, workspace_root, token, bound, checkpoints, started)
+            }
             "search_files" => Self::search_files(&args, workspace_root, bound, started),
             "list_directory" => Self::list_directory(&args, workspace_root, bound, started),
             "ask_user_question" => Err(ToolError::Io(
@@ -323,6 +327,7 @@ impl ToolRegistry {
     fn write_file(
         args: &Value,
         workspace_root: &Path,
+        token: &CancellationToken,
         bound: Option<&Path>,
         mut checkpoints: Option<&mut CheckpointHook<'_>>,
         started: &mut dyn FnMut(),
@@ -427,13 +432,19 @@ impl ToolRegistry {
         file.set_len(0).map_err(file_io)?;
         file.write_all(content.as_bytes()).map_err(file_io)?;
         file.flush().map_err(file_io)?;
+        drop(file);
         if let (Some(hook), Some(id)) = (checkpoints, cp_id) {
             hook.complete_post(id, content.as_bytes())
                 .map_err(|e| ToolError::Io(e.summary().into()))?;
         }
 
-        let diff = unified_diff(path, &old_content, content);
-        Ok(truncate_output(diff))
+        let mut output = unified_diff(path, &old_content, content);
+        if let Some(diag) =
+            super::diagnostics::run_post_edit_diagnostics(workspace_root, &resolved, token)
+        {
+            output.push_str(&diag);
+        }
+        Ok(truncate_output(output))
     }
 
     /// Exact-once in-place edit: `old_text`/`new_text` replace mode or
@@ -487,6 +498,7 @@ impl ToolRegistry {
     fn edit_file(
         args: &Value,
         workspace_root: &Path,
+        token: &CancellationToken,
         bound: Option<&Path>,
         checkpoints: Option<&mut CheckpointHook<'_>>,
         started: &mut dyn FnMut(),
@@ -567,12 +579,19 @@ impl ToolRegistry {
         file.set_len(0).map_err(file_io)?;
         file.write_all(updated.as_bytes()).map_err(file_io)?;
         file.flush().map_err(file_io)?;
+        drop(file);
         if let (Some(hook), Some(id)) = (checkpoints, cp_id) {
             hook.complete_post(id, updated.as_bytes())
                 .map_err(|e| ToolError::Io(e.summary().into()))?;
         }
 
-        Ok(truncate_output(unified_diff(path, content, &updated)))
+        let mut output = unified_diff(path, content, &updated);
+        if let Some(diag) =
+            super::diagnostics::run_post_edit_diagnostics(workspace_root, &resolved, token)
+        {
+            output.push_str(&diag);
+        }
+        Ok(truncate_output(output))
     }
 
     /// Regex-lite grep over the workspace: one `path:line:text` hit per

@@ -432,6 +432,7 @@ fn crosses_proactive_threshold(estimated_tokens: u64, context_limit: u64) -> boo
         Some(TokenUsage {
             input_tokens: estimated_tokens,
             output_tokens: 0,
+            cached_tokens: 0,
         }),
         context_limit,
         compaction::COMPACTION_THRESHOLD,

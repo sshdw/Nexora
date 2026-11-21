@@ -177,11 +177,23 @@ fn system_content_for(
     action_summary: Option<&ActionSummary>,
     budget: &AssemblyBudget<'_>,
 ) -> String {
-    let mut task_role = if dropped == 0 {
-        String::new()
-    } else {
-        history::omitted_note(dropped)
-    };
+    // S11-09: place static project instructions first so the cacheable prefix
+    // (system identity + project instructions) stays byte-stable across turns,
+    // ahead of dynamic per-turn notes (omitted-message count, action memory).
+    let mut task_role = String::new();
+    if let Some(inst) = budget
+        .project_instructions
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        task_role.push_str(inst);
+    }
+    if dropped > 0 {
+        if !task_role.is_empty() {
+            task_role.push_str("\n\n");
+        }
+        task_role.push_str(&history::omitted_note(dropped));
+    }
     // Layer-2 action memory: the prior action trace follows the Layer-1
     // note, separated by a blank line. An empty summary appends zero
     // bytes, so runs without prior actions keep the exact prompt.
@@ -194,16 +206,6 @@ fn system_content_for(
             }
             task_role.push_str(&injection::envelope_prior_actions(&note));
         }
-    }
-    if let Some(inst) = budget
-        .project_instructions
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        if !task_role.is_empty() {
-            task_role.push_str("\n\n");
-        }
-        task_role.push_str(inst);
     }
     let input = assembly::AssemblyInput {
         provider: budget.provider,
