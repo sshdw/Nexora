@@ -88,7 +88,10 @@ mod tests {
         let diagnostic = from_rejection(&rejection);
         assert!(!diagnostic.message.contains("sk-live-secret-12345"));
         assert!(!diagnostic.message.contains("sk-"));
-        assert_eq!(diagnostic.exit_code(), nexora_core::ExitCode::Usage);
+        assert_eq!(
+            diagnostic.exit_code(),
+            nexora_core::error::CliExitCode::Usage
+        );
     }
 
     #[test]

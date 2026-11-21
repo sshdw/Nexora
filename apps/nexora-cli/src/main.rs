@@ -7,9 +7,11 @@
 //! or prints a secret. The interactive TUI lands in a later phase; until then
 //! a bare `nexora` exits with usage guidance rather than guessing.
 //!
-//! Exit codes come from [`nexora_core::error::ExitCode`] — the shared,
-//! versioned table (brief §9.4) — so the CLI cannot invent its own numbers.
-//! Clap's own usage failures already exit `2`, which is `ExitCode::Usage`.
+//! Process exit codes come from [`nexora_core::error::CliExitCode`] — the
+//! versioned 0–5 CLI contract (brief §9.4, plan §5) — so the CLI cannot invent
+//! its own numbers and a DB/config failure maps to `Internal` (`1`) rather than
+//! `Budget` (`5`). Clap's own usage failures already exit `2`, which is
+//! `CliExitCode::Usage`.
 
 mod auth;
 mod config;
@@ -20,7 +22,7 @@ mod providers;
 mod store;
 
 use clap::{Parser, Subcommand};
-use nexora_core::error::ExitCode;
+use nexora_core::error::CliExitCode;
 
 use error::CliError;
 
@@ -146,7 +148,7 @@ fn main() {
     match run(&cli) {
         Ok(text) => {
             print!("{text}");
-            std::process::exit(ExitCode::Ok.code());
+            std::process::exit(CliExitCode::Ok.code());
         }
         Err(err) => {
             err.report();
