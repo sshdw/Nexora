@@ -3232,6 +3232,108 @@ async function invoke(
       }));
       return { schema_version: 11, migrations };
     }
+    case "git_info":
+      return {
+        branch: "main",
+        files: [
+          { path: "src/App.tsx", status: "modified" },
+          { path: "src/components/VersionControlPanel.tsx", status: "staged" },
+        ],
+        files_overflow: 0,
+        commits: [
+          {
+            hash: "1234567890abcdef1234567890abcdef12345678",
+            message: "feat(vcs): extend git workflow",
+            author: "developer",
+            time: Math.floor(Date.now() / 1000) - 3600,
+            files_changed: 3,
+            insertions: 48,
+            deletions: 12,
+            risk_signals: [],
+          },
+        ],
+        conflicts: [],
+        merge_in_progress: false,
+      };
+    case "git_file_diff":
+      return {
+        path: String(args.path ?? ""),
+        diff: "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n",
+        truncated: false,
+        binary: false,
+      };
+    case "git_commit_diff":
+      return {
+        hash: String(args.hash ?? ""),
+        diff: "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n",
+        truncated: false,
+        binary: false,
+        files: ["src/App.tsx"],
+        files_overflow: 0,
+      };
+    case "git_fetch":
+      return { remote: String(args.remote ?? "origin"), updated_refs: 1 };
+    case "git_pull":
+      return { status: "up_to_date", commit_hash: null, conflicts: [] };
+    case "git_branches":
+      return [
+        {
+          name: "main",
+          is_current: true,
+          upstream: "origin/main",
+          last_commit_hash: "1234567890abcdef1234567890abcdef12345678",
+        },
+      ];
+    case "git_branch_create":
+      return {
+        name: String(args.name ?? "feature"),
+        is_current: Boolean(args.switch),
+        upstream: null,
+        last_commit_hash: "1234567890abcdef1234567890abcdef12345678",
+      };
+    case "git_branch_switch":
+    case "git_branch_delete":
+    case "git_abort_merge":
+    case "git_push":
+      return null;
+    case "git_stage":
+    case "git_unstage":
+      return Array.isArray(args.paths) ? args.paths.length : 1;
+    case "git_commit":
+      return "abcdef1234567890abcdef1234567890abcdef12";
+    case "git_stash_list":
+      return [];
+    case "git_stash_push":
+      return {
+        index: 0,
+        message: String(args.message ?? "WIP"),
+        hash: "abcdef1234567890abcdef1234567890abcdef12",
+      };
+    case "git_stash_pop":
+      return { status: "applied", conflicts: [] };
+    case "git_conflict_diff":
+      return {
+        path: String(args.path ?? ""),
+        status: "UU",
+        ours: "local version\n",
+        theirs: "incoming version\n",
+        working: "<<<<<<< HEAD\nlocal version\n=======\nincoming version\n>>>>>>> origin/main\n",
+        truncated: false,
+        binary: false,
+      };
+    case "git_resolve_conflict":
+      return 0;
+    case "git_prepare_review_diff":
+      return {
+        scope: String(args.scope ?? "working"),
+        base_branch: args.baseBranch ? String(args.baseBranch) : null,
+        files: ["src/App.tsx"],
+        files_overflow: 0,
+        diff: "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1 +1 @@\n-old\n+new\n",
+        truncated: false,
+        redacted: false,
+        prompt: "/review\n\nReview the current working-tree changes (1 file(s)).\n",
+      };
     default:
       fail(`Mock backend: unhandled command “${command}”.`);
   }

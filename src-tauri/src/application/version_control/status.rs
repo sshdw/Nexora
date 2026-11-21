@@ -8,6 +8,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::conflicts::{is_merge_in_progress, read_conflicts, GitConflictFile};
 use super::paths::{assert_within_repo, clean_repo_path};
 use super::{
     canonical_workdir, current_branch, open_workspace_repo, VersionControlError,
@@ -68,6 +69,12 @@ pub(crate) struct GitInfo {
     pub files_overflow: usize,
     /// Recent commits, newest first.
     pub commits: Vec<GitCommit>,
+    /// Conflicted files currently in the index (`UU`/`AA`/`UD`/`DU`/`DD`).
+    #[serde(default)]
+    pub conflicts: Vec<GitConflictFile>,
+    /// Whether a merge, pull, rebase, cherry-pick, or revert is in progress.
+    #[serde(default)]
+    pub merge_in_progress: bool,
 }
 
 /// One per-file unified diff, capped at [`MAX_DIFF_BYTES`] with a truncation
@@ -90,7 +97,9 @@ pub(crate) struct GitFileDiff {
 /// worktree modifications win over staged ones, and anything else staged
 /// reads `"staged"`. Conflicted entries fall through to `"modified"`.
 fn classify_status(status: git2::Status) -> &'static str {
-    if status.is_wt_new() {
+    if status.is_conflicted() {
+        "conflicted"
+    } else if status.is_wt_new() {
         "untracked"
     } else if status.is_wt_deleted() {
         "deleted"
@@ -507,11 +516,15 @@ pub(crate) fn git_info(
         .unwrap_or(DEFAULT_LOG_ENTRIES)
         .clamp(1, MAX_LOG_ENTRIES) as usize;
     let (files, files_overflow) = read_status(&repo)?;
+    let conflicts = read_conflicts(&repo)?;
+    let merge_in_progress = is_merge_in_progress(&repo);
     Ok(GitInfo {
         branch: current_branch(&repo),
         files,
         files_overflow,
         commits: read_log(&repo, count)?,
+        conflicts,
+        merge_in_progress,
     })
 }
 /// Per-file unified diff for `raw_path` (repository-relative), capped at

@@ -62,6 +62,8 @@ function statusLabel(status: string, locale: Locale = getLocale()): string {
       return tr(locale, "vcs.statusDeleted");
     case "renamed":
       return tr(locale, "vcs.statusRenamed");
+    case "conflicted":
+      return tr(locale, "vcs.statusConflicted");
     default:
       return status.charAt(0).toUpperCase() + status.slice(1);
   }
@@ -110,36 +112,67 @@ export interface VersionControlPanelProps {
    * the request so a re-render never replays it; mount already loads, so
    * refresh is an idempotent re-read that also keeps the selection. */
   request?: { token: number; action: "refresh" | "focus-commit" } | null;
+  /** Optional handoff to stage a prompt (e.g. conflict resolution or `/review`)
+   * into the active conversation composer and return to chat. */
+  onSendToAgent?: (prompt: string) => void;
 }
 
 export default function VersionControlPanel({
   onClose,
   request = null,
+  onSendToAgent,
 }: VersionControlPanelProps) {
   const { locale, t, tp: tpn } = useStrings();
   const vcs = useVcs();
   const {
     info,
+    branches,
+    stashes,
     loading,
     error,
     selectedPath,
     diff,
     diffLoading,
     diffError,
+    selectedConflictPath,
+    conflictDiff,
+    conflictDiffLoading,
+    conflictDiffError,
     selectedCommit,
     commitDiff,
     commitDiffLoading,
     commitDiffError,
     acting,
     actionError,
+    actionNotice,
     commitMessage,
     generating,
     generatedTruncated,
     pushArmed,
+    abortArmed,
+    forceDeleteBranch,
     explain,
+    reviewDiff,
+    reviewLoading,
+    reviewError,
+    reviewCopied,
   } = vcs;
   const [tab, setTab] = useState<VcsTab>("working");
+  const [selectedBranch, setSelectedBranch] = useState<string>("");
+  const [newBranchName, setNewBranchName] = useState<string>("");
+  const [stashMessage, setStashMessage] = useState<string>("");
   const commitRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (branches.length === 0) {
+      setSelectedBranch("");
+      return;
+    }
+    if (!branches.some((b) => b.name === selectedBranch)) {
+      const current = branches.find((b) => b.is_current) ?? branches[0];
+      setSelectedBranch(current.name);
+    }
+  }, [branches, selectedBranch]);
 
   // Palette requests (same handlers as the panel's own buttons — no
   // duplicated logic). Refresh reuses the store's refresh; commit-focus
@@ -166,7 +199,27 @@ export default function VersionControlPanel({
 
   const stagedCount =
     info?.files.filter((file) => file.status === "staged").length ?? 0;
+  const conflicts = info?.conflicts ?? [];
+  const mergeInProgress = Boolean(info?.merge_in_progress);
+  const showConflictSection = conflicts.length > 0 || mergeInProgress;
   const explainable = commitDiff !== null && commitDiff.files.length > 0;
+
+  const handleAskAgentResolve = async (path: string, status: string) => {
+    const prompt = [
+      `Resolve the git merge conflict in \`${path}\` (status: ${status}).`,
+      "Inspect the conflict markers in the workspace, preserve the intended behavior from both sides where appropriate, remove all conflict markers, and verify the file builds cleanly.",
+    ].join("\n\n");
+    if (onSendToAgent) {
+      onSendToAgent(prompt);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(prompt);
+      vcs.setNotice(t("vcs.agentPromptCopied"));
+    } catch {
+      vcs.setNotice(null);
+    }
+  };
 
   return (
     <div className="nex-vcs" role="group" aria-label={t("vcs.group")}>
@@ -229,8 +282,213 @@ export default function VersionControlPanel({
                 {actionError}
               </div>
             )}
+            {actionNotice && (
+              <p className="nex-vcs-notice" role="status">
+                {actionNotice}
+              </p>
+            )}
             {tab === "working" ? (
               <>
+                {showConflictSection && (
+                  <section
+                    className="nex-vcs-section nex-vcs-conflict-section"
+                    aria-label={t("vcs.conflictsTitle", {
+                      n: conflicts.length,
+                    })}
+                  >
+                    <div className="nex-vcs-conflict-header">
+                      <div className="nex-vcs-conflict-heading">
+                        <h3 className="nex-vcs-section-title">
+                          {t("vcs.conflictsTitle", { n: conflicts.length })}
+                        </h3>
+                        {mergeInProgress && (
+                          <span className="nex-tag nex-tag-mono nex-vcs-conflict-badge">
+                            {t("vcs.mergeInProgress")}
+                          </span>
+                        )}
+                      </div>
+                      <M3Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={acting !== null}
+                        onClick={() => void vcs.abortMerge()}
+                      >
+                        {acting === "abort-merge"
+                          ? t("vcs.abortingMerge")
+                          : abortArmed
+                            ? t("vcs.confirmAbortMerge")
+                            : t("vcs.abortMerge")}
+                      </M3Button>
+                    </div>
+                    {abortArmed && acting === null && (
+                      <p className="nex-vcs-notice" role="note">
+                        {t("vcs.abortMergeNotice")}
+                      </p>
+                    )}
+                    {conflicts.length === 0 ? (
+                      <p className="nex-vcs-notice" role="note">
+                        {t("vcs.mergeReadyToCommit")}
+                      </p>
+                    ) : (
+                      <ul className="nex-vcs-file-list">
+                        {conflicts.map((conflict) => {
+                          const selected =
+                            conflict.path === selectedConflictPath;
+                          const busy = acting === `resolve:${conflict.path}`;
+                          return (
+                            <li
+                              key={conflict.path}
+                              className="nex-vcs-conflict-row"
+                            >
+                              <button
+                                type="button"
+                                className={
+                                  "nex-vcs-file" +
+                                  (selected ? " is-selected" : "")
+                                }
+                                aria-current={selected ? "true" : undefined}
+                                onClick={() =>
+                                  void vcs.loadConflictDiff(conflict.path)
+                                }
+                              >
+                                <span className="nex-tag nex-tag-mono nex-vcs-conflict-badge">
+                                  {conflict.status}
+                                </span>
+                                <span
+                                  className="nex-tag nex-tag-mono nex-vcs-file-path"
+                                  title={conflict.path}
+                                >
+                                  {conflict.path}
+                                </span>
+                              </button>
+                              <div className="nex-vcs-conflict-actions">
+                                <M3Button
+                                  variant="quiet"
+                                  size="sm"
+                                  disabled={busy || acting !== null}
+                                  onClick={() =>
+                                    void vcs.resolveConflict(
+                                      conflict.path,
+                                      "ours"
+                                    )
+                                  }
+                                >
+                                  {t("vcs.acceptOurs")}
+                                </M3Button>
+                                <M3Button
+                                  variant="quiet"
+                                  size="sm"
+                                  disabled={busy || acting !== null}
+                                  onClick={() =>
+                                    void vcs.resolveConflict(
+                                      conflict.path,
+                                      "theirs"
+                                    )
+                                  }
+                                >
+                                  {t("vcs.acceptTheirs")}
+                                </M3Button>
+                                <M3Button
+                                  variant="quiet"
+                                  size="sm"
+                                  disabled={acting !== null}
+                                  onClick={() =>
+                                    void handleAskAgentResolve(
+                                      conflict.path,
+                                      conflict.status
+                                    )
+                                  }
+                                >
+                                  {t("vcs.askAgentResolve")}
+                                </M3Button>
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    {selectedConflictPath && (
+                      <div
+                        className="nex-vcs-section"
+                        aria-label={t("vcs.conflictPreviewAria", {
+                          path: selectedConflictPath,
+                        })}
+                      >
+                        <h4 className="nex-vcs-section-title">
+                          {t("vcs.conflictPreviewTitle")}{" "}
+                          <span className="nex-tag nex-tag-mono">
+                            {selectedConflictPath}
+                          </span>
+                        </h4>
+                        {conflictDiffLoading ? (
+                          <M3LoadingIndicator
+                            label={t("vcs.conflictLoading", {
+                              path: selectedConflictPath,
+                            })}
+                          />
+                        ) : conflictDiffError || !conflictDiff ? (
+                          <div
+                            className="nex-composer-error nex-fade-in"
+                            role="alert"
+                          >
+                            {conflictDiffError ?? t("vcs.conflictUnavailable")}
+                          </div>
+                        ) : conflictDiff.binary ? (
+                          <p className="nex-agent-empty">
+                            {t("vcs.binaryFile")}
+                          </p>
+                        ) : (
+                          <>
+                            {conflictDiff.truncated && (
+                              <p className="nex-vcs-notice" role="note">
+                                {t("vcs.diffTruncated")}
+                              </p>
+                            )}
+                            {conflictDiff.working !== "" && (
+                              <div className="nex-vcs-conflict-pane">
+                                <span className="nex-vcs-conflict-pane-label">
+                                  {t("vcs.conflictWorking")}
+                                </span>
+                                <div
+                                  className="nex-vcs-diff-scroll"
+                                  role="region"
+                                  aria-label={t("vcs.conflictPreviewAria", {
+                                    path: selectedConflictPath,
+                                  })}
+                                  tabIndex={0}
+                                >
+                                  <DiffView
+                                    observation={conflictDiff.working}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            <div className="nex-vcs-conflict-panes">
+                              <div className="nex-vcs-conflict-pane">
+                                <span className="nex-vcs-conflict-pane-label">
+                                  {t("vcs.conflictOurs")}
+                                </span>
+                                <pre className="nex-vcs-conflict-code">
+                                  {conflictDiff.ours || "(deleted)"}
+                                </pre>
+                              </div>
+                              <div className="nex-vcs-conflict-pane">
+                                <span className="nex-vcs-conflict-pane-label">
+                                  {t("vcs.conflictTheirs")}
+                                </span>
+                                <pre className="nex-vcs-conflict-code">
+                                  {conflictDiff.theirs || "(deleted)"}
+                                </pre>
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </section>
+                )}
+
                 <section
                   className="nex-vcs-section"
                   aria-label={t("vcs.changedTitle", { n: info.files.length })}
@@ -401,12 +659,28 @@ export default function VersionControlPanel({
 
                 <section
                   className="nex-vcs-section"
-                  aria-label={t("vcs.pushSection")}
+                  aria-label={t("vcs.remoteSection")}
                 >
                   <h3 className="nex-vcs-section-title">
-                    {t("vcs.pushSection")}
+                    {t("vcs.remoteSection")}
                   </h3>
                   <div className="nex-vcs-header-actions">
+                    <M3Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={acting !== null}
+                      onClick={() => void vcs.fetchOrigin()}
+                    >
+                      {acting === "fetch" ? t("vcs.fetching") : t("vcs.fetch")}
+                    </M3Button>
+                    <M3Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={acting !== null || !info.branch}
+                      onClick={() => void vcs.pullOrigin()}
+                    >
+                      {acting === "pull" ? t("vcs.pulling") : t("vcs.pull")}
+                    </M3Button>
                     <M3Button
                       variant="secondary"
                       size="sm"
@@ -432,6 +706,284 @@ export default function VersionControlPanel({
                   )}
                   {!info.branch && (
                     <p className="nex-agent-empty">{t("vcs.detached")}</p>
+                  )}
+                </section>
+
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.branchesSection")}
+                >
+                  <h3 className="nex-vcs-section-title">
+                    {t("vcs.branchesSection")}
+                  </h3>
+                  {branches.length > 0 && (
+                    <div className="nex-vcs-inline-form">
+                      <select
+                        className="nex-vcs-select"
+                        aria-label={t("vcs.branchSelectAria")}
+                        value={selectedBranch}
+                        disabled={acting !== null}
+                        onChange={(event) => {
+                          setSelectedBranch(event.target.value);
+                          vcs.cancelForceDelete();
+                        }}
+                      >
+                        {branches.map((branch) => (
+                          <option key={branch.name} value={branch.name}>
+                            {branch.is_current
+                              ? `* ${branch.name}`
+                              : branch.name}
+                          </option>
+                        ))}
+                      </select>
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={
+                          acting !== null ||
+                          !selectedBranch ||
+                          selectedBranch === info.branch
+                        }
+                        onClick={() => void vcs.switchBranch(selectedBranch)}
+                      >
+                        {acting === "branch-switch"
+                          ? t("vcs.branchSwitching")
+                          : t("vcs.branchSwitch")}
+                      </M3Button>
+                      <M3Button
+                        variant="quiet"
+                        size="sm"
+                        disabled={
+                          acting !== null ||
+                          !selectedBranch ||
+                          selectedBranch === info.branch
+                        }
+                        onClick={() =>
+                          void vcs.deleteBranch(selectedBranch, false)
+                        }
+                      >
+                        {acting === "branch-delete"
+                          ? t("vcs.branchDeleting")
+                          : t("vcs.branchDelete")}
+                      </M3Button>
+                    </div>
+                  )}
+                  {forceDeleteBranch && (
+                    <div className="nex-vcs-notice" role="alert">
+                      <p>
+                        {t("vcs.branchForceDeletePrompt", {
+                          name: forceDeleteBranch,
+                        })}
+                      </p>
+                      <div className="nex-vcs-header-actions">
+                        <M3Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={acting !== null}
+                          onClick={() =>
+                            void vcs.deleteBranch(forceDeleteBranch, true)
+                          }
+                        >
+                          {t("vcs.branchForceDeleteConfirm", {
+                            name: forceDeleteBranch,
+                          })}
+                        </M3Button>
+                        <M3Button
+                          variant="quiet"
+                          size="sm"
+                          disabled={acting !== null}
+                          onClick={vcs.cancelForceDelete}
+                        >
+                          {t("vcs.cancel")}
+                        </M3Button>
+                      </div>
+                    </div>
+                  )}
+                  <div className="nex-vcs-inline-form">
+                    <input
+                      type="text"
+                      className="nex-vcs-input"
+                      placeholder={t("vcs.branchNewPh")}
+                      aria-label={t("vcs.branchNewAria")}
+                      value={newBranchName}
+                      disabled={acting !== null}
+                      onChange={(event) => setNewBranchName(event.target.value)}
+                    />
+                    <M3Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={
+                        acting !== null || newBranchName.trim() === ""
+                      }
+                      onClick={async () => {
+                        const ok = await vcs.createBranch(newBranchName, true);
+                        if (ok) setNewBranchName("");
+                      }}
+                    >
+                      {acting === "branch-create"
+                        ? t("vcs.branchCreating")
+                        : t("vcs.branchCreate")}
+                    </M3Button>
+                  </div>
+                </section>
+
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.stashSection", { n: stashes.length })}
+                >
+                  <h3 className="nex-vcs-section-title">
+                    {t("vcs.stashSection", { n: stashes.length })}
+                  </h3>
+                  <div className="nex-vcs-inline-form">
+                    <input
+                      type="text"
+                      className="nex-vcs-input"
+                      placeholder={t("vcs.stashMessagePh")}
+                      aria-label={t("vcs.stashMessageAria")}
+                      value={stashMessage}
+                      disabled={acting !== null}
+                      onChange={(event) => setStashMessage(event.target.value)}
+                    />
+                    <M3Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={acting !== null || info.files.length === 0}
+                      onClick={async () => {
+                        const ok = await vcs.stashPush(stashMessage);
+                        if (ok) setStashMessage("");
+                      }}
+                    >
+                      {acting === "stash-push"
+                        ? t("vcs.stashing")
+                        : t("vcs.stashPush")}
+                    </M3Button>
+                  </div>
+                  {stashes.length === 0 ? (
+                    <p className="nex-agent-empty">{t("vcs.stashEmpty")}</p>
+                  ) : (
+                    <ul className="nex-vcs-file-list">
+                      {stashes.map((entry) => (
+                        <li
+                          key={`${entry.index}-${entry.hash}`}
+                          className="nex-vcs-stash-row"
+                        >
+                          <div className="nex-vcs-stash-meta">
+                            <span className="nex-tag nex-tag-mono">
+                              stash@{"{"}
+                              {entry.index}
+                              {"}"}
+                            </span>
+                            <span
+                              className="nex-vcs-commit-message"
+                              title={entry.message}
+                            >
+                              {entry.message}
+                            </span>
+                          </div>
+                          <M3Button
+                            variant="quiet"
+                            size="sm"
+                            disabled={acting !== null}
+                            onClick={() => void vcs.stashPop(entry.index)}
+                          >
+                            {acting === `stash-pop-${entry.index}`
+                              ? t("vcs.stashPopping")
+                              : t("vcs.stashPop")}
+                          </M3Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+
+                <section
+                  className="nex-vcs-section"
+                  aria-label={t("vcs.reviewSection")}
+                >
+                  <h3 className="nex-vcs-section-title">
+                    {t("vcs.reviewSection")}
+                  </h3>
+                  <div className="nex-vcs-header-actions">
+                    <M3Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={reviewLoading || acting !== null}
+                      onClick={() => void vcs.prepareReview("working")}
+                    >
+                      {reviewLoading
+                        ? t("vcs.reviewPreparing")
+                        : t("vcs.reviewWorking")}
+                    </M3Button>
+                    <M3Button
+                      variant="quiet"
+                      size="sm"
+                      disabled={
+                        reviewLoading || acting !== null || !info.branch
+                      }
+                      onClick={() => void vcs.prepareReview("branch")}
+                    >
+                      {t("vcs.reviewBranch")}
+                    </M3Button>
+                  </div>
+                  {reviewError && (
+                    <div
+                      className="nex-composer-error nex-fade-in"
+                      role="alert"
+                    >
+                      {reviewError}
+                    </div>
+                  )}
+                  {reviewDiff && (
+                    <>
+                      {reviewDiff.redacted && (
+                        <p className="nex-vcs-notice" role="note">
+                          {t("vcs.reviewRedacted")}
+                        </p>
+                      )}
+                      {reviewDiff.truncated && (
+                        <p className="nex-vcs-notice" role="note">
+                          {t("vcs.diffTruncated")}
+                        </p>
+                      )}
+                      {reviewDiff.diff === "" ? (
+                        <p className="nex-agent-empty">
+                          {t("vcs.reviewEmpty")}
+                        </p>
+                      ) : (
+                        <>
+                          <div
+                            className="nex-vcs-diff-scroll"
+                            role="region"
+                            aria-label={t("vcs.reviewPreviewRegion")}
+                            tabIndex={0}
+                          >
+                            <DiffView observation={reviewDiff.diff} />
+                          </div>
+                          <div className="nex-vcs-header-actions">
+                            <M3Button
+                              variant="quiet"
+                              size="sm"
+                              onClick={() =>
+                                void vcs.copyReviewPrompt(reviewDiff.prompt)
+                              }
+                            >
+                              {reviewCopied
+                                ? t("vcs.copied")
+                                : t("vcs.reviewCopy")}
+                            </M3Button>
+                            {onSendToAgent && (
+                              <M3Button
+                                variant="primary"
+                                size="sm"
+                                onClick={() => onSendToAgent(reviewDiff.prompt)}
+                              >
+                                {t("vcs.reviewSend")}
+                              </M3Button>
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </>
                   )}
                 </section>
               </>

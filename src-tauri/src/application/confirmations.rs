@@ -107,6 +107,33 @@ pub(crate) const OP_GIT_COMMIT: &str = "git_commit";
 /// Operation identity for pushing the current branch to `origin`.
 pub(crate) const OP_GIT_PUSH: &str = "git_push";
 
+/// Operation identity for pulling the current branch from `origin`.
+pub(crate) const OP_GIT_PULL: &str = "git_pull";
+
+/// Operation identity for creating a local git branch.
+pub(crate) const OP_GIT_BRANCH_CREATE: &str = "git_branch_create";
+
+/// Operation identity for switching to another local git branch.
+pub(crate) const OP_GIT_BRANCH_SWITCH: &str = "git_branch_switch";
+
+/// Operation identity for deleting a merged local git branch.
+pub(crate) const OP_GIT_BRANCH_DELETE: &str = "git_branch_delete";
+
+/// Operation identity for force-deleting an unmerged local git branch.
+pub(crate) const OP_GIT_BRANCH_DELETE_FORCE: &str = "git_branch_delete_force";
+
+/// Operation identity for pushing local changes onto the git stash.
+pub(crate) const OP_GIT_STASH_PUSH: &str = "git_stash_push";
+
+/// Operation identity for popping an entry from the git stash.
+pub(crate) const OP_GIT_STASH_POP: &str = "git_stash_pop";
+
+/// Operation identity for resolving a conflicted file with ours/theirs.
+pub(crate) const OP_GIT_RESOLVE_CONFLICT: &str = "git_resolve_conflict";
+
+/// Operation identity for aborting an in-progress merge or pull.
+pub(crate) const OP_GIT_ABORT_MERGE: &str = "git_abort_merge";
+
 /// Operation identity for one confirmed dead-code apply.
 pub(crate) const OP_REFACTOR_APPLY: &str = "refactor_apply";
 

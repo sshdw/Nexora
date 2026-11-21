@@ -234,7 +234,8 @@ pub(super) fn staged_diff_summary(
         }
         text.truncate(end);
     }
-    Ok((text, truncated))
+    let (redacted_text, _) = crate::application::agent::redaction::redact_command_output(&text);
+    Ok((redacted_text, truncated))
 }
 
 /// Generate a conventional-commit message for the staged changes through the

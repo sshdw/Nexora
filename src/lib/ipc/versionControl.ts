@@ -3,9 +3,18 @@
 
 import { invoke } from "./core";
 import {
+  OP_GIT_ABORT_MERGE,
+  OP_GIT_BRANCH_CREATE,
+  OP_GIT_BRANCH_DELETE,
+  OP_GIT_BRANCH_DELETE_FORCE,
+  OP_GIT_BRANCH_SWITCH,
   OP_GIT_COMMIT,
+  OP_GIT_PULL,
   OP_GIT_PUSH,
+  OP_GIT_RESOLVE_CONFLICT,
   OP_GIT_STAGE,
+  OP_GIT_STASH_POP,
+  OP_GIT_STASH_PUSH,
   OP_GIT_UNSTAGE,
   requestConfirmation,
 } from "./confirmations";
@@ -46,6 +55,12 @@ export interface GitCommit {
   risk_signals: string[];
 }
 
+/** One conflicted file in the index (`UU`, `AA`, `UD`, `DU`, `DD`). */
+export interface GitConflictFile {
+  path: string;
+  status: string;
+}
+
 /** Aggregate read-only git view: current branch (`null` when detached or
  * unborn), changed files sorted by path, and recent commits newest-first.
  * `files` is capped server-side (500, sorted order) with any remainder
@@ -55,6 +70,8 @@ export interface GitInfo {
   files: GitFileStatus[];
   files_overflow: number;
   commits: GitCommit[];
+  conflicts?: GitConflictFile[];
+  merge_in_progress?: boolean;
 }
 
 /** One per-file unified diff, capped server-side (256 KiB) with a truncation
@@ -193,5 +210,187 @@ export function gitExplainCommit(
     commitHash,
     provider,
     model,
+  });
+}
+
+// ---- Extended Git Workflow, Conflict Resolution & /review --------------
+
+export interface GitFetchResult {
+  remote: string;
+  updated_refs: number;
+}
+
+export interface GitPullResult {
+  status: "up_to_date" | "fast_forward" | "merged" | "conflicts" | string;
+  commit_hash: string | null;
+  conflicts: GitConflictFile[];
+}
+
+export interface GitBranch {
+  name: string;
+  is_current: boolean;
+  upstream: string | null;
+  last_commit_hash: string | null;
+}
+
+export interface GitStashEntry {
+  index: number;
+  message: string;
+  hash: string;
+}
+
+export interface GitStashPopResult {
+  status: "applied" | "conflicts" | string;
+  conflicts: GitConflictFile[];
+}
+
+export interface GitConflictDiff {
+  path: string;
+  status: string;
+  ours: string;
+  theirs: string;
+  working: string;
+  truncated: boolean;
+  binary: boolean;
+}
+
+export interface GitReviewDiff {
+  scope: "working" | "branch" | string;
+  base_branch: string | null;
+  files: string[];
+  files_overflow: number;
+  diff: string;
+  truncated: boolean;
+  redacted: boolean;
+  prompt: string;
+}
+
+/** Fetch remote-tracking refs from `origin`. */
+export function gitFetch(remote = "origin"): Promise<GitFetchResult> {
+  return invoke<GitFetchResult>("git_fetch", { remote });
+}
+
+/** Pull the current branch from `origin`. Reports conflicts cleanly without
+ * throwing. Confirmed via `git_pull`. */
+export async function gitPull(remote = "origin"): Promise<GitPullResult> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_PULL
+  );
+  return invoke<GitPullResult>("git_pull", { remote, confirmationId });
+}
+
+/** List local branches in the workspace repository. */
+export function gitBranches(): Promise<GitBranch[]> {
+  return invoke<GitBranch[]>("git_branches");
+}
+
+/** Create a new local branch at `HEAD`, optionally switching to it. */
+export async function gitBranchCreate(
+  name: string,
+  switchTo = true
+): Promise<GitBranch> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_BRANCH_CREATE
+  );
+  return invoke<GitBranch>("git_branch_create", {
+    name,
+    switch: switchTo,
+    confirmationId,
+  });
+}
+
+/** Switch to an existing local branch. */
+export async function gitBranchSwitch(name: string): Promise<void> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_BRANCH_SWITCH
+  );
+  return invoke<void>("git_branch_switch", { name, confirmationId });
+}
+
+/** Delete a local branch. Force-deleting an unmerged branch mints
+ * `git_branch_delete_force`. */
+export async function gitBranchDelete(
+  name: string,
+  force = false
+): Promise<void> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    force ? OP_GIT_BRANCH_DELETE_FORCE : OP_GIT_BRANCH_DELETE
+  );
+  return invoke<void>("git_branch_delete", { name, force, confirmationId });
+}
+
+/** List stash entries (newest first, index 0 = top). */
+export function gitStashList(): Promise<GitStashEntry[]> {
+  return invoke<GitStashEntry[]>("git_stash_list");
+}
+
+/** Save local changes onto the stash stack. */
+export async function gitStashPush(
+  message?: string | null
+): Promise<GitStashEntry> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_STASH_PUSH
+  );
+  return invoke<GitStashEntry>("git_stash_push", {
+    message: message ?? null,
+    confirmationId,
+  });
+}
+
+/** Pop a stash entry by zero-based index (default 0). */
+export async function gitStashPop(index = 0): Promise<GitStashPopResult> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_STASH_POP
+  );
+  return invoke<GitStashPopResult>("git_stash_pop", { index, confirmationId });
+}
+
+/** Load conflict preview (`ours`, `theirs`, and `working`) for one conflicted
+ * path. */
+export function gitConflictDiff(path: string): Promise<GitConflictDiff> {
+  return invoke<GitConflictDiff>("git_conflict_diff", { path });
+}
+
+/** Resolve one conflicted file via `"ours"` or `"theirs"` and stage the
+ * resolved result. Returns the remaining conflict count. */
+export async function gitResolveConflict(
+  path: string,
+  strategy: "ours" | "theirs"
+): Promise<number> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_RESOLVE_CONFLICT
+  );
+  return invoke<number>("git_resolve_conflict", {
+    path,
+    strategy,
+    confirmationId,
+  });
+}
+
+/** Safely abort an in-progress merge or pull. */
+export async function gitAbortMerge(): Promise<void> {
+  const confirmationId = await requestConfirmation(
+    "version_control",
+    OP_GIT_ABORT_MERGE
+  );
+  return invoke<void>("git_abort_merge", { confirmationId });
+}
+
+/** Prepare a secret-redacted diff and `/review` prompt for `"working"` or
+ * `"branch"` scope. */
+export function gitPrepareReviewDiff(
+  scope: "working" | "branch" = "working",
+  baseBranch?: string | null
+): Promise<GitReviewDiff> {
+  return invoke<GitReviewDiff>("git_prepare_review_diff", {
+    scope,
+    baseBranch: baseBranch ?? null,
   });
 }

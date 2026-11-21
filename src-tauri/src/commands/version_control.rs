@@ -48,8 +48,9 @@ use tauri::{AppHandle, Manager};
 
 use crate::application::confirmations::ManagedConfirmations;
 use crate::application::version_control::{
-    CommitExplainError, CommitExplanation, GeneratedCommitMessage, GitCommitDiff, GitFileDiff,
-    GitInfo,
+    CommitExplainError, CommitExplanation, GeneratedCommitMessage, GitBranch, GitCommitDiff,
+    GitConflictDiff, GitFetchResult, GitFileDiff, GitInfo, GitPullResult, GitReviewDiff,
+    GitStashEntry, GitStashPopResult,
 };
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -390,6 +391,387 @@ pub(crate) async fn git_explain_commit(
                 ErrorKind::Request,
                 "the commit explanation could not be generated",
             ))
+        }
+    }
+}
+
+/// Fetch remote-tracking refs from `remote` (only `"origin"` is accepted).
+/// Runs on the blocking pool like [`git_info`].
+#[tauri::command]
+pub(crate) async fn git_fetch(
+    remote: String,
+    app: AppHandle,
+) -> Result<GitFetchResult, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        crate::application::version_control::git_fetch(&root, remote.as_str())
+            .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_fetch blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Pull the current branch from `remote` (`"origin"`), reporting conflicts
+/// cleanly without crashing. Requires `confirmation_id` minted for `git_pull`.
+#[tauri::command]
+pub(crate) async fn git_pull(
+    remote: String,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<GitPullResult, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_pull(
+            &root,
+            remote.as_str(),
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_pull blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// List local branches for the effective workspace repository.
+#[tauri::command]
+pub(crate) async fn git_branches(app: AppHandle) -> Result<Vec<GitBranch>, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        crate::application::version_control::git_branches(&root).map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_branches blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Create a local branch at `HEAD`, optionally switching to it.
+/// Requires `confirmation_id` minted for `git_branch_create`.
+#[tauri::command]
+pub(crate) async fn git_branch_create(
+    name: String,
+    switch: bool,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<GitBranch, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_branch_create(
+            &root,
+            name.as_str(),
+            switch,
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_branch_create blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Switch to an existing local branch.
+/// Requires `confirmation_id` minted for `git_branch_switch`.
+#[tauri::command]
+pub(crate) async fn git_branch_switch(
+    name: String,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<(), CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_branch_switch(
+            &root,
+            name.as_str(),
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_branch_switch blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Delete a local branch. When `force` is `true`, consumes
+/// `git_branch_delete_force`; otherwise refuses unmerged branches.
+#[tauri::command]
+pub(crate) async fn git_branch_delete(
+    name: String,
+    force: bool,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<(), CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_branch_delete(
+            &root,
+            name.as_str(),
+            force,
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_branch_delete blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// List stash entries for the effective workspace repository.
+#[tauri::command]
+pub(crate) async fn git_stash_list(app: AppHandle) -> Result<Vec<GitStashEntry>, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        crate::application::version_control::git_stash_list(&root).map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_stash_list blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Save local changes onto the stash stack.
+/// Requires `confirmation_id` minted for `git_stash_push`.
+#[tauri::command]
+pub(crate) async fn git_stash_push(
+    message: Option<String>,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<GitStashEntry, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_stash_push(
+            &root,
+            message.as_deref(),
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_stash_push blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Pop a stash entry by zero-based index.
+/// Requires `confirmation_id` minted for `git_stash_pop`.
+#[tauri::command]
+pub(crate) async fn git_stash_pop(
+    index: usize,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<GitStashPopResult, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_stash_pop(
+            &root,
+            index,
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_stash_pop blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Load conflict preview (`ours`, `theirs`, and `working`) for one conflicted
+/// path.
+#[tauri::command]
+pub(crate) async fn git_conflict_diff(
+    path: String,
+    app: AppHandle,
+) -> Result<GitConflictDiff, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        crate::application::version_control::git_conflict_diff(&root, path.as_str())
+            .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_conflict_diff blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Resolve one conflicted file with `"ours"` or `"theirs"` and stage the
+/// resolved result. Requires `confirmation_id` minted for
+/// `git_resolve_conflict`.
+#[tauri::command]
+pub(crate) async fn git_resolve_conflict(
+    path: String,
+    strategy: String,
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<usize, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_resolve_conflict(
+            &root,
+            path.as_str(),
+            strategy.as_str(),
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_resolve_conflict blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Safely abort an in-progress merge or pull.
+/// Requires `confirmation_id` minted for `git_abort_merge`.
+#[tauri::command]
+pub(crate) async fn git_abort_merge(
+    confirmation_id: String,
+    app: AppHandle,
+) -> Result<(), CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        let confirmations = handle.state::<ManagedConfirmations>();
+        crate::application::version_control::git_abort_merge(
+            &root,
+            confirmation_id.as_str(),
+            confirmations.inner(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_abort_merge blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
+        }
+    }
+}
+
+/// Prepare a secret-redacted diff and `/review` prompt for `"working"` or
+/// `"branch"` scope.
+#[tauri::command]
+pub(crate) async fn git_prepare_review_diff(
+    scope: String,
+    base_branch: Option<String>,
+    app: AppHandle,
+) -> Result<GitReviewDiff, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let fallback = default_root(&handle)?;
+        let db = handle.state::<Database>();
+        let root = resolve_workspace_root(db.inner(), &fallback);
+        crate::application::version_control::git_prepare_review_diff(
+            &root,
+            scope.as_str(),
+            base_branch.as_deref(),
+        )
+        .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("git_prepare_review_diff blocking task failed: {err}");
+            Err(CommandError::new(ErrorKind::Io, "the git operation failed"))
         }
     }
 }

@@ -341,6 +341,20 @@ impl From<VersionControlError> for CommandError {
             VersionControlError::InvalidRemote => {
                 Self::new(ErrorKind::InvalidInput, "the git remote is not allowed")
             }
+            VersionControlError::InvalidBranch => {
+                Self::new(ErrorKind::InvalidInput, "the branch name is invalid")
+            }
+            VersionControlError::BranchNotMerged => Self::new(
+                ErrorKind::InvalidInput,
+                "the branch has unmerged commits; confirm force delete to remove it",
+            ),
+            VersionControlError::InvalidInput => {
+                Self::new(ErrorKind::InvalidInput, "the git request input is invalid")
+            }
+            VersionControlError::MergeInProgress => Self::new(
+                ErrorKind::InvalidInput,
+                "a merge or conflict resolution is currently in progress",
+            ),
             // Never log the underlying git detail: diff content may carry
             // user-written secrets, so even server-side logging stays fixed.
             VersionControlError::GitFailed => Self::new(ErrorKind::Io, "the git operation failed"),

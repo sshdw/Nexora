@@ -45,9 +45,12 @@
 //! (manual Refresh only).
 
 mod commit_message;
+mod conflicts;
 mod mutate;
 mod paths;
+mod review;
 mod status;
+mod workflow;
 
 // The re-exports keep every original single-file path
 // (`crate::application::version_control::<item>`) valid for the command
@@ -61,13 +64,26 @@ pub(crate) use commit_message::{
     CommitMessageError, GeneratedCommitMessage,
 };
 #[allow(unused_imports)]
+pub(crate) use conflicts::{
+    git_abort_merge, git_conflict_diff, git_resolve_conflict, is_merge_in_progress, read_conflicts,
+    GitConflictDiff, GitConflictFile,
+};
+#[allow(unused_imports)]
 pub(crate) use mutate::{
     git_commit, git_push, git_stage, git_unstage, is_conventional_message, validate_commit_message,
 };
 #[allow(unused_imports)]
+pub(crate) use review::{git_prepare_review_diff, GitReviewDiff};
+#[allow(unused_imports)]
 pub(crate) use status::{
     git_commit_diff, git_file_diff, git_info, GitCommit, GitCommitDiff, GitFileDiff, GitFileStatus,
     GitInfo,
+};
+#[allow(unused_imports)]
+pub(crate) use workflow::{
+    git_branch_create, git_branch_delete, git_branch_switch, git_branches, git_fetch, git_pull,
+    git_stash_list, git_stash_pop, git_stash_push, validate_branch_name, GitBranch, GitFetchResult,
+    GitPullResult, GitStashEntry, GitStashPopResult,
 };
 
 use std::path::{Path, PathBuf};
@@ -146,6 +162,17 @@ pub(crate) enum VersionControlError {
     InvalidMessage,
     /// A push named a remote outside the fixed allowlist.
     InvalidRemote,
+    /// A branch name was empty, malformed, unknown, or currently checked out.
+    InvalidBranch,
+    /// A branch delete was requested without force while the branch has
+    /// unmerged commits.
+    BranchNotMerged,
+    /// A caller-supplied option (such as conflict strategy or review scope)
+    /// was outside the fixed vocabulary.
+    InvalidInput,
+    /// An operation cannot run while a merge or conflict resolution is in
+    /// progress.
+    MergeInProgress,
     /// A git operation failed (status, log, diff read, or write).
     GitFailed,
 }
@@ -163,6 +190,15 @@ impl std::fmt::Display for VersionControlError {
             ),
             Self::InvalidMessage => write!(f, "the commit message is invalid"),
             Self::InvalidRemote => write!(f, "the git remote is not allowed"),
+            Self::InvalidBranch => write!(f, "the branch name is invalid"),
+            Self::BranchNotMerged => write!(
+                f,
+                "the branch has unmerged commits; confirm force delete to remove it"
+            ),
+            Self::InvalidInput => write!(f, "the git request input is invalid"),
+            Self::MergeInProgress => {
+                write!(f, "a merge or conflict resolution is currently in progress")
+            }
             Self::GitFailed => write!(f, "the git operation failed"),
         }
     }
@@ -1356,5 +1392,480 @@ mod tests {
         let long = "x".repeat(MAX_COMMIT_EXPLANATION_CHARS + 100);
         let explanation = sanitize_commit_explanation(&long);
         assert!(explanation.chars().count() <= MAX_COMMIT_EXPLANATION_CHARS);
+    }
+
+    fn mint_op(registry: &ConfirmationRegistry, op: &str) -> String {
+        registry
+            .request(SCOPE_VERSION_CONTROL, &ConfirmationTarget::new(op))
+            .expect("mint confirmation")
+    }
+
+    fn configure_local_identity(repo: &git2::Repository) {
+        let mut cfg = repo.config().expect("repo config");
+        cfg.set_str("user.name", "nexora-test").expect("set name");
+        cfg.set_str("user.email", "nexora-test@example.com")
+            .expect("set email");
+    }
+
+    fn push_branch_to_origin(repo: &git2::Repository, branch: &str) {
+        let mut remote = repo.find_remote("origin").expect("origin");
+        let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+        remote.push(&[refspec.as_str()], None).expect("push");
+    }
+
+    fn setup_cloned_pair() -> (
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        git2::Repository,
+        git2::Repository,
+        String,
+    ) {
+        let bare_dir = temp_root();
+        let _bare = git2::Repository::init_bare(&bare_dir).expect("init bare");
+        let dir_a = temp_root();
+        let repo_a = init_repo(&dir_a);
+        configure_local_identity(&repo_a);
+        commit_file(&repo_a, "shared.txt", b"line1\nline2\n", "base");
+        let branch = current_branch(&repo_a).expect("branch");
+        let bare_url = bare_dir.to_string_lossy().into_owned();
+        repo_a.remote("origin", &bare_url).expect("add origin");
+        push_branch_to_origin(&repo_a, &branch);
+
+        let dir_b = temp_root();
+        let repo_b = git2::Repository::clone(&bare_url, &dir_b).expect("clone b");
+        configure_local_identity(&repo_b);
+        (bare_dir, dir_a, dir_b, repo_a, repo_b, branch)
+    }
+
+    #[test]
+    fn fetch_and_pull_fast_forward_and_clean_conflict_reporting() {
+        use crate::application::confirmations::{
+            OP_GIT_ABORT_MERGE, OP_GIT_PULL, OP_GIT_RESOLVE_CONFLICT,
+        };
+
+        let (bare_dir, dir_a, dir_b, repo_a, repo_b, branch) = setup_cloned_pair();
+
+        // Push a fast-forward commit from repo_a.
+        commit_file(
+            &repo_a,
+            "shared.txt",
+            b"line1\nline2-remote\n",
+            "remote update",
+        );
+        push_branch_to_origin(&repo_a, &branch);
+
+        assert_eq!(
+            git_fetch(&dir_b, "upstream").expect_err("non-origin rejected"),
+            VersionControlError::InvalidRemote
+        );
+        let fetched = git_fetch(&dir_b, "origin").expect("fetch origin");
+        assert_eq!(fetched.remote, "origin");
+        assert!(fetched.updated_refs >= 1);
+
+        let confirmations = ConfirmationRegistry::new();
+        let pull_ff = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect("pull ff");
+        assert_eq!(pull_ff.status, "fast_forward");
+        assert!(pull_ff.conflicts.is_empty());
+        assert!(pull_ff.commit_hash.is_some());
+
+        let pull_same = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect("pull up to date");
+        assert_eq!(pull_same.status, "up_to_date");
+
+        // Create conflicting commits on repo_a (pushed) and repo_b (local).
+        commit_file(
+            &repo_a,
+            "shared.txt",
+            b"line1\nfrom-remote\n",
+            "remote edit",
+        );
+        push_branch_to_origin(&repo_a, &branch);
+        commit_file(&repo_b, "shared.txt", b"line1\nfrom-local\n", "local edit");
+
+        let pull_conflict = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect("pull conflict returns Ok");
+        assert_eq!(pull_conflict.status, "conflicts");
+        assert_eq!(pull_conflict.conflicts.len(), 1);
+        assert_eq!(pull_conflict.conflicts[0].path, "shared.txt");
+        assert_eq!(pull_conflict.conflicts[0].status, "UU");
+
+        let info = git_info(&dir_b, None).expect("git_info during conflict");
+        assert!(info.merge_in_progress);
+        assert_eq!(info.conflicts.len(), 1);
+
+        let preview = git_conflict_diff(&dir_b, "shared.txt").expect("conflict diff");
+        assert_eq!(preview.status, "UU");
+        assert!(preview.ours.contains("from-local"));
+        assert!(preview.theirs.contains("from-remote"));
+
+        let remaining = git_resolve_conflict(
+            &dir_b,
+            "shared.txt",
+            "theirs",
+            &mint_op(&confirmations, OP_GIT_RESOLVE_CONFLICT),
+            &confirmations,
+        )
+        .expect("resolve theirs");
+        assert_eq!(remaining, 0);
+        assert!(std::fs::read_to_string(dir_b.join("shared.txt"))
+            .expect("read resolved")
+            .contains("from-remote"));
+
+        git_abort_merge(
+            &dir_b,
+            &mint_op(&confirmations, OP_GIT_ABORT_MERGE),
+            &confirmations,
+        )
+        .expect("abort merge");
+        let after_abort = git_info(&dir_b, None).expect("git_info after abort");
+        assert!(!after_abort.merge_in_progress);
+        assert!(after_abort.conflicts.is_empty());
+        assert!(std::fs::read_to_string(dir_b.join("shared.txt"))
+            .expect("read restored")
+            .contains("from-local"));
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&bare_dir);
+    }
+
+    #[test]
+    fn branch_lifecycle_and_unmerged_delete_guard() {
+        use crate::application::confirmations::{
+            OP_GIT_BRANCH_CREATE, OP_GIT_BRANCH_DELETE, OP_GIT_BRANCH_DELETE_FORCE,
+            OP_GIT_BRANCH_SWITCH,
+        };
+
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        configure_local_identity(&repo);
+        commit_file(&repo, "init.txt", b"hello\n", "initial");
+        let default_branch = current_branch(&repo).expect("default branch");
+
+        let confirmations = ConfirmationRegistry::new();
+
+        // Create and switch to feature branch.
+        let created = git_branch_create(
+            &dir,
+            "feat/stage10",
+            true,
+            &mint_op(&confirmations, OP_GIT_BRANCH_CREATE),
+            &confirmations,
+        )
+        .expect("create branch");
+        assert_eq!(created.name, "feat/stage10");
+        assert!(created.is_current);
+
+        // Add an unmerged commit on feature branch.
+        commit_file(&repo, "feature.txt", b"wip\n", "feature commit");
+
+        let branches = git_branches(&dir).expect("list branches");
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].name, "feat/stage10");
+        assert!(branches[0].is_current);
+
+        // Cannot delete currently checked-out branch.
+        assert_eq!(
+            git_branch_delete(
+                &dir,
+                "feat/stage10",
+                true,
+                &mint_op(&confirmations, OP_GIT_BRANCH_DELETE_FORCE),
+                &confirmations,
+            )
+            .expect_err("cannot delete current branch"),
+            VersionControlError::InvalidBranch
+        );
+
+        // Switch back to default branch.
+        git_branch_switch(
+            &dir,
+            &default_branch,
+            &mint_op(&confirmations, OP_GIT_BRANCH_SWITCH),
+            &confirmations,
+        )
+        .expect("switch back");
+
+        // Safe delete refuses unmerged branch with BranchNotMerged.
+        assert_eq!(
+            git_branch_delete(
+                &dir,
+                "feat/stage10",
+                false,
+                &mint_op(&confirmations, OP_GIT_BRANCH_DELETE),
+                &confirmations,
+            )
+            .expect_err("unmerged branch refused"),
+            VersionControlError::BranchNotMerged
+        );
+
+        // Force delete requires OP_GIT_BRANCH_DELETE_FORCE (normal delete id fails).
+        assert_eq!(
+            git_branch_delete(
+                &dir,
+                "feat/stage10",
+                true,
+                &mint_op(&confirmations, OP_GIT_BRANCH_DELETE),
+                &confirmations,
+            )
+            .expect_err("wrong op id rejected"),
+            VersionControlError::Unconfirmed
+        );
+
+        // Force delete succeeds with OP_GIT_BRANCH_DELETE_FORCE.
+        git_branch_delete(
+            &dir,
+            "feat/stage10",
+            true,
+            &mint_op(&confirmations, OP_GIT_BRANCH_DELETE_FORCE),
+            &confirmations,
+        )
+        .expect("force delete");
+        assert_eq!(git_branches(&dir).expect("branches").len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stash_push_list_and_pop_round_trip() {
+        use crate::application::confirmations::{OP_GIT_STASH_POP, OP_GIT_STASH_PUSH};
+
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        configure_local_identity(&repo);
+        commit_file(&repo, "file.txt", b"v1\n", "initial");
+
+        std::fs::write(dir.join("file.txt"), b"v2-wip\n").expect("modify file");
+        let confirmations = ConfirmationRegistry::new();
+
+        let pushed = git_stash_push(
+            &dir,
+            Some("wip changes"),
+            &mint_op(&confirmations, OP_GIT_STASH_PUSH),
+            &confirmations,
+        )
+        .expect("stash push");
+        assert_eq!(pushed.index, 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt"))
+                .expect("read clean")
+                .replace("\r\n", "\n"),
+            "v1\n"
+        );
+
+        let list = git_stash_list(&dir).expect("stash list");
+        assert_eq!(list.len(), 1);
+        assert!(list[0].message.contains("wip changes"));
+
+        let popped = git_stash_pop(
+            &dir,
+            0,
+            &mint_op(&confirmations, OP_GIT_STASH_POP),
+            &confirmations,
+        )
+        .expect("stash pop");
+        assert_eq!(popped.status, "applied");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("file.txt"))
+                .expect("read popped")
+                .replace("\r\n", "\n"),
+            "v2-wip\n"
+        );
+        assert!(git_stash_list(&dir).expect("empty stash").is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn review_diff_redacts_secrets_before_prompt_generation() {
+        let dir = temp_root();
+        let repo = init_repo(&dir);
+        configure_local_identity(&repo);
+        commit_file(&repo, "config.env", b"SAFE=1\n", "base");
+
+        // Write a secret-bearing change in the working tree.
+        let fake_anthropic = "sk-ant-api03-SUPERSECRETKEY1234567890";
+        let fake_github = "ghp_1234567890abcdef1234567890abcdef1234";
+        let content = format!("SAFE=1\nANTHROPIC={fake_anthropic}\nGH={fake_github}\n");
+        std::fs::write(dir.join("config.env"), content.as_bytes()).expect("write secret");
+
+        let review = git_prepare_review_diff(&dir, "working", None).expect("prepare review");
+        assert_eq!(review.scope, "working");
+        assert!(review.redacted, "secrets must be flagged as redacted");
+        assert!(review.diff.contains("[REDACTED]"));
+        assert!(!review.diff.contains(fake_anthropic));
+        assert!(!review.diff.contains(fake_github));
+        assert!(review.prompt.starts_with("/review"));
+        assert!(!review.prompt.contains(fake_anthropic));
+        assert!(!review.prompt.contains(fake_github));
+
+        // Unknown scope is rejected.
+        assert_eq!(
+            git_prepare_review_diff(&dir, "invalid", None).expect_err("invalid scope"),
+            VersionControlError::InvalidInput
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pull_fast_forward_dirty_workdir_leaves_head_and_ref_unchanged() {
+        use crate::application::confirmations::OP_GIT_PULL;
+
+        let (bare_dir, dir_a, dir_b, repo_a, repo_b, branch) = setup_cloned_pair();
+
+        // Push a fast-forward commit from repo_a.
+        commit_file(
+            &repo_a,
+            "shared.txt",
+            b"line1\nline2-remote\n",
+            "remote update",
+        );
+        push_branch_to_origin(&repo_a, &branch);
+
+        let local_ref_name = format!("refs/heads/{branch}");
+        let before_head_oid = repo_b
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("head commit")
+            .id();
+        let before_ref_oid = repo_b
+            .find_reference(&local_ref_name)
+            .expect("local ref")
+            .target()
+            .expect("local ref target");
+
+        // Dirty the file that fast-forward would overwrite.
+        std::fs::write(dir_b.join("shared.txt"), b"dirty local edits\n").expect("dirty file");
+
+        let confirmations = ConfirmationRegistry::new();
+        let err = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect_err("dirty fast-forward must fail");
+        assert_eq!(err, VersionControlError::GitFailed);
+
+        let after_head_oid = repo_b
+            .head()
+            .expect("head after")
+            .peel_to_commit()
+            .expect("head commit after")
+            .id();
+        let after_ref_oid = repo_b
+            .find_reference(&local_ref_name)
+            .expect("local ref after")
+            .target()
+            .expect("local ref target after");
+        assert_eq!(after_head_oid, before_head_oid);
+        assert_eq!(after_ref_oid, before_ref_oid);
+        assert_eq!(
+            std::fs::read_to_string(dir_b.join("shared.txt"))
+                .expect("read dirty file")
+                .replace("\r\n", "\n"),
+            "dirty local edits\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&bare_dir);
+    }
+
+    #[test]
+    fn stash_pop_refuses_existing_conflicts_and_reports_new_stash_conflicts() {
+        use crate::application::confirmations::{
+            OP_GIT_ABORT_MERGE, OP_GIT_PULL, OP_GIT_STASH_POP, OP_GIT_STASH_PUSH,
+        };
+
+        let (bare_dir, dir_a, dir_b, repo_a, repo_b, branch) = setup_cloned_pair();
+
+        // Create an existing merge conflict in repo_b.
+        commit_file(
+            &repo_a,
+            "shared.txt",
+            b"line1\nfrom-remote\n",
+            "remote edit",
+        );
+        push_branch_to_origin(&repo_a, &branch);
+        commit_file(&repo_b, "shared.txt", b"line1\nfrom-local\n", "local edit");
+
+        let confirmations = ConfirmationRegistry::new();
+        let pull_res = git_pull(
+            &dir_b,
+            "origin",
+            &mint_op(&confirmations, OP_GIT_PULL),
+            &confirmations,
+        )
+        .expect("pull conflict");
+        assert_eq!(pull_res.status, "conflicts");
+
+        // Upfront guard must refuse before consuming confirmation and must not
+        // swallow an out-of-range stash index as Ok(conflicts).
+        let pop_confirm_id = mint_op(&confirmations, OP_GIT_STASH_POP);
+        assert_eq!(
+            git_stash_pop(&dir_b, 99, &pop_confirm_id, &confirmations)
+                .expect_err("stash pop refused during existing conflict"),
+            VersionControlError::MergeInProgress
+        );
+
+        // After aborting merge, the unconsumed confirmation id is still valid
+        // and out-of-range index fails with GitFailed.
+        git_abort_merge(
+            &dir_b,
+            &mint_op(&confirmations, OP_GIT_ABORT_MERGE),
+            &confirmations,
+        )
+        .expect("abort merge");
+        assert_eq!(
+            git_stash_pop(&dir_b, 99, &pop_confirm_id, &confirmations)
+                .expect_err("out-of-range stash index fails"),
+            VersionControlError::GitFailed
+        );
+
+        // A stash pop that creates new conflicts returns Ok(status: "conflicts").
+        std::fs::write(dir_b.join("shared.txt"), b"line1\nstash-edit\n").expect("write stash edit");
+        git_stash_push(
+            &dir_b,
+            Some("conflicting stash"),
+            &mint_op(&confirmations, OP_GIT_STASH_PUSH),
+            &confirmations,
+        )
+        .expect("stash push");
+        commit_file(&repo_b, "shared.txt", b"line1\nhead-edit\n", "head edit");
+
+        let popped = git_stash_pop(
+            &dir_b,
+            0,
+            &mint_op(&confirmations, OP_GIT_STASH_POP),
+            &confirmations,
+        )
+        .expect("stash pop with new conflict returns Ok");
+        assert_eq!(popped.status, "conflicts");
+        assert_eq!(popped.conflicts.len(), 1);
+        assert_eq!(popped.conflicts[0].path, "shared.txt");
+
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+        let _ = std::fs::remove_dir_all(&bare_dir);
     }
 }

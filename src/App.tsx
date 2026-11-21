@@ -981,6 +981,16 @@ function AppShell() {
                 <VersionControlPanel
                   onClose={router.closeVcs}
                   request={router.vcsRequest}
+                  onSendToAgent={
+                    hasActiveConversation
+                      ? (prompt: string) => {
+                          if (tabs.activeId !== null) {
+                            setDraftFor(tabs.activeId)(prompt);
+                          }
+                          router.closeVcs();
+                        }
+                      : undefined
+                  }
                 />
               ) : router.activityOpen ? (
                 <ActivityHealthPanel

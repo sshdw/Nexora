@@ -46,7 +46,31 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           risk_signals: ["large-diff"],
         },
       ],
+      conflicts: [] as Array<{ path: string; status: string }>,
+      merge_in_progress: false,
     },
+    branches: [
+      {
+        name: "main",
+        is_current: true,
+        upstream: "origin/main",
+        last_commit_hash: "1234567890abcdef1234567890abcdef12345678",
+      },
+      {
+        name: "feat/wip",
+        is_current: false,
+        upstream: null,
+        last_commit_hash: "abcdef1234567890abcdef1234567890abcdef12",
+      },
+    ],
+    stashes: [
+      {
+        index: 0,
+        message: "WIP on main",
+        hash: "1111111111111111111111111111111111111111",
+      },
+    ],
+    failUnmergedDelete: false,
   };
   const mockInvoke = vi.fn(
     async (command: string, args?: Record<string, unknown>) => {
@@ -82,6 +106,71 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           return "fedcba9876543210fedcba9876543210fedcba98";
         case "git_push":
           return null;
+        case "git_fetch":
+          return { remote: "origin", updated_refs: 2 };
+        case "git_pull":
+          return {
+            status: "conflicts",
+            commit_hash: null,
+            conflicts: [{ path: "src/conflict.ts", status: "UU" }],
+          };
+        case "git_branches":
+          return JSON.parse(JSON.stringify(state.branches));
+        case "git_branch_create":
+          return {
+            name: (args as { name: string }).name,
+            is_current: true,
+            upstream: null,
+            last_commit_hash: "1234567890abcdef1234567890abcdef12345678",
+          };
+        case "git_branch_switch":
+          return null;
+        case "git_branch_delete":
+          if (state.failUnmergedDelete && !(args as { force: boolean }).force) {
+            throw {
+              kind: "invalidInput",
+              message:
+                "the branch has unmerged commits; confirm force delete to remove it",
+            };
+          }
+          return null;
+        case "git_stash_list":
+          return JSON.parse(JSON.stringify(state.stashes));
+        case "git_stash_push":
+          return {
+            index: 0,
+            message: String((args as { message?: string | null }).message ?? "WIP"),
+            hash: "2222222222222222222222222222222222222222",
+          };
+        case "git_stash_pop":
+          return { status: "applied", conflicts: [] };
+        case "git_conflict_diff":
+          return {
+            path: (args as { path: string }).path,
+            status: "UU",
+            ours: "const x = 'ours';\n",
+            theirs: "const x = 'theirs';\n",
+            working:
+              "<<<<<<< HEAD\nconst x = 'ours';\n=======\nconst x = 'theirs';\n>>>>>>> origin/main\n",
+            truncated: false,
+            binary: false,
+          };
+        case "git_resolve_conflict":
+          return 0;
+        case "git_abort_merge":
+          return null;
+        case "git_prepare_review_diff":
+          return {
+            scope: (args as { scope: string }).scope,
+            base_branch: null,
+            files: ["src/a.ts"],
+            files_overflow: 0,
+            diff: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n+API_KEY=[REDACTED]\n",
+            truncated: false,
+            redacted: true,
+            prompt:
+              "/review\n\nReview the current working-tree changes (1 file(s)).\n```diff\n+API_KEY=[REDACTED]\n```\n",
+          };
         case "get_setting":
           return null;
         default:
@@ -101,16 +190,19 @@ beforeEach(() => {
     { path: "src/a.ts", status: "modified" },
     { path: "src/b.ts", status: "staged" },
   ];
+  state.info.conflicts = [];
+  state.info.merge_in_progress = false;
+  state.failUnmergedDelete = false;
 });
 
 afterEach(() => {
   cleanup();
 });
 
-function renderPanel() {
+function renderPanel(onSendToAgent?: (prompt: string) => void) {
   return render(
     <LocaleProvider>
-      <VersionControlPanel onClose={() => {}} />
+      <VersionControlPanel onClose={() => {}} onSendToAgent={onSendToAgent} />
     </LocaleProvider>
   );
 }
@@ -128,7 +220,7 @@ describe("VersionControlPanel — working tree", () => {
   it("renders the branch, the changed files, and the per-status action", async () => {
     await renderLoadedPanel();
     expect(screen.getByText("Version Control")).toBeInTheDocument();
-    expect(screen.getByText(/main/)).toBeInTheDocument();
+    expect(screen.getByText(/On branch main\./)).toBeInTheDocument();
     // One row per changed file; a staged file offers Unstage, a modified
     // one offers Stage.
     expect(screen.getByRole("button", { name: "Stage" })).toBeInTheDocument();
@@ -298,5 +390,167 @@ describe("VersionControlPanel — timeline", () => {
     expect(screen.getByText("1234567")).toBeInTheDocument();
     expect(screen.getByText("feat(10.4): add runner")).toBeInTheDocument();
     expect(screen.getByText("Large diff")).toBeInTheDocument();
+  });
+});
+
+describe("VersionControlPanel — conflicts, workflow & review (Stage 10)", () => {
+  it("renders Conflicted Files section with badges, preview, resolve, Ask Agent, and guarded Abort", async () => {
+    state.info.conflicts = [
+      { path: "src/conflict.ts", status: "UU" },
+      { path: "src/added.ts", status: "AA" },
+    ];
+    state.info.merge_in_progress = true;
+    const onSendToAgent = vi.fn();
+    renderPanel(onSendToAgent);
+
+    await waitFor(() =>
+      expect(screen.getByText("Conflicted files: 2")).toBeInTheDocument()
+    );
+    expect(screen.getByText("Merge / pull in progress")).toBeInTheDocument();
+    expect(screen.getByText("UU")).toBeInTheDocument();
+    expect(screen.getByText("AA")).toBeInTheDocument();
+
+    // Selecting a conflicted file loads the conflict preview.
+    fireEvent.click(screen.getByRole("button", { name: /src\/conflict\.ts/ }));
+    await waitFor(() =>
+      expect(screen.getAllByText(/const x = 'ours'/).length).toBeGreaterThan(0)
+    );
+    expect(screen.getAllByText(/const x = 'theirs'/).length).toBeGreaterThan(0);
+
+    // Accept Ours mints git_resolve_conflict and resolves the file.
+    fireEvent.click(screen.getAllByRole("button", { name: "Accept Ours" })[0]);
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("git_resolve_conflict", {
+        path: "src/conflict.ts",
+        strategy: "ours",
+        confirmationId: "confirm-id-1",
+      })
+    );
+
+    // Ask Agent to Resolve stages a prompt via onSendToAgent.
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Ask Agent to Resolve" })[0]
+    );
+    expect(onSendToAgent).toHaveBeenCalledWith(
+      expect.stringContaining("src/conflict.ts")
+    );
+
+    // Abort merge / pull requires two-press confirmation before calling git_abort_merge.
+    fireEvent.click(screen.getByRole("button", { name: "Abort merge / pull" }));
+    expect(
+      mockInvoke.mock.calls.some(([cmd]) => cmd === "git_abort_merge")
+    ).toBe(false);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirm abort merge / pull" })
+    );
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("git_abort_merge", {
+        confirmationId: "confirm-id-1",
+      })
+    );
+  });
+
+  it("supports fetch, pull conflict notice, branch create/force-delete, stash, and redacted /review", async () => {
+    const onSendToAgent = vi.fn();
+    renderPanel(onSendToAgent);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Fetch" })).toBeInTheDocument()
+    );
+
+    // Fetch
+    fireEvent.click(screen.getByRole("button", { name: "Fetch" }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("git_fetch", { remote: "origin" })
+    );
+
+    // Pull reports conflicts cleanly in a status notice.
+    fireEvent.click(screen.getByRole("button", { name: "Pull" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Pull completed with 1 conflict(s)"
+      )
+    );
+
+    // Branch delete with unmerged branch shows explicit force-delete confirmation.
+    state.failUnmergedDelete = true;
+    fireEvent.change(screen.getByLabelText("Select branch"), {
+      target: { value: "feat/wip" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: 'Force delete "feat/wip"' })
+      ).toBeInTheDocument()
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: 'Force delete "feat/wip"' })
+    );
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("git_branch_delete", {
+        name: "feat/wip",
+        force: true,
+        confirmationId: "confirm-id-1",
+      })
+    );
+
+    // Stash pop
+    fireEvent.click(screen.getByRole("button", { name: "Pop" }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("git_stash_pop", {
+        index: 0,
+        confirmationId: "confirm-id-1",
+      })
+    );
+
+    // AI /review shows secret redaction notice and sends redacted prompt to Agent.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Review working tree" })
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Potential secrets were automatically redacted/)
+      ).toBeInTheDocument()
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Send /review to Agent" })
+    );
+    expect(onSendToAgent).toHaveBeenCalledWith(
+      expect.stringContaining("[REDACTED]")
+    );
+  });
+
+  it("clears selected conflict preview on refresh when resolved externally without re-fetching conflict diff", async () => {
+    state.info.conflicts = [{ path: "src/conflict.ts", status: "UU" }];
+    state.info.merge_in_progress = true;
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByText("Conflicted files: 1")).toBeInTheDocument()
+    );
+
+    // Select the conflicted file and load its preview.
+    fireEvent.click(screen.getByRole("button", { name: /src\/conflict\.ts/ }));
+    await waitFor(() =>
+      expect(screen.getAllByText(/const x = 'ours'/).length).toBeGreaterThan(0)
+    );
+    expect(
+      mockInvoke.mock.calls.filter(([cmd]) => cmd === "git_conflict_diff")
+    ).toHaveLength(1);
+
+    // Simulate external resolution before manual Refresh.
+    state.info.conflicts = [];
+    state.info.merge_in_progress = false;
+    mockInvoke.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Conflicted files: 1")).not.toBeInTheDocument()
+    );
+
+    // Stale selectedConflictPath must not trigger git_conflict_diff again.
+    expect(
+      mockInvoke.mock.calls.filter(([cmd]) => cmd === "git_conflict_diff")
+    ).toHaveLength(0);
+    expect(screen.queryByText(/const x = 'ours'/)).not.toBeInTheDocument();
   });
 });
