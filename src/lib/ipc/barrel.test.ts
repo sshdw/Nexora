@@ -34,6 +34,10 @@ const SNAPSHOT: readonly string[] = [
   "attachFile",
   "cancelAgentRun",
   "cancelWorkQueueItem",
+  "chatgptOAuthDisconnect",
+  "chatgptOAuthRefresh",
+  "chatgptOAuthStart",
+  "chatgptOAuthStatus",
   "clarifyAgentRun",
   "clearApplicationData",
   "clearModelCapabilityOverride",
@@ -55,6 +59,7 @@ const SNAPSHOT: readonly string[] = [
   "deleteSetting",
   "deleteTask",
   "depInventory",
+  "detectCliAdapters",
   "diagnosticsBundle",
   "discoverProjectInstructions",
   "docsManifest",
@@ -176,8 +181,9 @@ const SNAPSHOT: readonly string[] = [
   "saveWorkspaceProfile",
   "search",
   "sendMessage",
-  "setCompatConfig",
   "setAccessProfile",
+  "setCliAdapterEnabled",
+  "setCompatConfig",
   "setModelCapabilityOverride",
   "setSetting",
   "setWorkspaceRoot",
@@ -283,5 +289,28 @@ it.each([
     attachmentIds: [12],
     effort: "high",
     promptReferences: expected,
+  });
+});
+
+it("routes opt-in ChatGPT OAuth and External CLI adapter IPC wrappers with camelCase args", async () => {
+  await barrel.chatgptOAuthStatus();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_status");
+
+  await barrel.chatgptOAuthStart();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_start");
+
+  await barrel.chatgptOAuthRefresh();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_refresh");
+
+  await barrel.chatgptOAuthDisconnect();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_disconnect");
+
+  await barrel.detectCliAdapters();
+  expect(invoke).toHaveBeenLastCalledWith("detect_cli_adapters");
+
+  await barrel.setCliAdapterEnabled("codex", true);
+  expect(invoke).toHaveBeenLastCalledWith("set_cli_adapter_enabled", {
+    adapterId: "codex",
+    enabled: true,
   });
 });

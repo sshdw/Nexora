@@ -19,9 +19,21 @@
 // value here is a framework requirement, not a review defect.
 #![allow(clippy::needless_pass_by_value)]
 
-use crate::infrastructure::providers::credentials::CredentialStore;
+use tauri::{AppHandle, Manager};
+use tauri_plugin_opener::OpenerExt;
 
-use super::error::CommandError;
+use crate::application::providers::ProviderService;
+use crate::infrastructure::database::Database;
+use crate::infrastructure::providers::chatgpt_oauth::{
+    refresh_tokens, run_oauth_login_flow, ChatGptOAuthError, ChatGptOAuthStatus, ChatGptOAuthStore,
+    DEFAULT_OAUTH_CALLBACK_TIMEOUT,
+};
+use crate::infrastructure::providers::credentials::CredentialStore;
+use crate::infrastructure::providers::openai::{
+    PROVIDER_DISPLAY_NAME as OPENAI_DISPLAY_NAME, PROVIDER_NAME as OPENAI_PROVIDER_NAME,
+};
+
+use super::error::{CommandError, ErrorKind};
 
 /// Store a new credential for `provider` in the OS secure keyring (FR-014).
 #[tauri::command]
@@ -48,9 +60,90 @@ pub(crate) fn remove_provider_credential(provider: String) -> Result<(), Command
     CredentialStore::remove(&provider).map_err(Into::into)
 }
 
-/// Report whether `provider` has a stored credential вЂ” presence only, never
+/// Report whether `provider` has a stored credential — presence only, never
 /// the secret value.
 #[tauri::command]
 pub(crate) fn has_provider_credential(provider: String) -> Result<bool, CommandError> {
     CredentialStore::exists(&provider).map_err(Into::into)
+}
+
+/// Report secret-free opt-in `ChatGPT` Plus/Pro OAuth connection status from the
+/// OS secure keyring (`S11-11a`). Never returns tokens or secret material.
+#[tauri::command]
+pub(crate) fn chatgpt_oauth_status() -> Result<ChatGptOAuthStatus, CommandError> {
+    ChatGptOAuthStore::status().map_err(Into::into)
+}
+
+/// Start the interactive opt-in `ChatGPT` Plus/Pro OAuth 2.0 + PKCE (`S256`)
+/// loopback flow (`S11-11a`). Stores tokens strictly in the OS secure keyring
+/// and ensures the `openai` provider metadata row exists so `OpenAI` becomes
+/// immediately selectable.
+#[tauri::command]
+pub(crate) async fn chatgpt_oauth_start(
+    app: AppHandle,
+) -> Result<ChatGptOAuthStatus, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let status = run_oauth_login_flow(
+            |auth_url| {
+                handle
+                    .opener()
+                    .open_url(auth_url, None::<&str>)
+                    .map_err(|_| ChatGptOAuthError::BrowserOpenFailed)
+            },
+            DEFAULT_OAUTH_CALLBACK_TIMEOUT,
+        )
+        .map_err(CommandError::from)?;
+
+        // Ensure the `openai` provider metadata row exists so OpenAI is
+        // immediately usable without requiring a separate API key.
+        let db = handle.state::<Database>();
+        let service = ProviderService::new(db.inner());
+        if service
+            .read_by_name(OPENAI_PROVIDER_NAME)
+            .map_err(CommandError::from)?
+            .is_none()
+        {
+            let _ = service.create(OPENAI_PROVIDER_NAME, OPENAI_DISPLAY_NAME);
+        }
+        Ok(status)
+    })
+    .await;
+
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("chatgpt_oauth_start blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Request,
+                "ChatGPT OAuth sign-in could not be completed",
+            ))
+        }
+    }
+}
+
+/// Refresh stored opt-in `ChatGPT` Plus/Pro OAuth tokens in the OS keyring.
+#[tauri::command]
+pub(crate) async fn chatgpt_oauth_refresh() -> Result<ChatGptOAuthStatus, CommandError> {
+    let outcome =
+        tauri::async_runtime::spawn_blocking(move || refresh_tokens().map_err(CommandError::from))
+            .await;
+
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("chatgpt_oauth_refresh blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Request,
+                "ChatGPT OAuth token refresh could not be completed",
+            ))
+        }
+    }
+}
+
+/// Disconnect opt-in `ChatGPT` Plus/Pro OAuth by removing its OS keyring entry.
+/// Leaves any separate `OpenAI` API key untouched.
+#[tauri::command]
+pub(crate) fn chatgpt_oauth_disconnect() -> Result<(), CommandError> {
+    ChatGptOAuthStore::clear().map_err(Into::into)
 }

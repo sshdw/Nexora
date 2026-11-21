@@ -12,6 +12,7 @@ import type {
   SupportedProvider,
 } from "../../lib/tauri";
 import {
+  isCliAdapterProvider,
   validateCompatBaseUrl,
   type ProvidersStore,
 } from "../../lib/useProviders";
@@ -237,6 +238,19 @@ export default function ProviderSection({
           ))}
         </select>
       </div>
+
+      {selectedDefinition?.name === "openai" &&
+        store.chatgptOAuth?.connected && (
+          <p className="nex-optin-notice" role="status">
+            {t("settings.chatgptOAuthProviderNote")}
+          </p>
+        )}
+
+      {selectedDefinition && isCliAdapterProvider(selectedDefinition.name) && (
+        <p className="nex-optin-notice" role="note">
+          {t("settings.cliAdapterProviderNote")}
+        </p>
+      )}
 
       {isCompat && (
         <div className="nex-settings-details">

@@ -13,6 +13,8 @@
 
 pub mod anthropic;
 pub mod catalog;
+pub mod chatgpt_oauth;
+pub mod cli_adapter;
 pub mod credentials;
 pub mod gemini;
 pub mod metadata;
@@ -122,6 +124,19 @@ fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str
     // configuration, so the list is empty by design (the UI accepts the
     // configured model identifier for it).
     schemas.push((openai::COMPAT_NAME, openai::COMPAT_DISPLAY_NAME, &[]));
+    // Opt-in external CLI adapters (S11-11b): delegate strictly to the user's
+    // officially installed & authenticated `codex` / `claude` CLI in a clean
+    // isolated subprocess; never touch API keys or closed OAuth tokens.
+    schemas.push((
+        cli_adapter::CLI_CODEX_NAME,
+        cli_adapter::CLI_CODEX_DISPLAY_NAME,
+        cli_adapter::CLI_CODEX_MODELS,
+    ));
+    schemas.push((
+        cli_adapter::CLI_CLAUDE_NAME,
+        cli_adapter::CLI_CLAUDE_DISPLAY_NAME,
+        cli_adapter::CLI_CLAUDE_MODELS,
+    ));
     schemas
 }
 
@@ -130,7 +145,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supported_providers_lists_sixteen() {
+    fn supported_providers_lists_eighteen() {
         let providers = supported_providers();
         let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
@@ -152,6 +167,8 @@ mod tests {
                 "xai",
                 "mistral",
                 "openai_compat",
+                "cli_codex",
+                "cli_claude",
             ]
         );
         for provider in &providers {
@@ -162,6 +179,7 @@ mod tests {
                 "deepseek" | "minimax" => 2,
                 "qwen" | "moonshot" | "groq" | "mistral" => 4,
                 "openai_compat" => 0,
+                "cli_codex" | "cli_claude" => 1,
                 _ => 3,
             };
             assert_eq!(

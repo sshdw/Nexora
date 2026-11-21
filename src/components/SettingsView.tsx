@@ -179,6 +179,16 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     keywords: ["api key", "secret", "keyring", "connect provider"],
   },
   {
+    group: "credentials",
+    title: "ChatGPT Plus / Pro OAuth",
+    keywords: ["chatgpt", "oauth", "pkce", "plus", "pro", "openai", "sign in"],
+  },
+  {
+    group: "credentials",
+    title: "External CLI adapters",
+    keywords: ["cli", "codex", "claude", "external", "adapter", "subprocess"],
+  },
+  {
     group: "data",
     title: "Data management",
     keywords: ["data", "clear", "delete all", "reset", "storage", "database"],

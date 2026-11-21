@@ -166,6 +166,16 @@ const supported = [
     display_name: "OpenAI Compatible",
     models: [],
   },
+  {
+    name: "cli_codex",
+    display_name: "Codex CLI",
+    models: ["codex-cli-default"],
+  },
+  {
+    name: "cli_claude",
+    display_name: "Claude CLI",
+    models: ["claude-cli-default"],
+  },
 ];
 const MOCK_DEFAULT_PROVIDER = supported[2].name;
 const MOCK_DEFAULT_MODEL = supported[2].models[0];
@@ -912,6 +922,90 @@ async function invoke(
     case "remove_provider_credential":
       credentialed.delete(String(args.provider));
       return null;
+    case "chatgpt_oauth_status":
+      return {
+        connected: settings.get("__mock_chatgpt_oauth_connected") === "true",
+        has_refresh_token:
+          settings.get("__mock_chatgpt_oauth_connected") === "true",
+        expires_at:
+          settings.get("__mock_chatgpt_oauth_connected") === "true"
+            ? now() + 3600
+            : null,
+        connected_at:
+          settings.get("__mock_chatgpt_oauth_connected") === "true"
+            ? now() - 60
+            : null,
+        auth_mode:
+          settings.get("__mock_chatgpt_oauth_connected") === "true"
+            ? "oauth"
+            : "none",
+      };
+    case "chatgpt_oauth_start":
+    case "chatgpt_oauth_refresh": {
+      settings.set("__mock_chatgpt_oauth_connected", "true");
+      if (!providers.some((p) => p.name === "openai")) {
+        providers.push({
+          id: nextProviderId++,
+          name: "openai",
+          display_name: "OpenAI",
+        });
+      }
+      return {
+        connected: true,
+        has_refresh_token: true,
+        expires_at: now() + 3600,
+        connected_at: now(),
+        auth_mode: "oauth",
+      };
+    }
+    case "chatgpt_oauth_disconnect":
+      settings.delete("__mock_chatgpt_oauth_connected");
+      return null;
+    case "detect_cli_adapters":
+      return [
+        {
+          id: "codex",
+          provider_name: "cli_codex",
+          display_name: "Codex CLI",
+          installed: true,
+          version: "codex 0.50.0",
+          enabled: providers.some((p) => p.name === "cli_codex"),
+        },
+        {
+          id: "claude",
+          provider_name: "cli_claude",
+          display_name: "Claude CLI",
+          installed: true,
+          version: "claude 1.0.0",
+          enabled: providers.some((p) => p.name === "cli_claude"),
+        },
+      ];
+    case "set_cli_adapter_enabled": {
+      const adapterId = String(args.adapterId ?? args.adapter_id ?? "");
+      const enabled = Boolean(args.enabled);
+      const map: Record<string, { name: string; display_name: string }> = {
+        codex: { name: "cli_codex", display_name: "Codex CLI" },
+        claude: { name: "cli_claude", display_name: "Claude CLI" },
+      };
+      const entry = map[adapterId];
+      if (!entry) {
+        throw {
+          kind: "invalidInput",
+          message: "adapter_id must be 'codex' or 'claude'",
+        };
+      }
+      const existingIdx = providers.findIndex((p) => p.name === entry.name);
+      if (enabled && existingIdx < 0) {
+        providers.push({
+          id: nextProviderId++,
+          name: entry.name,
+          display_name: entry.display_name,
+        });
+      } else if (!enabled && existingIdx >= 0) {
+        providers.splice(existingIdx, 1);
+      }
+      return enabled;
+    }
     case "get_compat_config":
       return {
         base_url: settings.get("openai_compat.base_url") ?? "",

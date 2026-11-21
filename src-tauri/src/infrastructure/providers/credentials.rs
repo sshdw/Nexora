@@ -294,13 +294,90 @@ fn classify(err: &keyring::Error) -> CredentialError {
     }
 }
 
+/// Resolve credential existence for execution (including opt-in `ChatGPT` OAuth
+/// for `openai` and credential-free external CLI adapters).
+fn provider_credential_exists_with(
+    api_backend: &dyn CredentialBackend,
+    oauth_backend: &dyn CredentialBackend,
+    provider: &str,
+) -> Result<bool, CredentialError> {
+    if super::cli_adapter::is_cli_adapter_provider(provider) {
+        return Ok(true);
+    }
+    if provider == super::openai::PROVIDER_NAME
+        && super::chatgpt_oauth::ChatGptOAuthStore::is_connected_with(oauth_backend)
+            .map_err(|_| CredentialError::StorageUnavailable)?
+    {
+        return Ok(true);
+    }
+    exists_with_dyn(api_backend, provider)
+}
+
+/// Resolve the active credential for execution:
+/// - External CLI adapters (`cli_codex`, `cli_claude`) never receive Nexora
+///   keyring secrets and resolve to an empty placeholder.
+/// - `openai` prefers opt-in `ChatGPT` Plus/Pro OAuth (transparently refreshing
+///   expired tokens and storing rotated tokens in OS keyring) when connected,
+///   falling back to the stored `OpenAI` API key otherwise.
+fn resolve_provider_credential_with(
+    api_backend: &dyn CredentialBackend,
+    oauth_backend: &dyn CredentialBackend,
+    oauth_config: &super::chatgpt_oauth::ChatGptOAuthConfig,
+    provider: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<String>, CredentialError> {
+    if super::cli_adapter::is_cli_adapter_provider(provider) {
+        return Ok(Some(String::new()));
+    }
+    if provider == super::openai::PROVIDER_NAME {
+        match super::chatgpt_oauth::resolve_access_token_with(oauth_backend, oauth_config, timeout)
+        {
+            Ok(Some(access_token)) => return Ok(Some(access_token)),
+            Ok(None) => {}
+            Err(super::chatgpt_oauth::ChatGptOAuthError::KeyringUnavailable) => {
+                return Err(CredentialError::StorageUnavailable);
+            }
+            Err(_) => return Err(CredentialError::Invalid),
+        }
+    }
+    read_with_dyn(api_backend, provider)
+}
+
+fn read_with_dyn(
+    backend: &dyn CredentialBackend,
+    provider: &str,
+) -> Result<Option<String>, CredentialError> {
+    match backend.get_password(KEYRING_SERVICE, provider) {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(classify(&err)),
+    }
+}
+
+fn exists_with_dyn(
+    backend: &dyn CredentialBackend,
+    provider: &str,
+) -> Result<bool, CredentialError> {
+    match backend.get_password(KEYRING_SERVICE, provider) {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(err) => Err(classify(&err)),
+    }
+}
+
 impl CredentialSource for CredentialStore {
     fn exists(&self, provider: &str) -> Result<bool, CredentialError> {
-        Self::exists(provider)
+        provider_credential_exists_with(&KeyringBackend, &KeyringBackend, provider)
     }
 
     fn read(&self, provider: &str) -> Result<Option<String>, CredentialError> {
-        Self::read(provider)
+        resolve_provider_credential_with(
+            &KeyringBackend,
+            &KeyringBackend,
+            &super::chatgpt_oauth::ChatGptOAuthConfig::default(),
+            provider,
+            super::chatgpt_oauth::DEFAULT_OAUTH_HTTP_TIMEOUT,
+        )
     }
 }
 
@@ -649,10 +726,10 @@ mod tests {
     }
 
     #[test]
-    fn keyring_namespaces_isolate_all_sixteen_providers() {
+    fn keyring_namespaces_isolate_all_eighteen_providers() {
         let backend = InMemoryBackend::new();
         let providers = crate::infrastructure::providers::supported_providers();
-        assert_eq!(providers.len(), 16);
+        assert_eq!(providers.len(), 18);
 
         for (idx, provider) in providers.iter().enumerate() {
             let secret = format!("sk-isolated-{idx}-{}", provider.name);
@@ -667,10 +744,119 @@ mod tests {
             );
         }
 
-        // Removing one provider's credential must leave the other 15 intact.
+        // Removing one provider's credential must leave the others intact.
         remove_with(&backend, "deepseek").expect("remove deepseek");
         assert!(!exists_with(&backend, "deepseek").expect("exists false"));
         assert!(exists_with(&backend, "openai").expect("openai preserved"));
         assert!(exists_with(&backend, "mistral").expect("mistral preserved"));
+    }
+
+    #[test]
+    fn openai_credential_resolution_prefers_opt_in_chatgpt_oauth_and_falls_back_to_api_key() {
+        use crate::infrastructure::providers::chatgpt_oauth::{
+            ChatGptOAuthConfig, ChatGptOAuthStore, StoredChatGptOAuthTokens,
+        };
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let api_backend = InMemoryBackend::new();
+        let oauth_backend = InMemoryBackend::new();
+        let config = ChatGptOAuthConfig::default();
+
+        // Initially absent.
+        assert!(!provider_credential_exists_with(&api_backend, &oauth_backend, "openai").unwrap());
+        assert_eq!(
+            resolve_provider_credential_with(
+                &api_backend,
+                &oauth_backend,
+                &config,
+                "openai",
+                Duration::from_secs(5),
+            )
+            .unwrap(),
+            None
+        );
+
+        // API key alone resolves to API key.
+        add_with(&api_backend, "openai", "sk-openai-api-key").unwrap();
+        assert!(provider_credential_exists_with(&api_backend, &oauth_backend, "openai").unwrap());
+        assert_eq!(
+            resolve_provider_credential_with(
+                &api_backend,
+                &oauth_backend,
+                &config,
+                "openai",
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .as_deref(),
+            Some("sk-openai-api-key")
+        );
+
+        // Connecting opt-in ChatGPT OAuth takes precedence for OpenAI execution.
+        let future_exp = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap()
+            + 3600;
+        ChatGptOAuthStore::save_with(
+            &oauth_backend,
+            &StoredChatGptOAuthTokens {
+                access_token: "chatgpt-oauth-access-token".to_string(),
+                refresh_token: Some("chatgpt-oauth-refresh".to_string()),
+                id_token: None,
+                expires_at: Some(future_exp),
+                token_type: Some("Bearer".to_string()),
+                scope: None,
+                connected_at: future_exp - 3600,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_provider_credential_with(
+                &api_backend,
+                &oauth_backend,
+                &config,
+                "openai",
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .as_deref(),
+            Some("chatgpt-oauth-access-token")
+        );
+
+        // Disconnecting ChatGPT OAuth falls back to the stored OpenAI API key.
+        ChatGptOAuthStore::clear_with(&oauth_backend).unwrap();
+        assert_eq!(
+            resolve_provider_credential_with(
+                &api_backend,
+                &oauth_backend,
+                &config,
+                "openai",
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .as_deref(),
+            Some("sk-openai-api-key")
+        );
+
+        // External CLI adapters resolve without touching keyring secrets.
+        assert!(
+            provider_credential_exists_with(&api_backend, &oauth_backend, "cli_codex").unwrap()
+        );
+        assert_eq!(
+            resolve_provider_credential_with(
+                &api_backend,
+                &oauth_backend,
+                &config,
+                "cli_claude",
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .as_deref(),
+            Some("")
+        );
     }
 }

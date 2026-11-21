@@ -597,6 +597,33 @@ export const ru: Record<StringKey, string> = {
   "settings.connect": "Подключить",
   "settings.update": "Обновить",
   "settings.disconnect": "Отключить",
+  "settings.chatgptOAuthHeading": "ChatGPT Plus / Pro OAuth (экспериментально)",
+  "settings.chatgptOAuthNotice":
+    "Экспериментальная функция по явному согласию. Использует OAuth 2.0 + PKCE (S256) с локальным обратным вызовом 127.0.0.1 и хранит токены строго в системном хранилище ключей ОС (никогда в SQLite или логах). Подчиняется Условиям использования OpenAI и может измениться без уведомления.",
+  "settings.chatgptOAuthOptInLabel":
+    "Я понимаю, что это экспериментальная функция и она подчиняется Условиям использования OpenAI",
+  "settings.chatgptOAuthConnected": "OAuth подключён",
+  "settings.chatgptOAuthNotConnected": "Не подключён",
+  "settings.chatgptOAuthActiveHint":
+    "Активно для запросов OpenAI (имеет приоритет над API-ключом до отключения).",
+  "settings.chatgptOAuthSignIn": "Войти через ChatGPT (OAuth)",
+  "settings.chatgptOAuthSigningIn": "Ожидание браузера…",
+  "settings.chatgptOAuthRefresh": "Обновить токен",
+  "settings.chatgptOAuthDisconnect": "Отключить OAuth",
+  "settings.chatgptOAuthProviderNote":
+    "OpenAI сейчас аутентифицирован через ChatGPT Plus/Pro OAuth (токены хранятся строго в хранилище ключей ОС).",
+  "settings.cliAdaptersHeading": "Внешние CLI-адаптеры (по выбору)",
+  "settings.cliAdaptersHint":
+    "Делегирует запросы вашим официально установленным и авторизованным CLI Codex или Claude в изолированном подпроцессе (очищенное окружение, контроль дерева процессов, жёсткий таймаут). Nexora никогда не читает закрытые OAuth-токены Claude Pro/Max и не передаёт API-ключи Nexora.",
+  "settings.cliAdaptersDetect": "Проверить заново",
+  "settings.cliAdaptersDetecting": "Проверка…",
+  "settings.cliAdapterInstalled": "Установлен",
+  "settings.cliAdapterNotDetected": "Не обнаружен",
+  "settings.cliAdapterEnabled": "Включён",
+  "settings.cliAdapterEnable": "Включить",
+  "settings.cliAdapterDisable": "Отключить",
+  "settings.cliAdapterProviderNote":
+    "Работает через официально установленный внешний CLI в чистом изолированном подпроцессе. API-ключи Nexora не используются и не передаются.",
   "settings.dataHint":
     "Все данные приложения живут в одной локальной SQLite-базе на этом устройстве. Ничего никуда не синхронизируется. Отдельные разговоры и промпты управляются из боковой панели и библиотеки промптов.",
   "settings.transfer": "Перенос разговоров",

@@ -149,6 +149,66 @@ export function removeProviderCredential(provider: string): Promise<void> {
   return invoke<void>("remove_provider_credential", { provider });
 }
 
+// ---- Opt-in ChatGPT Plus/Pro OAuth (`S11-11a`) -------------------------
+// Tokens live strictly in the OS secure keyring; IPC only carries status.
+
+/** Secret-free connection status for opt-in ChatGPT Plus/Pro OAuth. */
+export interface ChatGptOAuthStatus {
+  connected: boolean;
+  has_refresh_token: boolean;
+  expires_at: number | null;
+  connected_at: number | null;
+  auth_mode: "oauth" | "none";
+}
+
+/** Read secret-free ChatGPT OAuth status from the OS keyring. */
+export function chatgptOAuthStatus(): Promise<ChatGptOAuthStatus> {
+  return invoke<ChatGptOAuthStatus>("chatgpt_oauth_status");
+}
+
+/** Start interactive opt-in ChatGPT Plus/Pro OAuth 2.0 + PKCE sign-in. */
+export function chatgptOAuthStart(): Promise<ChatGptOAuthStatus> {
+  return invoke<ChatGptOAuthStatus>("chatgpt_oauth_start");
+}
+
+/** Refresh stored ChatGPT OAuth tokens in the OS keyring. */
+export function chatgptOAuthRefresh(): Promise<ChatGptOAuthStatus> {
+  return invoke<ChatGptOAuthStatus>("chatgpt_oauth_refresh");
+}
+
+/** Disconnect opt-in ChatGPT OAuth (removes keyring tokens; keeps API keys). */
+export function chatgptOAuthDisconnect(): Promise<void> {
+  return invoke<void>("chatgpt_oauth_disconnect");
+}
+
+// ---- Opt-in External CLI Adapters (`S11-11b`) --------------------------
+// Delegates strictly to officially installed `codex` / `claude` CLIs in a
+// clean isolated subprocess; never reads Nexora API keys or closed OAuth tokens.
+
+/** Secret-free availability and opt-in status for an external CLI adapter. */
+export interface CliAdapterStatus {
+  id: "codex" | "claude";
+  provider_name: string;
+  display_name: string;
+  installed: boolean;
+  version: string | null;
+  enabled: boolean;
+}
+
+/** Probe officially installed external CLIs (`codex`, `claude`) and return
+ * their sanitized availability and opt-in state. */
+export function detectCliAdapters(): Promise<CliAdapterStatus[]> {
+  return invoke<CliAdapterStatus[]>("detect_cli_adapters");
+}
+
+/** Explicitly enable or disable an external CLI adapter (`codex` or `claude`). */
+export function setCliAdapterEnabled(
+  adapterId: string,
+  enabled: boolean
+): Promise<boolean> {
+  return invoke<boolean>("set_cli_adapter_enabled", { adapterId, enabled });
+}
+
 // ---- (connection_id, model_id) Capability Catalog & Provenance --------
 
 export type CapabilityProvenance =

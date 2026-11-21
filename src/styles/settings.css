@@ -350,6 +350,80 @@
   background: var(--color-error-container);
 }
 
+/* ---- Opt-in ChatGPT OAuth & External CLI Adapter cards (S11-11) ---- */
+.nex-optin-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--color-outline-variant);
+  border-radius: var(--shape-large);
+  background: var(--color-surface-container);
+}
+
+.nex-optin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.nex-optin-notice {
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border-left: 2px solid var(--color-outline);
+  background: var(--color-surface-container-low);
+  border-radius: var(--shape-extra-small);
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+  line-height: 1.45;
+}
+
+.nex-optin-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex-wrap: wrap;
+}
+
+.nex-cli-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--color-outline-variant);
+}
+
+.nex-cli-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--color-outline-variant);
+}
+
+.nex-cli-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.nex-cli-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-cli-version {
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
+  font-family: var(--font-mono);
+}
+
 .nex-capabilities-details {
   margin-top: var(--space-md);
 }

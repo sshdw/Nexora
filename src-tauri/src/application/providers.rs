@@ -24,8 +24,12 @@
 use serde::Serialize;
 
 use crate::infrastructure::database::{Database, DatabaseError};
+use crate::infrastructure::providers::chatgpt_oauth::ChatGptOAuthStore;
+use crate::infrastructure::providers::cli_adapter::is_cli_adapter_provider;
 use crate::infrastructure::providers::credentials::{CredentialError, CredentialStore};
-use crate::infrastructure::providers::openai::COMPAT_NAME;
+use crate::infrastructure::providers::openai::{
+    COMPAT_NAME, PROVIDER_NAME as OPENAI_PROVIDER_NAME,
+};
 use crate::infrastructure::repository::providers::{Provider, ProviderRepository};
 
 /// Application-layer result shared by provider metadata operations, unifying
@@ -112,12 +116,27 @@ impl<'a> ProviderService<'a> {
     /// Report whether the provider named `name` has a stored credential
     /// (FR-014); presence only, never the secret value.
     ///
+    /// External CLI adapters (`cli_codex`, `cli_claude`) rely on the user's
+    /// officially authenticated CLI and do not store API keys in Nexora.
+    /// `openai` is considered credentialed when either an `OpenAI` API key or an
+    /// opt-in `ChatGPT` Plus/Pro OAuth token exists in the OS keyring.
+    ///
     /// # Errors
     ///
     /// Returns [`ProviderError::Credential`] when the OS keyring cannot be
     /// reached to determine presence.
     pub(crate) fn has_credentials(name: &str) -> Result<bool> {
-        Ok(CredentialStore::exists(name)?)
+        if is_cli_adapter_provider(name) {
+            return Ok(true);
+        }
+        if CredentialStore::exists(name)? {
+            return Ok(true);
+        }
+        if name == OPENAI_PROVIDER_NAME {
+            return ChatGptOAuthStore::is_connected()
+                .map_err(|_| ProviderError::Credential(CredentialError::StorageUnavailable));
+        }
+        Ok(false)
     }
 
     /// Probe the local health of the provider named `name` (WS-A.5).
@@ -182,7 +201,7 @@ impl<'a> ProviderService<'a> {
         if self.repo.read_by_name(name)?.is_none() {
             return Ok(false);
         }
-        Ok(CredentialStore::exists(name)?)
+        Self::has_credentials(name)
     }
 
     /// List the providers that are available (configured and with credentials),
@@ -197,7 +216,7 @@ impl<'a> ProviderService<'a> {
     pub(crate) fn available(&self) -> Result<Vec<Provider>> {
         let mut available = Vec::new();
         for provider in self.repo.list()? {
-            if CredentialStore::exists(&provider.name)? {
+            if Self::has_credentials(&provider.name)? {
                 available.push(provider);
             }
         }

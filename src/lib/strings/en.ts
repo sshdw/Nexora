@@ -649,6 +649,33 @@ export const en = {
   "settings.connect": "Connect",
   "settings.update": "Update",
   "settings.disconnect": "Disconnect",
+  "settings.chatgptOAuthHeading": "ChatGPT Plus / Pro OAuth (Experimental)",
+  "settings.chatgptOAuthNotice":
+    "Opt-in experimental feature. Uses OAuth 2.0 + PKCE (S256) with a local 127.0.0.1 callback and stores tokens strictly in your OS secure keyring (never in SQLite or logs). Subject to OpenAI's Terms of Service and may change without notice.",
+  "settings.chatgptOAuthOptInLabel":
+    "I understand this is experimental and subject to OpenAI's Terms of Service",
+  "settings.chatgptOAuthConnected": "OAuth connected",
+  "settings.chatgptOAuthNotConnected": "Not connected",
+  "settings.chatgptOAuthActiveHint":
+    "Active for OpenAI requests (takes precedence over API key until disconnected).",
+  "settings.chatgptOAuthSignIn": "Sign in with ChatGPT (OAuth)",
+  "settings.chatgptOAuthSigningIn": "Waiting for browser…",
+  "settings.chatgptOAuthRefresh": "Refresh token",
+  "settings.chatgptOAuthDisconnect": "Disconnect OAuth",
+  "settings.chatgptOAuthProviderNote":
+    "OpenAI is currently authenticated via opt-in ChatGPT Plus/Pro OAuth (tokens stored strictly in your OS keyring).",
+  "settings.cliAdaptersHeading": "External CLI adapters (Opt-in)",
+  "settings.cliAdaptersHint":
+    "Delegate prompts to your officially installed and authenticated Codex or Claude CLI in an isolated subprocess (cleared environment, process-tree containment, hard timeout). Nexora never reads closed Claude Pro/Max OAuth tokens or forwards Nexora API keys.",
+  "settings.cliAdaptersDetect": "Refresh detection",
+  "settings.cliAdaptersDetecting": "Detecting…",
+  "settings.cliAdapterInstalled": "Installed",
+  "settings.cliAdapterNotDetected": "Not detected",
+  "settings.cliAdapterEnabled": "Enabled",
+  "settings.cliAdapterEnable": "Enable",
+  "settings.cliAdapterDisable": "Disable",
+  "settings.cliAdapterProviderNote":
+    "Runs via your officially installed external CLI in a clean isolated subprocess. No Nexora API key is used or forwarded.",
   "settings.dataHint":
     "All application data lives in a single local SQLite database on this device. Nothing is synchronized anywhere. Individual conversations and prompts are managed from the sidebar and Prompt Library.",
   "settings.transfer": "Conversation transfer",

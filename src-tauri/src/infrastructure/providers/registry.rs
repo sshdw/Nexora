@@ -22,6 +22,7 @@ use nexora_core::provider::{
 
 use super::anthropic::{AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME};
 use super::catalog::openai::OPENAI_COMPAT_PRESETS;
+use super::cli_adapter::{CliAdapterExecutor, CLI_CLAUDE_NAME, CLI_CODEX_NAME};
 use super::credentials::CredentialStore;
 use super::gemini::{GeminiExecutor, PROVIDER_NAME as GEMINI_PROVIDER_NAME};
 use super::openai::{CompatConfig, OpenAiExecutor, COMPAT_NAME, PROVIDER_NAME};
@@ -55,6 +56,9 @@ impl NexoraProviderExecutors {
             };
             registry = registry.with_executor(preset.name, Arc::new(executor));
         }
+        registry = registry
+            .with_executor(CLI_CODEX_NAME, Arc::new(CliAdapterExecutor::codex()))
+            .with_executor(CLI_CLAUDE_NAME, Arc::new(CliAdapterExecutor::claude()));
         Self { registry }
     }
 }
@@ -195,5 +199,12 @@ mod tests {
                 preset.name
             );
         }
+    }
+
+    #[test]
+    fn registry_resolves_external_cli_adapters() {
+        let r = registry();
+        assert!(r.resolve(CLI_CODEX_NAME).is_some());
+        assert!(r.resolve(CLI_CLAUDE_NAME).is_some());
     }
 }

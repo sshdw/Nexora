@@ -23,6 +23,9 @@ use crate::application::providers::ProviderHealth;
 use crate::application::providers::ProviderService;
 use crate::application::settings::SettingScope;
 use crate::infrastructure::database::Database;
+use crate::infrastructure::providers::cli_adapter::{
+    detect_cli_adapters as probe_external_cli_adapters, CliAdapterKind, CliAdapterStatus,
+};
 use crate::infrastructure::providers::SupportedProvider;
 use crate::infrastructure::repository::providers::Provider;
 
@@ -204,5 +207,69 @@ pub(crate) async fn refresh_provider_model_metadata(
             ErrorKind::Request,
             "provider metadata refresh failed",
         )),
+    }
+}
+
+/// Probe officially installed external CLIs (`codex` / `claude`) inside clean
+/// isolated subprocesses and combine with explicit opt-in status (`S11-11b`).
+#[tauri::command]
+pub(crate) async fn detect_cli_adapters(
+    app: AppHandle,
+) -> Result<Vec<CliAdapterStatus>, CommandError> {
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        let service = ProviderService::new(db.inner());
+        let configured: Vec<String> = service
+            .list()
+            .map_err(CommandError::from)?
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        Ok(probe_external_cli_adapters(|provider_name| {
+            configured.iter().any(|name| name == provider_name)
+        }))
+    })
+    .await;
+
+    match outcome {
+        Ok(res) => res,
+        Err(_) => Err(CommandError::new(
+            ErrorKind::Request,
+            "external CLI adapter probe failed",
+        )),
+    }
+}
+
+/// Explicitly opt in or opt out of an external CLI adapter (`codex` or
+/// `claude`) by adding or removing its provider metadata row (`S11-11b`).
+#[tauri::command]
+pub(crate) fn set_cli_adapter_enabled(
+    adapter_id: String,
+    enabled: bool,
+    db: State<'_, Database>,
+) -> Result<bool, CommandError> {
+    let Some(kind) = CliAdapterKind::parse(&adapter_id) else {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "adapter_id must be 'codex' or 'claude'",
+        ));
+    };
+    let service = ProviderService::new(db.inner());
+    let existing = service
+        .read_by_name(kind.provider_name())
+        .map_err(CommandError::from)?;
+    if enabled {
+        if existing.is_none() {
+            service
+                .create(kind.provider_name(), kind.display_name())
+                .map_err(CommandError::from)?;
+        }
+        Ok(true)
+    } else {
+        if let Some(row) = existing {
+            service.remove(row.id).map_err(CommandError::from)?;
+        }
+        Ok(false)
     }
 }
