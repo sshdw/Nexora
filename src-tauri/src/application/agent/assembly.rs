@@ -36,7 +36,7 @@
 //! | Usable window, 0.8 threshold, 20k reserve | `compaction::{usable_context_tokens, should_compact, COMPACTION_THRESHOLD}` |
 //! | Token estimates | `compaction::{estimate_tokens, message_tokens}` |
 //! | Tool envelopes | `injection::envelope_tool_output` (unknown names collapse — hostile labels never echoed) |
-//! | Lifecycle / stage / role vocabulary | `lifecycle::RunState`, `pipeline::PipelineStage` (+ its bound `AgentRole`), shared with `inspect::RunInspection` |
+//! | Lifecycle / stage / capability vocabulary | `lifecycle::RunState`, `pipeline::PipelineStage` (+ its bound `TaskCapability`), shared with `inspect::RunInspection` |
 //! | Tool gating | `model_catalog::model_info_for` (listing-side counterpart: `recommended_models`) |
 //! | Terminal signal | `AgentError::ContextExhausted` |
 //!
@@ -211,9 +211,9 @@ pub(crate) fn resolve_context_limit(provider: &str, model: &str, limit: Option<u
 #[must_use]
 pub(crate) fn stage_context_text(stage: PipelineStage, run_state: RunState) -> String {
     format!(
-        "Current stage: {} (role: {}); run state: {}. Continue the task where the recent turns left off.",
+        "Current stage: {} (capability: {}); run state: {}. Continue the task where the recent turns left off.",
         stage.as_str(),
-        stage.role().as_str(),
+        stage.capability().as_str(),
         run_state.as_str()
     )
 }
@@ -822,8 +822,8 @@ mod tests {
             "stage names itself: {stage}"
         );
         assert!(
-            stage.contains(PipelineStage::Act.role().as_str()),
-            "stage names its bound role: {stage}"
+            stage.contains(PipelineStage::Act.capability().as_str()),
+            "stage names its bound capability: {stage}"
         );
         let tools_text = assembled
             .section(SectionKind::ToolOutputs)

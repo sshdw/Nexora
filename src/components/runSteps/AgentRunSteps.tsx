@@ -36,6 +36,7 @@ import {
 import { foldCounts, foldableRun, groupSteps, isGroup } from "./grouping";
 import { DiffView, StepSection } from "./StepSection";
 import { StepGroupSection } from "./StepGroupSection";
+import SubagentCard from "./SubagentCard";
 
 export interface AgentRunStepsProps {
   run: AgentRunView;
@@ -50,6 +51,7 @@ export interface AgentRunStepsProps {
     scope?: "single" | "group"
   ) => void;
   onCancel: (runId: number) => void;
+  onKillSubagent?: (runId: number, subagentId: string) => void;
   onContinue: (runId: number) => void;
   onPause?: (runId: number) => void;
   onResume?: (runId: number) => void;
@@ -154,6 +156,7 @@ function AgentRunSteps({
   run,
   onResolveApproval,
   onCancel,
+  onKillSubagent,
   onContinue,
   onPause,
   onResume,
@@ -1189,6 +1192,27 @@ function AgentRunSteps({
             )}
           </div>
         </>
+      )}
+
+      {run.subagents && run.subagents.length > 0 && (
+        <section
+          className="nex-subagents-section"
+          aria-label={t("agent.subagentsTitle")}
+        >
+          <div className="nex-subagents-heading">
+            {t("agent.subagentsTitle")}
+          </div>
+          <div className="nex-subagents-list">
+            {run.subagents.map((subagent) => (
+              <SubagentCard
+                key={subagent.subagent_id}
+                runId={run.run_id}
+                subagent={subagent}
+                onKillSubagent={onKillSubagent}
+              />
+            ))}
+          </div>
+        </section>
       )}
 
       {planText && (

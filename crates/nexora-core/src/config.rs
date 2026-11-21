@@ -59,6 +59,8 @@ pub const AUTONOMY_KEY: &str = "agent.autonomy";
 pub const SPEND_LIMIT_KEY: &str = "agent.spend_limit_micro_usd";
 /// Settings key holding the approval-park deadline, in seconds.
 pub const APPROVAL_TIMEOUT_KEY: &str = "agent.approval_timeout_secs";
+/// Settings key holding the per-run maximum concurrent subagents (`1..=6`, default `3`).
+pub const SUBAGENT_MAX_CONCURRENCY_KEY: &str = "agent.subagent_max_concurrency";
 /// Settings key holding the chosen workspace root.
 pub const WORKSPACE_ROOT_KEY: &str = "agent.workspace_root";
 /// Settings key holding the recent-workspace ring (JSON array).
@@ -102,11 +104,18 @@ pub const MIN_APPROVAL_TIMEOUT_SECS: u64 = 1;
 /// being a deadline.
 pub const MAX_APPROVAL_TIMEOUT_SECS: u64 = 24 * 60 * 60;
 
+/// Minimum configurable concurrent subagents per parent run (`M19`).
+pub const MIN_SUBAGENT_MAX_CONCURRENCY: usize = 1;
+/// Default concurrent subagents per parent run (`M19`).
+pub const DEFAULT_SUBAGENT_MAX_CONCURRENCY: usize = 3;
+/// Maximum configurable concurrent subagents per parent run (`M19`).
+pub const MAX_SUBAGENT_MAX_CONCURRENCY: usize = 6;
+
 /// Longest accepted custom model identifier.
 pub const MAX_MODEL_LEN: usize = 200;
 
 /// Every writable setting key that is not a `flags.*` flag.
-pub const BASE_KEYS: [&str; 15] = [
+pub const BASE_KEYS: [&str; 16] = [
     APPEARANCE_THEME_KEY,
     SELECTED_PROVIDER_KEY,
     SELECTED_MODEL_KEY,
@@ -116,6 +125,7 @@ pub const BASE_KEYS: [&str; 15] = [
     ACCESS_PROFILE_KEY,
     SPEND_LIMIT_KEY,
     APPROVAL_TIMEOUT_KEY,
+    SUBAGENT_MAX_CONCURRENCY_KEY,
     WORKSPACE_ROOT_KEY,
     WORKSPACE_RECENT_KEY,
     WORKSPACE_ROOTS_KEY,
@@ -160,6 +170,8 @@ pub enum ConfigKey {
     SpendLimit,
     /// [`APPROVAL_TIMEOUT_KEY`]
     ApprovalTimeout,
+    /// [`SUBAGENT_MAX_CONCURRENCY_KEY`]
+    SubagentMaxConcurrency,
     /// [`WORKSPACE_ROOT_KEY`]
     WorkspaceRoot,
     /// [`WORKSPACE_RECENT_KEY`]
@@ -198,6 +210,7 @@ impl ConfigKey {
             Self::Autonomy => Some(AUTONOMY_KEY),
             Self::SpendLimit => Some(SPEND_LIMIT_KEY),
             Self::ApprovalTimeout => Some(APPROVAL_TIMEOUT_KEY),
+            Self::SubagentMaxConcurrency => Some(SUBAGENT_MAX_CONCURRENCY_KEY),
             Self::WorkspaceRoot => Some(WORKSPACE_ROOT_KEY),
             Self::WorkspaceRecent => Some(WORKSPACE_RECENT_KEY),
             Self::WorkspaceRoots => Some(WORKSPACE_ROOTS_KEY),
@@ -251,6 +264,7 @@ pub fn classify_key(key: &str) -> Option<ConfigKey> {
         AUTONOMY_KEY => Some(ConfigKey::Autonomy),
         SPEND_LIMIT_KEY => Some(ConfigKey::SpendLimit),
         APPROVAL_TIMEOUT_KEY => Some(ConfigKey::ApprovalTimeout),
+        SUBAGENT_MAX_CONCURRENCY_KEY => Some(ConfigKey::SubagentMaxConcurrency),
         WORKSPACE_ROOT_KEY => Some(ConfigKey::WorkspaceRoot),
         WORKSPACE_RECENT_KEY => Some(ConfigKey::WorkspaceRecent),
         WORKSPACE_ROOTS_KEY => Some(ConfigKey::WorkspaceRoots),
@@ -446,6 +460,16 @@ pub fn is_valid_approval_timeout(value: &str) -> bool {
     )
 }
 
+/// Domain check for [`SUBAGENT_MAX_CONCURRENCY_KEY`]: a trimmed integer in `1..=6`.
+#[must_use]
+pub fn is_valid_subagent_max_concurrency(value: &str) -> bool {
+    matches!(
+        value.trim().parse::<usize>(),
+        Ok(limit)
+            if (MIN_SUBAGENT_MAX_CONCURRENCY..=MAX_SUBAGENT_MAX_CONCURRENCY).contains(&limit)
+    )
+}
+
 /// Syntactic check for [`WORKSPACE_ROOT_KEY`]: a non-empty path up to
 /// [`WORKSPACE_ROOT_MAX_LEN`] chars with no null byte.
 ///
@@ -537,6 +561,9 @@ pub fn validate_setting(
             .then_some(())
             .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::ApprovalTimeout) => is_valid_approval_timeout(value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::SubagentMaxConcurrency) => is_valid_subagent_max_concurrency(value)
             .then_some(())
             .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::WorkspaceRoot) => is_valid_workspace_root_syntax(value)
@@ -641,9 +668,19 @@ mod tests {
         }
         assert_eq!(
             BASE_KEYS.len(),
-            15,
+            16,
             "the allowlist is closed; keep it in sync"
         );
+    }
+
+    #[test]
+    fn subagent_max_concurrency_domain_is_one_through_six() {
+        for valid in ["1", "2", "3", "4", "5", "6", " 3 "] {
+            assert_accepted(SUBAGENT_MAX_CONCURRENCY_KEY, valid);
+        }
+        for invalid in ["0", "7", "-1", "", "abc", "100"] {
+            assert_rejected(SUBAGENT_MAX_CONCURRENCY_KEY, invalid);
+        }
     }
 
     #[test]

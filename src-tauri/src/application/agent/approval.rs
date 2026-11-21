@@ -61,6 +61,7 @@ impl RiskClass {
     pub(crate) fn classify(name: &str) -> Self {
         match name {
             "read_file" | "list_directory" | "search_files" | "ask_user_question" => Self::ReadOnly,
+            other if super::permissions::is_subagent_tool(other) => Self::ReadOnly,
             "execute_command" => Self::DangerousShell,
             other if super::permissions::is_mcp_tool(other) => Self::ExternalMcp,
             _ => Self::Mutating,

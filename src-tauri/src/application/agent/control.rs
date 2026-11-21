@@ -245,6 +245,20 @@ pub(crate) enum AgentRunEvent {
     PlanReady {
         plan: crate::infrastructure::repository::run_plans::RunPlan,
     },
+    /// A visible task-scoped subagent was spawned, updated, completed, or stopped (`M19`).
+    SubagentUpdated {
+        subagent: super::subagents::SubagentSnapshot,
+    },
+    /// One step recorded inside a running subagent (`M19`).
+    SubagentStep {
+        subagent_id: String,
+        seq: usize,
+        kind: String,
+        tool_name: Option<String>,
+        target: Option<String>,
+        status: Option<String>,
+        observation: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------

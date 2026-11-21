@@ -15,7 +15,7 @@
 //!   marker families ([`BOUNDARY_MARKERS`], [`IMPERATIVE_MARKERS`], and the
 //!   structural mimicry shapes — [`MIMICRY_STRUCTURAL_MARKERS`],
 //!   [`MIMICRY_CALL_KEYS`], [`has_tool_name_anchor`]) that back the Reviewer
-//!   [`checklist`](crate::application::agent::roles::REVIEWER_INJECTION_CHECKLIST).
+//!   [`checklist`](crate::application::agent::roles::INJECTION_CHECKLIST).
 //!   A hit never auto-executes: dispatch routes the next call through the
 //!   existing approval park (`park_for_approval`, #65 ladder reused
 //!   unchanged), recorded on the [`AuditLog`](crate::application::agent::governance::AuditLog).
@@ -28,7 +28,7 @@
 //! the CI log panel and agent step persistence both route persisted text
 //! through it, so there is exactly one pattern set to maintain.
 
-use super::permissions::{is_known_tool, is_mcp_tool};
+use super::permissions::{is_known_tool, is_mcp_tool, is_subagent_tool};
 
 // ---------------------------------------------------------------------------
 // Envelope
@@ -59,7 +59,8 @@ pub(crate) const PRIOR_ACTIONS_LABEL: &str = "prior-actions";
 /// delimiting never rewrites untrusted text, it only frames it.
 #[must_use]
 pub(crate) fn envelope_tool_output(tool_name: &str, observation: &str) -> String {
-    let label = if is_known_tool(tool_name) || is_mcp_tool(tool_name) {
+    let label = if is_known_tool(tool_name) || is_subagent_tool(tool_name) || is_mcp_tool(tool_name)
+    {
         tool_name
     } else {
         UNKNOWN_TOOL_LABEL

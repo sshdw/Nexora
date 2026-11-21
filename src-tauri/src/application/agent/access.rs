@@ -305,6 +305,7 @@ impl AccessContext {
                 call.name.as_str(),
                 "read_file" | "list_directory" | "search_files" | "ask_user_question"
             )
+            || super::permissions::is_subagent_tool(&call.name)
     }
     /// Includes exact arguments as well as canonical target: changing content,
     /// cwd, or command text cannot consume a consent for an earlier request.

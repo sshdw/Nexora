@@ -66,8 +66,9 @@
 //! are never persisted (DATABASE.md В§7.2 stays user/assistant/system).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::application::agent::action_memory::ActionSummary;
@@ -78,10 +79,11 @@ use crate::application::agent::governance::{AuditLog, RunBudget};
 use crate::application::agent::permissions::PermissionStore;
 use crate::application::agent::permissions::RunPreset;
 use crate::application::agent::persistence::{
-    mode_to_column, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
+    mode_to_column, step_preview_opt, ActiveRunRecord, RunRecorder, DEFAULT_RECORDED_MODE,
 };
 use crate::application::agent::question::QuestionRunContext;
-use crate::application::agent::roles::AgentRole;
+use crate::application::agent::roles::TaskCapability;
+use crate::application::agent::subagents::SubagentManager;
 use crate::application::agent::tools::ToolRegistry;
 use crate::application::execution::{
     AiMessage, AiRequest, AiRole, ExecutorError, ModelConfig, ProviderExecutor, StreamEvent,
@@ -148,11 +150,11 @@ pub(crate) struct AgentRunner<'a> {
     /// the persistence row. When `None` nothing is recorded and the loop
     /// keeps the exact pre-B.2 behaviour.
     audit_log: Option<Arc<AuditLog>>,
-    /// Optional role-scoped tool subset (WS-B.3). When `None` every known
-    /// tool dispatches as before and the loop keeps the exact pre-B.3
-    /// behaviour; when attached, tools outside the role's subset become a
-    /// controlled denial observation. Applied via [`Self::with_role`].
-    role: Option<AgentRole>,
+    /// Optional task-scoped capability gate (`P34`). When `None` every known
+    /// tool dispatches under the active `AccessContext` and `RunPreset`; when
+    /// attached, tools outside the capability's subset become a controlled
+    /// denial observation. Applied via [`Self::with_capability`].
+    capability: Option<TaskCapability>,
     /// Prior conversation turns carried into the next run (agent memory
     /// slice). Empty by default; applied via [`Self::with_history`].
     prior_messages: Vec<AiMessage>,
@@ -198,6 +200,16 @@ pub(crate) struct AgentRunner<'a> {
     active_plan: Option<String>,
     /// Optional run-scoped user-added MCP tool runtime (`M18` / `P26`).
     mcp_runtime: Option<Arc<dyn crate::application::mcp::McpToolRuntime>>,
+    /// Optional parent-run subagent manager (`M19` / `P27`). Always `None`
+    /// inside child subagents (`subagent_depth >= 1`).
+    subagent_manager: Option<Arc<SubagentManager>>,
+    /// Nesting depth (`0` for parent runs, `1` for child subagents).
+    subagent_depth: u8,
+    /// Subagent identifier when running inside a child subagent.
+    subagent_id: Option<String>,
+    /// Optional sink capturing non-system messages at end of run so
+    /// `send_subagent_message` can continue inside the same context.
+    history_sink: Option<Arc<Mutex<Vec<AiMessage>>>>,
 }
 
 /// Outcome of one in-place compaction attempt (Task T4 / M16).
@@ -253,7 +265,7 @@ impl<'a> AgentRunner<'a> {
             recorder: None,
             spend_limit_micro_usd: None,
             audit_log: None,
-            role: None,
+            capability: None,
             prior_messages: Vec::new(),
             current_attachments: Vec::new(),
             prompt_context: None,
@@ -269,7 +281,48 @@ impl<'a> AgentRunner<'a> {
             is_plan: false,
             active_plan: None,
             mcp_runtime: None,
+            subagent_manager: None,
+            subagent_depth: 0,
+            subagent_id: None,
+            history_sink: None,
         }
+    }
+
+    /// Attach a parent-run subagent manager (`M19` / `P27`). Ignored if
+    /// `subagent_depth >= 1` (enforcing max depth = 1).
+    #[must_use]
+    pub(crate) fn with_subagent_manager(mut self, manager: Arc<SubagentManager>) -> Self {
+        if self.subagent_depth == 0 {
+            self.subagent_manager = Some(manager);
+        }
+        self
+    }
+
+    /// Set the subagent nesting depth (`0` = parent, `1` = child). Depth `>= 1`
+    /// structurally clears any attached subagent manager.
+    #[must_use]
+    pub(crate) fn with_subagent_depth(mut self, depth: u8) -> Self {
+        self.subagent_depth = depth;
+        if depth > 0 {
+            self.subagent_manager = None;
+        }
+        self
+    }
+
+    /// Tag this runner as a specific child subagent so turns and tool calls emit
+    /// `AgentRunEvent::SubagentStep` frames.
+    #[must_use]
+    pub(crate) fn with_subagent_id(mut self, id: String) -> Self {
+        self.subagent_id = Some(id);
+        self
+    }
+
+    /// Capture non-system conversation turns on exit so `send_subagent_message`
+    /// can resume this subagent in the same context.
+    #[must_use]
+    pub(crate) fn with_history_sink(mut self, sink: Arc<Mutex<Vec<AiMessage>>>) -> Self {
+        self.history_sink = Some(sink);
+        self
     }
 
     /// Attach a run-scoped user-added MCP tool runtime (`M18` / `P26`).
@@ -367,7 +420,7 @@ impl<'a> AgentRunner<'a> {
     /// parked on an approval aborts with `AgentError::Cancelled` without deadlock.
     #[must_use]
     pub(crate) fn with_approval_gate(mut self, gate: ApprovalGate) -> Self {
-        if self.role == Some(AgentRole::Planner) || self.is_plan {
+        if self.capability == Some(TaskCapability::ReadOnly) || self.is_plan {
             gate.access().set_plan(true);
         }
         if let Some(control) = &self.control {
@@ -453,18 +506,16 @@ impl<'a> AgentRunner<'a> {
         self
     }
 
-    /// Attach the run role (WS-B.3): known tools outside the role's subset
-    /// become a controlled denial observation; in-subset tools dispatch
-    /// exactly as before. When no role is attached the loop keeps the exact
-    /// pre-B.3 behaviour.
+    /// Attach a task-scoped capability gate (`P34`): known tools outside the
+    /// capability's subset become a controlled denial observation.
     #[must_use]
-    pub(crate) fn with_role(mut self, role: AgentRole) -> Self {
-        if role == AgentRole::Planner {
+    pub(crate) fn with_capability(mut self, capability: TaskCapability) -> Self {
+        if capability == TaskCapability::ReadOnly {
             if let Some(gate) = &self.approval_gate {
                 gate.access().set_plan(true);
             }
         }
-        self.role = Some(role);
+        self.capability = Some(capability);
         self
     }
 
@@ -598,6 +649,9 @@ impl<'a> AgentRunner<'a> {
             record.as_mut(),
             &mut spent_micro_usd,
         );
+        if let Some(manager) = &self.subagent_manager {
+            manager.shutdown_and_join();
+        }
         if let Some(rec) = record.as_ref() {
             rec.finalize(&result, spent_micro_usd, self.spend_limit_micro_usd)?;
         }
@@ -810,11 +864,14 @@ impl<'a> AgentRunner<'a> {
             .as_ref()
             .map(|rt| rt.definitions())
             .unwrap_or_default();
-        let tools: Arc<Vec<ToolDefinition>> = Arc::new(ToolRegistry::definitions_for_run_with_mcp(
+        let include_subagents = self.subagent_manager.is_some() && self.subagent_depth == 0;
+        let tools: Arc<Vec<ToolDefinition>> = Arc::new(ToolRegistry::definitions_for_run_full(
             self.preset,
             self.is_plan,
             &mcp_defs,
+            include_subagents,
         ));
+        let subagent_step_seq = AtomicUsize::new(0);
         // A control never cancelled the plan: when the runner has no attached
         // control it dispatches tools through a never-firing token so the
         // undisputed Task 3.1 behaviour is preserved exactly.
@@ -927,13 +984,25 @@ impl<'a> AgentRunner<'a> {
             }
             dispatch::check_cancellation(control, self.event_sender.as_ref())?;
             dispatch::honor_pause(control, self.event_sender.as_ref())?;
-            budget::honor_allowance(
-                control,
-                &run_budget,
-                steps_taken,
-                self.event_sender.as_ref(),
-                audit,
-            )?;
+            if self.subagent_depth > 0 {
+                // Subagents enforce their `max_turns` bound deterministically
+                // rather than parking indefinitely on a parent-only budget gate.
+                budget::honor_allowance(
+                    None,
+                    &run_budget,
+                    steps_taken,
+                    self.event_sender.as_ref(),
+                    audit,
+                )?;
+            } else {
+                budget::honor_allowance(
+                    control,
+                    &run_budget,
+                    steps_taken,
+                    self.event_sender.as_ref(),
+                    audit,
+                )?;
+            }
             if let Some(ctrl) = control {
                 for steering in ctrl.drain_steering() {
                     messages.push(AiMessage {
@@ -1138,6 +1207,24 @@ impl<'a> AgentRunner<'a> {
                     i64::try_from(turn_started.elapsed().as_millis()).unwrap_or(i64::MAX);
                 rec.model_turn(&response.content, Some(duration_ms), response.usage);
             }
+            if let Some(sid) = self.subagent_id.as_deref() {
+                let seq = subagent_step_seq.fetch_add(1, Ordering::Relaxed) + 1;
+                let redacted = super::injection::redact_secrets(&response.content).0;
+                let (preview, _, _) =
+                    step_preview_opt((!redacted.trim().is_empty()).then_some(redacted.as_str()));
+                dispatch::emit(
+                    self.event_sender.as_ref(),
+                    AgentRunEvent::SubagentStep {
+                        subagent_id: sid.to_string(),
+                        seq,
+                        kind: "model_turn".to_string(),
+                        tool_name: None,
+                        target: None,
+                        status: Some("succeeded".to_string()),
+                        observation: preview,
+                    },
+                );
+            }
 
             if let Some(rec) = record.as_ref() {
                 rec.checkpoint()?;
@@ -1193,6 +1280,23 @@ impl<'a> AgentRunner<'a> {
                     observe_transition(RunState::Running, RunState::Failed);
                     return Err(AgentError::EmptyResponse);
                 }
+                if let Some(sink) = &self.history_sink {
+                    let mut saved: Vec<AiMessage> = messages
+                        .iter()
+                        .filter(|m| m.role != AiRole::System)
+                        .cloned()
+                        .collect();
+                    saved.push(AiMessage {
+                        role: AiRole::Assistant,
+                        content: response.content.clone(),
+                        attachments: Vec::new(),
+                        tool_calls: Vec::new(),
+                        tool_result: None,
+                    });
+                    *sink
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = saved;
+                }
                 observe_transition(RunState::Running, RunState::Completed);
                 dispatch::emit(
                     self.event_sender.as_ref(),
@@ -1236,12 +1340,16 @@ impl<'a> AgentRunner<'a> {
                 preset: self.preset,
                 sender: self.event_sender.as_ref(),
                 audit,
-                role: self.role,
+                capability: self.capability,
                 injection_enabled: self.run_flags.injection,
                 checkpoints: self.checkpoint_ctx.as_ref(),
                 turn_index: steps_taken.saturating_sub(1),
                 question_ctx: self.question_ctx.as_ref(),
                 mcp_runtime: self.mcp_runtime.as_deref(),
+                subagent_manager: self.subagent_manager.as_ref(),
+                subagent_depth: self.subagent_depth,
+                subagent_id: self.subagent_id.as_deref(),
+                subagent_step_seq: self.subagent_id.as_ref().map(|_| &subagent_step_seq),
             };
             let dispatch_outcome =
                 dispatch::dispatch_tool_calls(&ctx, &tool_calls, &mut messages, &mut record);
@@ -1666,7 +1774,7 @@ mod tests {
             "identity stays first"
         );
         assert!(first.messages[0].content.contains("review"));
-        assert!(first.messages[0].content.contains("reviewer"));
+        assert!(first.messages[0].content.contains("read_only"));
         assert!(first.messages[0].content.contains("running"));
         let _ = fs::remove_dir_all(&ws);
     }

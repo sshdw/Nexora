@@ -69,6 +69,7 @@ use super::question::PendingQuestionSnapshot;
 use super::registry::AgentRunRegistry;
 use super::self_audit::SelfAuditReport;
 use super::snapshots::SnapshotStore;
+use super::subagents::SubagentSnapshot;
 use crate::infrastructure::database::{Database, DatabaseError};
 use crate::infrastructure::repository::agent_runs::{AgentRun, AgentRunRepository, AgentStep};
 
@@ -209,6 +210,9 @@ pub(crate) struct LiveRunState {
     pub current_step_seq: Option<i64>,
     /// Tool name of that step (`None` when it names none, e.g. a model turn).
     pub current_step_tool: Option<String>,
+    /// Live snapshots of task-scoped subagents spawned by this run (`M19`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<SubagentSnapshot>,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +305,7 @@ pub(crate) fn inspect_run(
         let current = pipe.entered().last().map(|&(stage, _, _)| stage);
         (
             current.map(super::pipeline::PipelineStage::as_str),
-            current.map(|stage| stage.role().as_str()),
+            current.map(|stage| stage.capability().as_str()),
             pipe.entered().len(),
             pipe.stages().len(),
         )
@@ -313,7 +317,7 @@ pub(crate) fn inspect_run(
             .iter()
             .map(|snapshot| SnapshotView {
                 stage_index: snapshot.stage_index,
-                role: snapshot.role.as_str(),
+                role: snapshot.capability.as_str(),
                 state: snapshot.state.as_str(),
                 steps_taken: snapshot.steps_taken,
                 spent_micro_usd: snapshot.spent_micro_usd,
@@ -433,15 +437,17 @@ pub(crate) fn live_run_state(
     let persisted = super::service::list_runs_for_conversation(db, conversation_id)?;
     let live = registry.live_run_snapshot(conversation_id);
 
-    let (run_id, parked_reason, pending_approval, pending_question) = match live.as_ref() {
+    let (run_id, parked_reason, pending_approval, pending_question, subagents) = match live.as_ref()
+    {
         Some(snapshot) => (
             snapshot.run_id,
             snapshot.parked_reason,
             snapshot.pending_approval.clone(),
             snapshot.pending_question.clone(),
+            snapshot.subagents.clone(),
         ),
         None => match persisted.first() {
-            Some(run) => (run.id, "none", None, None),
+            Some(run) => (run.id, "none", None, None, Vec::new()),
             // No active run and nothing persisted: report nothing rather than
             // fabricating a state the backend cannot substantiate.
             None => return Ok(None),
@@ -482,6 +488,7 @@ pub(crate) fn live_run_state(
         finished_at: row.and_then(|run| run.finished_at),
         current_step_seq,
         current_step_tool,
+        subagents,
     }))
 }
 
@@ -628,7 +635,7 @@ mod tests {
                 RunState::Paused,
                 RunPosition {
                     stage_index: pipeline.entered().len(),
-                    role: super::super::pipeline::PipelineStage::Act.role(),
+                    capability: super::super::pipeline::PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 2,
                     spent_micro_usd: 250,
@@ -643,7 +650,7 @@ mod tests {
                 "stable",
                 RunPosition {
                     stage_index: pipeline.entered().len(),
-                    role: super::super::pipeline::PipelineStage::Act.role(),
+                    capability: super::super::pipeline::PipelineStage::Act.capability(),
                     state: RunState::Running,
                     steps_taken: 3,
                     spent_micro_usd: 400,
@@ -685,7 +692,7 @@ mod tests {
         assert_eq!(view.run_id, 7);
         assert_eq!(view.state, "running");
         assert_eq!(view.stage, Some("act"));
-        assert_eq!(view.role, Some("executor"));
+        assert_eq!(view.role, Some("full_access"));
         assert_eq!(view.stages_entered, 2);
         assert_eq!(view.stages_total, 3);
         // `steps_taken` counts consumed model turns only (two `model_turn`
@@ -702,7 +709,7 @@ mod tests {
         assert_eq!(view.snapshots.len(), 2);
         assert_eq!(view.snapshots[0].steps_taken, 2);
         assert_eq!(view.snapshots[1].spent_micro_usd, 400);
-        assert_eq!(view.snapshots[1].role, "executor");
+        assert_eq!(view.snapshots[1].role, "full_access");
         assert_eq!(view.snapshots[1].state, "running");
         assert_eq!(
             view.checkpoints,
@@ -1072,6 +1079,7 @@ mod tests {
             finished_at: None,
             current_step_seq: Some(4),
             current_step_tool: Some("write_file".to_string()),
+            subagents: Vec::new(),
         };
         let raw = serde_json::to_string(&view).expect("serialize live state");
         for key in [

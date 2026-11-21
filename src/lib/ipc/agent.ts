@@ -146,6 +146,34 @@ export interface RunFinishedPayload {
   error: string | null;
 }
 
+export interface SubagentStepSnapshot {
+  seq: number;
+  kind: string;
+  tool_name: string | null;
+  target: string | null;
+  status: string | null;
+  observation: string | null;
+}
+
+export interface SubagentSnapshot {
+  subagent_id: string;
+  title: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "timed_out" | string;
+  model: string;
+  effort: string | null;
+  access: "read_only" | "workspace_write" | "full_access" | string;
+  worktree_isolated: boolean;
+  steps_taken: number;
+  max_turns: number;
+  started_at: number;
+  finished_at: number | null;
+  result_summary: string | null;
+  error: string | null;
+  patch_applied: boolean;
+  patch_conflict: boolean;
+  steps?: SubagentStepSnapshot[];
+}
+
 /** Governance event payload streamed inside a `RunFrame::Governance`. */
 export type GovernanceEventPayload =
   | { type: "paused" }
@@ -208,7 +236,18 @@ export type GovernanceEventPayload =
       status: string;
     }
   | { type: "steering_injected"; content: string }
-  | { type: "plan_ready"; plan: RunPlan };
+  | { type: "plan_ready"; plan: RunPlan }
+  | { type: "subagent_updated"; subagent: SubagentSnapshot }
+  | {
+      type: "subagent_step";
+      subagent_id: string;
+      seq: number;
+      kind: string;
+      tool_name: string | null;
+      target: string | null;
+      status: string | null;
+      observation: string | null;
+    };
 
 /** One `agent-run-event` frame (Task 5.1 design §2.4). */
 export type AgentRunEventPayload =
@@ -301,6 +340,14 @@ export function decideRunPlan(
 /** Cancel an active run (Task 5.1). */
 export function cancelAgentRun(runId: number): Promise<void> {
   return invoke<void>("cancel_agent_run", { runId });
+}
+
+/** Stop one individual subagent of an active run without cancelling the parent run (`M19`). */
+export function killSubagent(
+  runId: number,
+  subagentId: string
+): Promise<void> {
+  return invoke<void>("kill_subagent", { runId, subagentId });
 }
 
 /** Echo the opaque call_id from the current approval event/live snapshot.
@@ -515,6 +562,7 @@ export interface LiveRunState {
   finished_at: number | null;
   current_step_seq: number | null;
   current_step_tool: string | null;
+  subagents?: SubagentSnapshot[];
 }
 
 /**

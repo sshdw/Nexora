@@ -2019,3 +2019,184 @@
   font-weight: var(--type-weight-regular);
   white-space: nowrap;
 }
+
+/* ---- Visible task-scoped subagent cards (M19 / P27) ---- */
+.nex-subagents-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+}
+
+.nex-subagents-heading {
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-subagents-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.nex-subagent-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--shape-medium);
+  background: var(--color-surface-container-low);
+  border: 1px solid var(--color-outline-variant);
+}
+
+.nex-subagent-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.nex-subagent-toggle {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  color: var(--color-on-surface);
+  font-size: var(--type-size-body-small);
+  transition: color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-subagent-toggle:hover {
+  color: var(--color-on-surface);
+}
+
+.nex-subagent-chevron {
+  flex: none;
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-subagent-title {
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24rem;
+}
+
+.nex-subagent-turns {
+  margin-left: auto;
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-subagent-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.nex-subagent-badge-conflict {
+  color: var(--state-error);
+  border-color: var(--state-error);
+}
+
+.nex-subagent-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm) var(--space-sm);
+  border-top: 1px solid var(--color-outline-variant);
+}
+
+.nex-subagent-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-subagent-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding: var(--space-xxs) var(--space-xs);
+  border-radius: var(--shape-small);
+  background: var(--color-surface-canvas);
+  border: 1px solid var(--color-outline-variant);
+}
+
+.nex-subagent-step-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  font-size: var(--type-size-label-medium);
+}
+
+.nex-subagent-step-kind {
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+}
+
+.nex-subagent-step-target {
+  font-family: var(--type-family-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nex-subagent-step-status {
+  margin-left: auto;
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-subagent-step-obs {
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nex-subagent-empty {
+  font-size: var(--type-size-label-medium);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-subagent-summary,
+.nex-subagent-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding-top: var(--space-xxs);
+  border-top: 1px solid var(--color-outline-variant);
+}
+
+.nex-subagent-section-label {
+  font-size: var(--type-size-label-small);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface-tertiary);
+}
+
+.nex-subagent-summary-text {
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.nex-subagent-error-text {
+  font-size: var(--type-size-body-small);
+  color: var(--state-error);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-subagent-toggle {
+    transition: none;
+  }
+}
