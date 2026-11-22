@@ -4,8 +4,12 @@
 # PR-1 added `nexora-runtime` (the extracted Tauri-free backend) and its
 # `reqwest`/`ring`/`git2`/keyring dependency tree. The exceptions below are the
 # non-Tauri license exceptions from src-tauri/deny.toml at the EXACT versions in
-# this lockfile. The five MPL-2.0 exceptions are Tauri-only and intentionally
-# stay in src-tauri/deny.toml; RUSTSEC-2024-0370 is likewise Tauri-only.
+# this lockfile. PR-2 added the CLI's OS clipboard adapter (`arboard`), whose
+# Windows transitives `clipboard-win` and `error-code` are BSL-1.0
+# (OSI-approved permissive) and are excepted below at their exact versions only
+# — BSL-1.0 is deliberately NOT in the global allow list. The five MPL-2.0
+# exceptions are Tauri-only and intentionally stay in src-tauri/deny.toml;
+# RUSTSEC-2024-0370 is likewise Tauri-only.
 
 [advisories]
 version = 2
@@ -28,6 +32,8 @@ allow = ["MIT", "Apache-2.0"]
 exceptions = [
     { crate = "aws-lc-rs@1.19.0", allow = ["ISC"] },
     { crate = "aws-lc-sys@0.47.0", allow = ["BSD-3-Clause", "ISC"] },
+    { crate = "clipboard-win@5.4.3", allow = ["BSL-1.0"] },
+    { crate = "error-code@3.4.0", allow = ["BSL-1.0"] },
     { crate = "foldhash@0.2.0", allow = ["Zlib"] },
     { crate = "icu_collections@2.4.0", allow = ["Unicode-3.0"] },
     { crate = "icu_locale_core@2.4.0", allow = ["Unicode-3.0"] },

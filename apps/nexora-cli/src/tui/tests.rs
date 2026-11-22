@@ -2285,7 +2285,7 @@ impl ProviderExecutor for TuiScriptedExecutor {
 fn real_host_tui_pause_resume_and_approval_response_reach_the_live_run() {
     let _serial = crate::run::REAL_HOST_TEST_LOCK
         .lock()
-        .expect("serial guard");
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let db = in_memory_database();
     let workspace = std::env::temp_dir().join(format!(
         "nexora-cli-tui-real-{}-{}",

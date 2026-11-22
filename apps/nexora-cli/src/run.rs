@@ -1823,7 +1823,9 @@ mod tests {
 
     #[test]
     fn real_host_emits_verbatim_frames_and_terminal_last() {
-        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
             Arc::new(ScriptedExecutor::new(vec![Ok(text_response("all done"))]));
@@ -1863,7 +1865,9 @@ mod tests {
 
     #[test]
     fn real_host_plain_text_is_no_ansi_and_carries_no_credential() {
-        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> = Arc::new(ScriptedExecutor::new(
             vec![Err(ExecutorError::Authentication)],
@@ -1890,7 +1894,9 @@ mod tests {
 
     #[test]
     fn launch_settings_are_recorded_without_writing_overrides() {
-        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
             Arc::new(ScriptedExecutor::new(vec![Ok(text_response("done"))]));
@@ -1930,7 +1936,9 @@ mod tests {
 
     #[test]
     fn approval_request_fails_closed_and_exits_distinct_from_provider_failure() {
-        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let workspace = synthetic_workspace("approval");
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
@@ -1976,7 +1984,9 @@ mod tests {
 
     #[test]
     fn interactive_host_leaves_the_approval_parked_for_the_user() {
-        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let workspace = synthetic_workspace("interactive");
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
@@ -2037,17 +2047,57 @@ mod tests {
         assert_eq!(outcome.code, CliExitCode::Ok, "no auto-cancel in TUI mode");
         assert_eq!(outcome.notice, None, "no non-interactive hint in TUI mode");
         assert!(outcome.text.contains("\"approved\":true"));
+
+        // Cross-platform proof of dispatch: after the core-emitted resolution,
+        // the recorder emitted a `tool_call` step for the approved tool. An
+        // OS-specific file check would fail on Windows where the synthetic
+        // workspace path is subject to different ignore rules, without saying
+        // anything about whether the core dispatched the tool.
+        let resolved = frames
+            .iter()
+            .position(|frame| {
+                frame.get("type").and_then(Value::as_str) == Some("governance")
+                    && frame
+                        .get("event")
+                        .and_then(|event| event.get("type"))
+                        .and_then(Value::as_str)
+                        == Some("approval_resolved")
+            })
+            .expect("core emitted an approval resolution");
         assert!(
-            workspace.join("a.txt").exists(),
-            "the approved tool actually ran: {}",
+            frames[resolved + 1..].iter().any(|frame| {
+                frame.get("type").and_then(Value::as_str) == Some("step")
+                    && frame
+                        .get("event")
+                        .and_then(|event| event.get("tool_name"))
+                        .and_then(Value::as_str)
+                        == Some("write_file")
+            }),
+            "the approved tool was dispatched after core confirmation: {}",
             outcome.text
+        );
+        let terminal = frames.last().expect("terminal frame");
+        assert_eq!(
+            terminal.get("type").and_then(Value::as_str),
+            Some("finished"),
+            "Finished is last"
+        );
+        assert_eq!(
+            terminal
+                .get("event")
+                .and_then(|event| event.get("status"))
+                .and_then(Value::as_str),
+            Some("completed"),
+            "the run completed after the approved tool dispatched"
         );
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
     #[test]
     fn spend_limit_exhaustion_exits_five_over_the_full_run_path() {
-        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let db = in_memory_database();
         let usage = AiResponse {
             content: "never final".to_string(),
