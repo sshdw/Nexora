@@ -71,20 +71,9 @@ const ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta";
 // supported model list, lite-window subset, rate table) moved verbatim to
 // `catalog.rs`. The paths here are re-exports so every existing consumer
 // path (`gemini::SUPPORTED_MODELS`, ...) keeps compiling unchanged.
-pub(crate) use super::catalog::gemini::{
-    GEMINI_LITE_MODELS, MODEL_RATES, PROVIDER_DISPLAY_NAME, PROVIDER_NAME, SUPPORTED_MODELS,
-};
-
-/// Look up the estimated rate for a native Gemini model ID.
-///
-/// Returns `None` for unknown IDs — never a guessed rate.
-#[must_use]
-pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
-    MODEL_RATES
-        .iter()
-        .find(|(name, _, _)| *name == model)
-        .map(|(_, input, output)| (*input, *output))
-}
+pub(crate) use super::catalog::gemini::PROVIDER_NAME;
+#[cfg(test)]
+pub(crate) use super::catalog::gemini::{GEMINI_LITE_MODELS, SUPPORTED_MODELS};
 
 /// Concrete [`ProviderExecutor`] for Google Gemini.
 ///

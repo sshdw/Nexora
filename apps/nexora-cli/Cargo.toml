@@ -27,8 +27,13 @@ clap = { version = "4.5", features = ["derive"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 # Same OS-keyring abstraction as the desktop credential store
 # (`src-tauri/.../providers/credentials.rs`, service namespace "nexora");
-# the stub only probes availability, never reads values.
+# used for the credential-presence probe and the hidden-input write target.
 keyring = "4"
+# Hidden terminal input for `nexora auth set`. Disabling echo correctly needs
+# termios/Win32 calls; this crate forbids `unsafe_code`, so hand-rolled FFI is
+# not an option. `rpassword 7.5` is Apache-2.0, MSRV 1.85 (< our pinned 1.97.1),
+# and reads/writes via `/dev/tty` (`CONIN$`/`CONOUT$` on Windows), never argv.
+rpassword = "7.5"
 
 [lints.rust]
 unsafe_code = "forbid"
