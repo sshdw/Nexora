@@ -299,46 +299,39 @@ export default function ContextPanel({
         ]
       : [];
 
-  const rows: Array<{ label: string; value: string; title?: string }> = [
-    { label: t("ctx.labelSession"), value: stats.title },
+  const providerValue = stats.provider_display ?? stats.provider;
+  const rows: Array<{
+    label: string;
+    value: string;
+    title?: string;
+    spanFull?: boolean;
+    muted?: boolean;
+  }> = [
+    { label: t("ctx.labelSession"), value: stats.title, spanFull: true },
     { label: t("ctx.labelMessages"), value: formatCount(stats.message_count) },
-    {
-      label: t("ctx.labelProvider"),
-      value: stats.provider_display ?? stats.provider ?? t("common.na"),
-    },
-    { label: t("ctx.labelModel"), value: stats.model ?? t("common.na") },
     {
       label: t("ctx.labelContextLimit"),
       value:
         resolvedWindow === null
           ? t("ctx.windowUnknown")
           : formatCount(resolvedWindow),
+      muted: resolvedWindow === null,
     },
-    {
-      label: t("ctx.labelUsage"),
-      value: windowUnknown
-        ? t("ctx.windowUnknown")
-        : stats.has_token_data
-          ? `${stats.usage_percent.toFixed(0)}%`
-          : t("common.na"),
-    },
+    ...(providerValue
+      ? [{ label: t("ctx.labelProvider"), value: providerValue }]
+      : []),
+    ...(stats.model
+      ? [{ label: t("ctx.labelModel"), value: stats.model }]
+      : []),
+    ...(!windowUnknown && stats.has_token_data
+      ? [
+          {
+            label: t("ctx.labelUsage"),
+            value: `${stats.usage_percent.toFixed(0)}%`,
+          },
+        ]
+      : []),
     ...tokenRows,
-    {
-      label: t("ctx.labelUserMessages"),
-      value: formatCount(stats.user_message_count),
-    },
-    {
-      label: t("ctx.labelAssistantMessages"),
-      value: formatCount(stats.assistant_message_count),
-    },
-    {
-      label: t("ctx.labelSessionCreated"),
-      value: formatDateTime(stats.created_at),
-    },
-    {
-      label: t("ctx.labelLastActivity"),
-      value: formatDateTime(stats.updated_at),
-    },
   ];
   // Cost rides on the budget readout and the hairline's accessible name,
   // not on a sixteenth permanent row (SYSTEM §8: "Cost on hover … details
@@ -349,9 +342,15 @@ export default function ContextPanel({
     <div className="nex-context" role="group" aria-label={t("ctx.group")}>
       <dl className="nex-context-grid">
         {rows.map((row) => (
-          <div key={row.label} className="nex-context-cell">
+          <div
+            key={row.label}
+            className={"nex-context-cell" + (row.spanFull ? " is-full" : "")}
+          >
             <dt className="nex-context-label">{row.label}</dt>
-            <dd className="nex-context-value" title={row.title}>
+            <dd
+              className={"nex-context-value" + (row.muted ? " is-muted" : "")}
+              title={row.title ?? row.value}
+            >
               {row.value}
             </dd>
           </div>
@@ -450,9 +449,14 @@ export default function ContextPanel({
         className="nex-context-budget"
         aria-labelledby={`${hintId}-title`}
       >
-        <h3 className="nex-context-section-title" id={`${hintId}-title`}>
-          {t("ctx.budgetTitle")}
-        </h3>
+        <div className="nex-context-budget-header">
+          <h3 className="nex-context-section-title" id={`${hintId}-title`}>
+            {t("ctx.budgetTitle")}
+          </h3>
+          <span className="nex-context-budget-value">
+            {t("ctx.budgetTokens", { n: formatCount(budget) })}
+          </span>
+        </div>
         <div className="nex-context-budget-control">
           <Slider
             value={[budget]}
@@ -469,9 +473,6 @@ export default function ContextPanel({
             onValueChange={(next) => budgetStore.setBudget(next[0])}
             onValueCommit={(next) => budgetStore.commitBudget(next[0])}
           />
-          <span className="nex-context-budget-value">
-            {t("ctx.budgetTokens", { n: formatCount(budget) })}
-          </span>
         </div>
         {/* The budget HAIRLINE (MAP row 20, `progress.md`): the readout
             above drawn as a proportion. One filled track, no labels
@@ -513,22 +514,22 @@ export default function ContextPanel({
             Cost rides on this line's `title` (MAP row 20, "cost-on-hover")
             and in the hairline's accessible name above, so the detail is
             never hover-only. */}
-        <p
-          className={
-            "nex-context-budget-reading" + (overBudget ? " is-over" : "")
-          }
-          role={overBudget ? "status" : undefined}
-          title={t("ctx.totalCostTitle", { cost })}
-        >
-          {budgetUsed === null
-            ? t("ctx.noTokenData")
-            : overBudget
+        {budgetUsed !== null && (
+          <p
+            className={
+              "nex-context-budget-reading" + (overBudget ? " is-over" : "")
+            }
+            role={overBudget ? "status" : undefined}
+            title={t("ctx.totalCostTitle", { cost })}
+          >
+            {overBudget
               ? t("ctx.budgetExceeded", { budget: formatCount(budget) })
               : t("ctx.budgetUsed", {
                   used: formatCount(budgetUsed),
                   budget: formatCount(budget),
                 })}
-        </p>
+          </p>
+        )}
         <p className="nex-context-budget-hint" id={hintId}>
           {t("ctx.budgetHint")}
         </p>
@@ -543,36 +544,45 @@ export default function ContextPanel({
         className="nex-context-files"
         aria-label={t("vcs.changedTitle", { n: files.length })}
       >
-        <h3 className="nex-context-section-title">
-          {t("vcs.changedTitle", { n: files.length })}
-        </h3>
-        {filesLoading ? (
-          <LoadingIndicator label={t("ctx.loadingFiles")} size="sm" />
-        ) : filesError !== null ? (
-          <p className="nex-composer-error" role="alert">
-            {filesError}
-          </p>
-        ) : files.length === 0 ? (
-          <p className="nex-agent-empty">{t("ctx.noFiles")}</p>
+        {!filesLoading && filesError === null && files.length === 0 ? (
+          <div className="nex-context-files-empty">
+            <h3 className="nex-context-section-title">
+              {t("vcs.changedTitle", { n: files.length })}
+            </h3>
+            <p className="nex-agent-empty">{t("ctx.noFiles")}</p>
+          </div>
         ) : (
-          <ul className="nex-context-file-list">
-            {files.map((file) => (
-              <li
-                key={`${file.runId}-${file.seq}-${file.path}`}
-                className="nex-context-file"
-              >
-                <header className="nex-context-file-header">
-                  <span
-                    className="nex-tag nex-tag-mono"
-                    title={t("ctx.changedPath")}
+          <>
+            <h3 className="nex-context-section-title">
+              {t("vcs.changedTitle", { n: files.length })}
+            </h3>
+            {filesLoading ? (
+              <LoadingIndicator label={t("ctx.loadingFiles")} size="sm" />
+            ) : filesError !== null ? (
+              <p className="nex-composer-error" role="alert">
+                {filesError}
+              </p>
+            ) : (
+              <ul className="nex-context-file-list">
+                {files.map((file) => (
+                  <li
+                    key={`${file.runId}-${file.seq}-${file.path}`}
+                    className="nex-context-file"
                   >
-                    {file.path}
-                  </span>
-                </header>
-                <DiffView observation={file.observation} />
-              </li>
-            ))}
-          </ul>
+                    <header className="nex-context-file-header">
+                      <span
+                        className="nex-tag nex-tag-mono"
+                        title={t("ctx.changedPath")}
+                      >
+                        {file.path}
+                      </span>
+                    </header>
+                    <DiffView observation={file.observation} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
         )}
       </section>
     </div>

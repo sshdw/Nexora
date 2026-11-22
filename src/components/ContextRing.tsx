@@ -171,11 +171,10 @@ export default function ContextRing({
   const usage =
     known && stats !== null && resolvedWindow !== null
       ? `${formatCompactTokens(stats.total_tokens)} / ${formatCompactTokens(resolvedWindow)} (${Math.round(stats.usage_percent)}%)`
-      : windowUnknown && stats !== null
-        ? stats.has_token_data
-          ? `${formatCompactTokens(stats.total_tokens)} / ${t("ctx.windowUnknown")}`
-          : t("ctx.windowUnknown")
-        : t("common.na");
+      : windowUnknown && stats !== null && stats.has_token_data
+        ? `${formatCompactTokens(stats.total_tokens)} / ${t("ctx.windowUnknown")}`
+        : t("ctx.noTokenData");
+  const usageEmpty = !known && !(windowUnknown && stats?.has_token_data);
   const label =
     known && stats !== null
       ? t("conv.contextAria", { percent: Math.round(stats.usage_percent) })
@@ -209,14 +208,14 @@ export default function ContextRing({
         side="top"
         sideOffset={layout.sideOffset}
         collisionPadding={8}
-        className="nex-composer-context-menu"
+        className="nex-composer-context-menu p-2 gap-1.5"
         style={
           layout.maxHeight === undefined
             ? undefined
             : { maxHeight: layout.maxHeight }
         }
       >
-        <PopoverHeader className="nex-context-popover-header">
+        <PopoverHeader className="nex-context-popover-header flex-row items-center justify-between gap-2">
           <PopoverTitle>{t("conv.contextWindow")}</PopoverTitle>
           <Button
             type="button"
@@ -230,7 +229,13 @@ export default function ContextRing({
             {compacting ? t("ctx.compacting") : t("ctx.compactAction")}
           </Button>
         </PopoverHeader>
-        <p className="nex-composer-context-usage">{usage}</p>
+        <p
+          className={
+            "nex-composer-context-usage" + (usageEmpty ? " is-empty" : "")
+          }
+        >
+          {usage}
+        </p>
         {compactFeedback && (
           <p
             className={

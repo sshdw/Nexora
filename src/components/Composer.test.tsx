@@ -898,7 +898,7 @@ describe("composer — modes", () => {
     expect(onAgentModeChange).toHaveBeenCalledWith(false);
   });
 
-  it("shows the autonomy trigger in agent mode only, and opens the choices", () => {
+  it("shows the access profile trigger in agent mode only, opens choices without legacy autonomy", () => {
     const { rerender, props } = renderComposer({ agentMode: false });
     expect(
       screen.queryByRole("button", { name: "Access profile" })
@@ -910,57 +910,69 @@ describe("composer — modes", () => {
       </LocaleProvider>
     );
     fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
-    const autonomy = screen.getByRole("radiogroup", { name: "Autonomy mode" });
-    expect(
-      within(autonomy).getByRole("radio", { name: "Semi-autonomous" })
-    ).toHaveAttribute("aria-checked", "true");
-  });
-
-  it("dispatches autonomy changes from the store's own value", () => {
-    const onAutonomyChange = vi.fn();
-    renderComposer({ agentMode: true, onAutonomyChange });
-    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Full-auto" }));
-    expect(onAutonomyChange).toHaveBeenCalledWith("full_autonomous");
-  });
-
-  it("keeps the autonomy explainer's text in step with the store's mode", () => {
-    // Reduced motion, so the sentence renders as its finished frame
-    // and can be read at all — under motion it is still typing.
-    mockReducedMotion(true);
-    renderComposer({
-      agentMode: true,
-      autonomy: autonomyStub({ mode: "full_autonomous" }),
+    const profileGroup = screen.getByRole("radiogroup", {
+      name: "Access profile",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     expect(
-      screen.getByText(
-        "Full-auto: ordinary workspace writes auto-run with checkpoints; sensitive paths and shell commands ask for approval."
-      )
+      within(profileGroup).getByRole("radio", { name: "Standard" })
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      within(profileGroup).getByRole("radio", { name: "Read only" })
     ).toBeInTheDocument();
+    expect(
+      within(profileGroup).getByRole("radio", { name: "Supervised" })
+    ).toBeInTheDocument();
+    // Duplicated legacy autonomy section is removed from the Composer popover.
+    expect(
+      screen.queryByRole("radiogroup", { name: "Autonomy mode" })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Legacy autonomy")).not.toBeInTheDocument();
   });
 
-  it("keeps the explainer in step with the live store after a switch", () => {
+  it("dispatches access profile changes from the store's own value", () => {
+    const setProfile = vi.fn(async () => null);
+    const autonomy = autonomyStub({
+      access: {
+        profile: "standard",
+        loading: false,
+        saving: false,
+        error: null,
+        reload: vi.fn(async () => {}),
+        setProfile,
+      },
+    });
+    renderComposer({ agentMode: true, autonomy });
+    fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Supervised" }));
+    expect(setProfile).toHaveBeenCalledWith("supervised");
+  });
+
+  it("keeps the access profile explainer's text in step with the store's profile", () => {
     mockReducedMotion(true);
-    const autonomy = autonomyStub({ mode: "supervised" });
+    const autonomy = autonomyStub({
+      access: {
+        profile: "read_only",
+        loading: false,
+        saving: false,
+        error: null,
+        reload: vi.fn(async () => {}),
+        setProfile: vi.fn(async () => null),
+      },
+    });
     const { rerender, props } = renderComposer({ agentMode: true, autonomy });
     fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     expect(
-      screen.getByText("Supervised: every tool call waits for your approval.")
+      screen.getByText(tr("en", "access.hint.read_only"))
     ).toBeInTheDocument();
 
-    // The store answering is the only thing that changes the text —
-    // the composer holds no autonomy copy of its own.
-    autonomy.mode = "semi_autonomous";
+    autonomy.access.profile = "supervised";
     rerender(
       <LocaleProvider>
         <Composer {...props} autonomy={autonomy} />
       </LocaleProvider>
     );
     expect(
-      screen.getByText(
-        "Semi-auto: routine steps run alone, writes still ask first."
-      )
+      screen.getByText(tr("en", "access.hint.supervised"))
     ).toBeInTheDocument();
   });
 });
@@ -1191,11 +1203,7 @@ describe("composer — model picker (R6-02)", () => {
     expect(onOpenSettings).toHaveBeenCalled();
   });
 
-  it("wraps long ids instead of widening the popover", () => {
-    // The Round 5 bug: the segmented root was an `inline-grid` child of
-    // `.nex-seg`, its implicit column resolved to max-content, and the list
-    // grew past the popover — the UA's horizontal bar. The structural fix
-    // is a block list plus `overflow-x: hidden`, and rows that wrap.
+  it("truncates long model ids cleanly on a single line with title attribute", () => {
     const sheet = readRepoFile("src/styles/composer.css").replace(
       /\/\*[\s\S]*?\*\//g,
       ""
@@ -1212,11 +1220,21 @@ describe("composer — model picker (R6-02)", () => {
     const option =
       /\.nex-composer-model-option-name\s*\{([\s\S]*?)\n\}/.exec(sheet)?.[1] ??
       "";
-    expect(option).toContain("overflow-wrap: anywhere");
+    expect(option).toContain("overflow: hidden");
+    expect(option).toContain("text-overflow: ellipsis");
+    expect(option).toContain("white-space: nowrap");
 
     // No `.nex-seg` re-point survives: the list is a plain listbox now, so
     // the primitive's inline-grid root cannot come back through this hook.
     expect(sheet).not.toMatch(/\.nex-composer-model-list\.nex-seg/);
+
+    const longId = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free";
+    renderComposer({ selectedModel: longId, models: [longId] });
+    openPicker();
+    const label = within(list())
+      .getByRole("option")
+      .querySelector(".nex-composer-model-option-name");
+    expect(label).toHaveAttribute("title", longId);
   });
 });
 
@@ -1698,7 +1716,7 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     for (const [selector, width] of [
       [".nex-composer-model-menu", "300px"],
       [".nex-composer-workspace-menu", "320px"],
-      [".nex-composer-context-menu", "340px"],
+      [".nex-composer-context-menu", "min(420px, calc(100vw - 32px))"],
     ] as const) {
       const start = code.indexOf(`${selector} {`);
       expect(start, `${selector} has no rule`).toBeGreaterThan(-1);
@@ -2288,6 +2306,19 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
       screen.getByRole("listbox", { name: "Available context references" })
     ).toBeInTheDocument();
     expect(field).toHaveFocus();
+  });
+
+  it("anchors / and @ popovers to the top edge of the composer shell and opens Plan tooltip above", () => {
+    const { container } = renderComposer({ agentMode: true });
+    const shell = container.querySelector(".nex-composer-shell");
+    expect(shell).not.toBeNull();
+    const topAnchors = shell!.querySelectorAll(".nex-composer-top-anchor");
+    expect(topAnchors).toHaveLength(2);
+    const planBtn = screen.getByRole("button", { name: "Plan mode" });
+    const tooltipBubble = planBtn.parentElement?.querySelector(
+      '[data-slot="tooltip-bubble"]'
+    );
+    expect(tooltipBubble).toHaveAttribute("data-side", "top");
   });
 
   it("renders Clarify now and Queue buttons while a run is live without breaking Stop", () => {

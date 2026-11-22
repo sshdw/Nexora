@@ -607,3 +607,117 @@ fn a_new_git_head_invalidates_skill_trust_even_when_text_does_not_change() {
         Err(ContextError::Stale)
     ));
 }
+
+#[test]
+fn skill_metadata_truncates_long_descriptions_and_supports_yaml_multiline_and_quotes() {
+    let fixture = Fixture::new();
+    let long_desc = "a".repeat(300);
+    fixture.write(
+        "project/.nexora/skills/long-desc/SKILL.md",
+        &format!("---\nname: long-desc\ndescription: {long_desc}\n---\nLong body."),
+    );
+    fixture.write(
+        "project/.nexora/skills/folded-yaml/SKILL.md",
+        "---\nname: folded-yaml\ndescription: >-\n  First line of guidance\n  and second line.\n---\nFolded body.",
+    );
+    fixture.write(
+        "project/.nexora/skills/quoted-yaml/SKILL.md",
+        "---\nname: quoted-yaml\ndescription: \"Quoted: with \\\"quotes\\\" and\n  continuation\"\n---\nQuoted body.",
+    );
+    let app_data = fixture.app_data();
+    let workspace = fixture.workspace();
+    let context = PromptContext::new(
+        &fixture.db,
+        &app_data,
+        Some(&workspace),
+        fixture.conversation,
+    )
+    .unwrap();
+    let skills = context.skills(None).unwrap();
+    let values: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap())
+        .collect();
+    assert_eq!(values.len(), 3);
+
+    let folded = values.iter().find(|s| s["name"] == "folded-yaml").unwrap();
+    assert_eq!(
+        folded["description"],
+        "First line of guidance and second line."
+    );
+
+    let long = values.iter().find(|s| s["name"] == "long-desc").unwrap();
+    let long_text = long["description"].as_str().unwrap();
+    assert!(long_text.chars().count() <= 240);
+    assert!(long_text.ends_with('…'));
+
+    let quoted = values.iter().find(|s| s["name"] == "quoted-yaml").unwrap();
+    assert_eq!(
+        quoted["description"],
+        "Quoted: with \"quotes\" and continuation"
+    );
+}
+
+#[test]
+fn gitignore_and_nexoraignore_on_dot_nexora_do_not_block_project_skills() {
+    let fixture = Fixture::new();
+    fixture.write("project/.gitignore", ".nexora/\n");
+    fixture.write("project/.nexora/.nexoraignore", ".nexora/\nblocked/\n");
+    fixture.write(
+        "project/.nexora/skills/visible/SKILL.md",
+        "---\nname: visible\ndescription: Visible project skill\n---\nVisible body.",
+    );
+    fixture.write(
+        "project/.nexora/skills/blocked/SKILL.md",
+        "---\nname: blocked\ndescription: Explicitly blocked skill\n---\nBlocked body.",
+    );
+    let app_data = fixture.app_data();
+    let workspace = fixture.workspace();
+    let context = PromptContext::new(
+        &fixture.db,
+        &app_data,
+        Some(&workspace),
+        fixture.conversation,
+    )
+    .unwrap();
+    let skills = context.skills(None).unwrap();
+    let names: Vec<String> = skills
+        .iter()
+        .map(|s| {
+            serde_json::to_value(s).unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(names, vec!["visible"]);
+}
+
+#[test]
+fn personal_skills_are_discovered_from_home_nexora_and_agents_directories() {
+    let fixture = Fixture::new();
+    let home = fixture.root.join("home");
+    fixture.write(
+        "home/.nexora/skills/personal-nexora/SKILL.md",
+        "---\nname: personal-nexora\ndescription: Personal nexora skill\n---\nBody.",
+    );
+    fixture.write(
+        "home/.agents/skills/personal-agents/SKILL.md",
+        "---\nname: personal-agents\ndescription: Personal agents skill\n---\nBody.",
+    );
+    let app_data = fixture.app_data();
+    let workspace = fixture.workspace();
+    let skills =
+        skills::list_with_home(&fixture.db, &app_data, Some(&workspace), Some(&home)).unwrap();
+    let values: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|s| serde_json::to_value(s).unwrap())
+        .collect();
+    assert_eq!(values.len(), 2);
+    assert!(values.iter().any(|s| s["name"] == "personal-nexora"
+        && s["scope"] == "personal"
+        && s["trusted"] == true));
+    assert!(values.iter().any(|s| s["name"] == "personal-agents"
+        && s["scope"] == "personal"
+        && s["trusted"] == true));
+}

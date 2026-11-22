@@ -489,6 +489,21 @@
   --nex-sys-motion-view-travel: var(--motion-view-travel);
   --nex-sys-motion-loop-skeleton: var(--motion-loop-skeleton);
   --nex-sys-motion-loop-typing-dot-delay: var(--motion-loop-typing-dot-delay);
+
+  /* ---- Unified surface & disclosure motion (PR 2 overhaul) ----
+     Crisp transform/opacity-only transitions: scale(0.96) -> 1 for
+     popovers/dialogs, <= 200ms exits, collapsed by the global
+     prefers-reduced-motion gate below. */
+  --nex-sys-motion-popover-enter-duration: var(--motion-duration-short4);
+  --nex-sys-motion-popover-exit-duration: var(--motion-duration-short3);
+  --nex-sys-motion-popover-enter-easing: var(
+    --motion-easing-emphasized-decelerate
+  );
+  --nex-sys-motion-popover-exit-easing: var(--motion-easing-standard-accelerate);
+  --nex-sys-motion-popover-scale: 0.96;
+  --nex-sys-motion-panel-enter-duration: var(--motion-duration-short4);
+  --nex-sys-motion-panel-exit-duration: var(--motion-duration-short3);
+  --nex-sys-motion-step-duration: var(--motion-duration-short3);
 }
 
 /* ---- Adaptive motion levels (OD-D10·motion, NEXORA-DESIGN-SYSTEM.md

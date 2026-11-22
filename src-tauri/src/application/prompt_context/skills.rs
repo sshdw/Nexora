@@ -19,6 +19,8 @@ const MAX_SKILLS: usize = 64;
 const MAX_ENTRIES: usize = 1024;
 const MAX_DEPTH: usize = 5;
 const MAX_SKILL_BYTES: u64 = 16 * 1024;
+const MAX_DESCRIPTION_CHARS: usize = 240;
+const MAX_FRONTMATTER_LINES: usize = 128;
 static PREFERENCE_WRITE: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -160,6 +162,19 @@ pub(super) fn list(
         .collect()
 }
 
+#[cfg(test)]
+pub(super) fn list_with_home(
+    db: &Database,
+    app_data: &Path,
+    workspace: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<Vec<SkillSummary>, ContextError> {
+    catalog_with_home(app_data, workspace, home)
+        .into_iter()
+        .map(|skill| Ok(skill.summary(&skill.preference(db)?)))
+        .collect()
+}
+
 pub(super) fn view(
     db: &Database,
     app_data: &Path,
@@ -288,19 +303,42 @@ fn find(skills: Vec<Candidate>, reference: &SkillRef) -> Result<Candidate, Conte
         .ok_or(ContextError::Stale)
 }
 
+#[cfg(not(test))]
+fn current_user_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let raw = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    #[cfg(not(windows))]
+    let raw = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    raw.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
+#[cfg(test)]
+fn current_user_home() -> Option<PathBuf> {
+    None
+}
+
 fn catalog(app_data: &Path, workspace: Option<&Path>) -> Vec<Candidate> {
+    let home = current_user_home();
+    catalog_with_home(app_data, workspace, home.as_deref())
+}
+
+fn catalog_with_home(
+    app_data: &Path,
+    workspace: Option<&Path>,
+    home: Option<&Path>,
+) -> Vec<Candidate> {
     let mut skills = Vec::new();
-    let mut roots = [
-        (app_data, Path::new("skills"), SkillScope::Personal),
-        (app_data, Path::new(".nexora/skills"), SkillScope::Project),
-    ];
-    if let Some(workspace) = workspace {
-        roots[1].0 = workspace;
+    let mut seen_sources = std::collections::HashSet::new();
+    let mut roots: Vec<(&Path, &Path, SkillScope)> =
+        vec![(app_data, Path::new("skills"), SkillScope::Personal)];
+    if let Some(home) = home {
+        roots.push((home, Path::new(".nexora/skills"), SkillScope::Personal));
+        roots.push((home, Path::new(".agents/skills"), SkillScope::Personal));
     }
-    for (base, relative, scope) in roots
-        .into_iter()
-        .filter(|(_, _, scope)| workspace.is_some() || matches!(scope, SkillScope::Personal))
-    {
+    if let Some(workspace) = workspace {
+        roots.push((workspace, Path::new(".nexora/skills"), SkillScope::Project));
+    }
+    for (base, relative, scope) in roots {
         let Ok(base_dir) = open_absolute(base) else {
             continue;
         };
@@ -331,7 +369,11 @@ fn catalog(app_data: &Path, workspace: Option<&Path>) -> Vec<Candidate> {
             rules,
         };
         scan.walk(&skills_dir, Path::new(""), inherited.as_deref(), 0);
-        skills.extend(scan.skills);
+        for skill in scan.skills {
+            if seen_sources.insert(skill.reference.source_id.clone()) {
+                skills.push(skill);
+            }
+        }
     }
     skills.sort_by(|left, right| (&left.name, &left.path).cmp(&(&right.name, &right.path)));
     skills
@@ -399,10 +441,23 @@ impl SkillScan {
             return false;
         }
         self.rules.as_ref().is_none_or(|rules| {
-            let project_relative = Path::new(".nexora/skills").join(relative);
-            path_label(&project_relative).is_some_and(|label| {
-                !crate::application::project_dir::rules_verdict(rules, &label, !file)
-            })
+            let dot_nexora_ignored =
+                crate::application::project_dir::rules_verdict(rules, ".nexora", true)
+                    || crate::application::project_dir::rules_verdict(
+                        rules,
+                        ".nexora/skills",
+                        true,
+                    );
+            if dot_nexora_ignored {
+                path_label(relative).is_some_and(|label| {
+                    !crate::application::project_dir::rules_verdict(rules, &label, !file)
+                })
+            } else {
+                let project_relative = Path::new(".nexora/skills").join(relative);
+                path_label(&project_relative).is_some_and(|label| {
+                    !crate::application::project_dir::rules_verdict(rules, &label, !file)
+                })
+            }
         })
     }
     fn candidate(&self, path: &str, text: &str, commit: Option<&str>) -> Option<Candidate> {
@@ -434,34 +489,181 @@ impl SkillScan {
 // instructions never control registration, path handling, or tool access.
 fn metadata(document: &str) -> Option<(String, String)> {
     let mut lines = document.lines();
-    if lines.next()?.trim() != "---" {
+    let first = lines.next()?.trim_start_matches('\u{feff}').trim();
+    if first != "---" {
         return None;
     }
-    let mut name = None;
-    let mut description = None;
-    for line in lines.take(64) {
-        if line.trim() == "---" {
-            let name: String = name?;
-            let description: String = description?;
-            if !valid_skill_name(&name) || description.chars().count() > 240 {
+    let frontmatter: Vec<&str> = lines.take(MAX_FRONTMATTER_LINES).collect();
+    let mut name: Option<String> = None;
+    let mut description: Option<String> = None;
+    let mut idx = 0;
+    while idx < frontmatter.len() {
+        let line = frontmatter[idx];
+        let trimmed = line.trim();
+        if trimmed == "---" || trimmed == "..." {
+            let name = name?;
+            let description = description?;
+            if !valid_skill_name(&name) {
                 return None;
             }
-            return Some((name, description));
+            return Some((name, truncate_description(&description)));
         }
-        let slot = match line.split_once(':') {
-            Some(("name", field)) if name.is_none() => (&mut name, field),
-            Some(("description", field)) if description.is_none() => (&mut description, field),
-            Some(("name" | "description", _)) => return None,
-            _ => continue,
+        // Skip indented lines that belong to unknown multiline keys.
+        if line.starts_with(' ') || line.starts_with('\t') {
+            idx += 1;
+            continue;
+        }
+        let Some((key, raw_field)) = line.split_once(':') else {
+            idx += 1;
+            continue;
         };
-        let value = slot.1.trim().trim_matches(['\'', '"']);
-        let valid = !value.is_empty() && !value.chars().any(char::is_control);
-        if !valid {
+        let key = key.trim();
+        let is_name = key == "name";
+        let is_desc = key == "description";
+        if !is_name && !is_desc {
+            idx += 1;
+            continue;
+        }
+        if (is_name && name.is_some()) || (is_desc && description.is_some()) {
             return None;
         }
-        *slot.0 = Some(value.to_owned());
+        let (parsed, next_idx) = parse_yaml_scalar(raw_field, &frontmatter, idx + 1)?;
+        if parsed.is_empty() || parsed.chars().any(char::is_control) {
+            return None;
+        }
+        if is_name {
+            name = Some(parsed);
+        } else {
+            description = Some(parsed);
+        }
+        idx = next_idx;
     }
     None
+}
+
+fn parse_yaml_scalar(raw_field: &str, lines: &[&str], start_idx: usize) -> Option<(String, usize)> {
+    let trimmed = raw_field.trim();
+    // YAML block scalar (`|`, `>`, `|-`, `>-`, `|+`, `>+`) or empty value with indented block.
+    if trimmed.is_empty() || matches!(trimmed, "|" | ">" | "|-" | ">-" | "|+" | ">+") {
+        let mut parts = Vec::new();
+        let mut idx = start_idx;
+        while idx < lines.len() {
+            let line = lines[idx];
+            if line.trim() == "---" || line.trim() == "..." {
+                break;
+            }
+            if line.trim().is_empty() {
+                idx += 1;
+                continue;
+            }
+            if line.starts_with(' ') || line.starts_with('\t') {
+                parts.push(line.trim());
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        let joined = parts.join(" ");
+        return Some((unquote_yaml(&joined), idx));
+    }
+
+    // Quoted scalar (possibly spanning multiple lines).
+    if let Some(quote) = trimmed.chars().next().filter(|c| *c == '"' || *c == '\'') {
+        if trimmed.len() >= 2 && ends_with_unescaped(trimmed, quote) {
+            return Some((unquote_yaml(trimmed), start_idx));
+        }
+        let mut collected = String::from(trimmed);
+        let mut idx = start_idx;
+        while idx < lines.len() {
+            let line = lines[idx];
+            if line.trim() == "---" || line.trim() == "..." {
+                return None;
+            }
+            let piece = line.trim();
+            if !piece.is_empty() {
+                collected.push(' ');
+                collected.push_str(piece);
+            }
+            idx += 1;
+            if ends_with_unescaped(&collected, quote) {
+                return Some((unquote_yaml(&collected), idx));
+            }
+        }
+        return None;
+    }
+
+    // Plain scalar with optional indented continuation lines.
+    let mut parts = vec![trimmed];
+    let mut idx = start_idx;
+    while idx < lines.len() {
+        let line = lines[idx];
+        if line.trim() == "---" || line.trim() == "..." {
+            break;
+        }
+        if line.starts_with(' ') || line.starts_with('\t') {
+            let piece = line.trim();
+            if !piece.is_empty() {
+                parts.push(piece);
+            }
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+    Some((parts.join(" "), idx))
+}
+
+fn ends_with_unescaped(value: &str, quote: char) -> bool {
+    if !value.ends_with(quote) || value.len() < 2 {
+        return false;
+    }
+    if quote == '\'' {
+        return true;
+    }
+    let backslashes = value[..value.len() - 1]
+        .chars()
+        .rev()
+        .take_while(|c| *c == '\\')
+        .count();
+    backslashes % 2 == 0
+}
+
+fn unquote_yaml(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        let mut out = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('"') => out.push('"'),
+                    Some('\\') | None => out.push('\\'),
+                    Some('n' | 't') => out.push(' '),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        return out.trim().to_owned();
+    }
+    if trimmed.len() >= 2 && trimmed.starts_with('\'') && trimmed.ends_with('\'') {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        return inner.replace("''", "'").trim().to_owned();
+    }
+    trimmed.to_owned()
+}
+
+fn truncate_description(value: &str) -> String {
+    if value.chars().count() <= MAX_DESCRIPTION_CHARS {
+        return value.to_owned();
+    }
+    let prefix: String = value.chars().take(MAX_DESCRIPTION_CHARS - 1).collect();
+    format!("{}…", prefix.trim_end())
 }
 
 pub(super) fn valid_skill_name(name: &str) -> bool {

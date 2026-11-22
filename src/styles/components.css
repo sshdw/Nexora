@@ -929,12 +929,12 @@
   justify-content: center;
   background: var(--color-scrim);
   padding: var(--space-md);
-  animation: nex-scrim-enter var(--nex-sys-motion-duration-medium4)
-    var(--nex-sys-motion-easing-emphasized-decelerate);
+  animation: nex-scrim-enter var(--nex-sys-motion-panel-enter-duration)
+    var(--nex-sys-motion-popover-enter-easing);
 }
 .nex-dialog-backdrop.is-closing {
-  animation: nex-scrim-exit var(--nex-sys-motion-duration-short4)
-    var(--nex-sys-motion-easing-standard-accelerate) forwards;
+  animation: nex-scrim-exit var(--nex-sys-motion-panel-exit-duration)
+    var(--nex-sys-motion-popover-exit-easing) forwards;
 }
 
 .nex-dialog-card {
@@ -950,12 +950,12 @@
   gap: var(--space-md);
   overflow-y: auto;
   padding: var(--space-xl);
-  animation: nex-dialog-enter var(--nex-sys-motion-duration-medium4)
-    var(--nex-sys-motion-easing-emphasized-decelerate);
+  animation: nex-dialog-enter var(--nex-sys-motion-panel-enter-duration)
+    var(--nex-sys-motion-popover-enter-easing);
 }
 .nex-dialog-card.is-closing {
-  animation: nex-dialog-exit var(--nex-sys-motion-duration-short4)
-    var(--nex-sys-motion-easing-standard-accelerate) forwards;
+  animation: nex-dialog-exit var(--nex-sys-motion-panel-exit-duration)
+    var(--nex-sys-motion-popover-exit-easing) forwards;
 }
 
 @keyframes nex-scrim-enter {
@@ -971,13 +971,13 @@
 @keyframes nex-dialog-enter {
   from {
     opacity: 0;
-    transform: scale(0.9);
+    transform: scale(var(--nex-sys-motion-popover-scale, 0.96));
   }
 }
 @keyframes nex-dialog-exit {
   to {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(var(--nex-sys-motion-popover-scale, 0.96));
   }
 }
 
@@ -1012,14 +1012,27 @@
 
 .nex-pop-enter {
   transform-origin: top center;
-  animation: nex-pop-enter var(--nex-sys-motion-duration-medium2)
-    var(--nex-sys-motion-easing-emphasized-decelerate);
+  animation: nex-pop-enter var(--nex-sys-motion-popover-enter-duration)
+    var(--nex-sys-motion-popover-enter-easing);
+}
+
+.nex-pop-exit {
+  transform-origin: top center;
+  animation: nex-pop-exit var(--nex-sys-motion-popover-exit-duration)
+    var(--nex-sys-motion-popover-exit-easing) forwards;
 }
 
 @keyframes nex-pop-enter {
   from {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(var(--nex-sys-motion-popover-scale, 0.96));
+  }
+}
+
+@keyframes nex-pop-exit {
+  to {
+    opacity: 0;
+    transform: scale(var(--nex-sys-motion-popover-scale, 0.96));
   }
 }
 
@@ -1051,8 +1064,8 @@
    ============================================================ */
 
 .nex-view-enter {
-  animation: nex-view-enter var(--nex-sys-motion-duration-medium2)
-    var(--nex-sys-motion-easing-standard);
+  animation: nex-view-enter var(--nex-sys-motion-panel-enter-duration)
+    var(--nex-sys-motion-popover-enter-easing);
 }
 
 @keyframes nex-view-enter {
