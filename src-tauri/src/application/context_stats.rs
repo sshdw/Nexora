@@ -19,6 +19,7 @@ use crate::application::capabilities::{self, CapabilityProvenance};
 use crate::application::conversations::{ConversationError, Result};
 use crate::application::{project_dir, settings};
 use crate::infrastructure::database::Database;
+#[cfg(test)]
 use crate::infrastructure::providers::{anthropic, gemini, openai};
 use crate::infrastructure::repository::agent_runs::AgentRunRepository;
 use crate::infrastructure::repository::attachments::AttachmentRepository;
@@ -26,25 +27,15 @@ use crate::infrastructure::repository::conversations::ConversationRepository;
 use crate::infrastructure::repository::messages::MessageRepository;
 use crate::infrastructure::repository::providers::ProviderRepository;
 
-/// Context window for OpenAI-hosted models (conservative documented default).
-pub(crate) const OPENAI_CONTEXT_LIMIT: u64 = 128_000;
-/// Context window for Anthropic-hosted models (conservative documented default).
-pub(crate) const ANTHROPIC_CONTEXT_LIMIT: u64 = 200_000;
-/// Context window for Gemini-hosted models (conservative documented default).
-pub(crate) const GEMINI_CONTEXT_LIMIT: u64 = 1_048_576;
-/// Conservative baseline for unverified gemini-lite windows until
-/// live-verified; architecture effective = min(requested, capability).
-///
-/// Live-verified 2026-10-03 via the zero-token `GET
-/// /v1beta/models/{modelId}` metadata endpoint (header auth, key from the
-/// OS keyring through `CredentialStore`, never logged): all four lite IDs
-/// below report `inputTokenLimit = 1048576`, so the clamp is raised to the
-/// verified 1M window. Kept as a separate arm (rather than folding into
-/// [`GEMINI_CONTEXT_LIMIT`]) so a future re-verification that splits the
-/// data touches one place.
-pub(crate) const GEMINI_LITE_CONTEXT_LIMIT: u64 = 1_048_576;
-/// Fallback when the provider/model is unknown or has no committed window.
-pub(crate) const DEFAULT_CONTEXT_LIMIT: u64 = 128_000;
+// Context-window facts moved to the shared catalog (CLI stream, issue #162)
+// so the CLI and Desktop cannot drift. These re-exports keep the existing
+// application call sites (including the assembly tests) compiling unchanged;
+// the production resolver below delegates straight to the core function.
+#[allow(unused_imports)]
+pub(crate) use nexora_core::catalog::{
+    ANTHROPIC_CONTEXT_LIMIT, DEFAULT_CONTEXT_LIMIT, GEMINI_CONTEXT_LIMIT,
+    GEMINI_LITE_CONTEXT_LIMIT, OPENAI_CONTEXT_LIMIT,
+};
 
 /// Resolve the documented context limit for `provider`/`model`.
 ///
@@ -62,21 +53,7 @@ pub(crate) const DEFAULT_CONTEXT_LIMIT: u64 = 128_000;
 /// safe direction for the proactive trigger.
 #[must_use]
 pub(crate) fn context_limit_for(provider: Option<&str>, model: Option<&str>) -> u64 {
-    if let Some(limit) = model.and_then(model_context_limit) {
-        return limit;
-    }
-    match provider {
-        Some("anthropic") => ANTHROPIC_CONTEXT_LIMIT,
-        Some("gemini") => GEMINI_CONTEXT_LIMIT,
-        Some("openai") => OPENAI_CONTEXT_LIMIT,
-        _ => {
-            if model.is_some_and(|m| m.contains("gemini")) {
-                GEMINI_CONTEXT_LIMIT
-            } else {
-                DEFAULT_CONTEXT_LIMIT
-            }
-        }
-    }
+    nexora_core::catalog::context_limit_for(provider, model)
 }
 
 /// Per-model window derived from the provider `SUPPORTED_MODELS` lists
@@ -95,26 +72,7 @@ pub(crate) fn context_limit_for(provider: Option<&str>, model: Option<&str>) -> 
 /// to the provider fallback.
 #[must_use]
 fn model_context_limit(model: &str) -> Option<u64> {
-    if openai::SUPPORTED_MODELS.contains(&model) {
-        Some(OPENAI_CONTEXT_LIMIT)
-    } else if let Some(limit) =
-        crate::infrastructure::providers::catalog::openai::preset_model_context_limit(model)
-    {
-        Some(limit)
-    } else if anthropic::SUPPORTED_MODELS.contains(&model) {
-        Some(ANTHROPIC_CONTEXT_LIMIT)
-    } else if gemini::SUPPORTED_MODELS.contains(&model) {
-        // Live-verified 2026-10-03 (metadata endpoint, zero-token):
-        // every lite ID reports `inputTokenLimit = 1048576`, so the lite
-        // subset resolves to the verified [`GEMINI_LITE_CONTEXT_LIMIT`].
-        if gemini::GEMINI_LITE_MODELS.contains(&model) {
-            Some(GEMINI_LITE_CONTEXT_LIMIT)
-        } else {
-            Some(GEMINI_CONTEXT_LIMIT)
-        }
-    } else {
-        None
-    }
+    nexora_core::catalog::model_context_limit(model)
 }
 
 /// Per-category token breakdown surfaced to `ContextRing` (`M16` / P24, P30).

@@ -22,42 +22,37 @@ pub mod openai;
 pub mod registry;
 pub mod transport;
 
-use serde::Serialize;
-
 pub(crate) fn is_retired_cli_provider(provider: &str) -> bool {
     matches!(provider.trim(), "cli_codex" | "cli_claude")
 }
 
-/// A supported AI provider definition, exposed for the UI (DATABASE.md §7.5).
-///
-/// Non-sensitive metadata only: the internal `name`, a user-facing label, and
-/// the hardcoded supported model identifiers. Credentials are never included —
-/// they live exclusively in the OS secure keyring (ARCHITECTURE.md §12).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct SupportedProvider {
-    /// Internal provider name; the keyring namespace key.
-    pub name: String,
-    /// User-facing provider label.
-    pub display_name: String,
-    /// Model identifiers supported by this provider, in display order.
-    pub models: Vec<String>,
-}
+/// The supported-provider surface is owned by [`nexora_core::catalog`]
+/// (CLI stream, issue #162). Re-exporting the exact core value keeps the
+/// Desktop IPC command and the CLI `providers list` byte-identical.
+pub(crate) use nexora_core::catalog::SupportedProvider;
 
 /// Return every provider supported by this build, with its supported models.
 ///
-/// This is the single source of truth for "which providers/models may be
-/// configured" (DATABASE.md §7.5: model lists are hardcoded in the MVP). It is
-/// derived from the registered concrete providers and their hardcoded model
-/// sets, so the UI never invents providers or models.
+/// Delegates to the shared catalog — the single source of truth for "which
+/// providers/models may be configured" (DATABASE.md §7.5). The UI never
+/// invents providers or models, and the CLI cannot drift from Desktop. The
+/// Desktop-only `ChatGPT` subscription provider (S11-11) is appended here: it is
+/// wired through [`chatgpt_plan`]/[`chatgpt_oauth`] in this adapter only and has
+/// no CLI counterpart, so it stays a Desktop-only addition to the shared list.
 pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
-    provider_schemas()
-        .into_iter()
-        .map(|(name, display_name, models)| SupportedProvider {
-            name: name.to_string(),
-            display_name: display_name.to_string(),
-            models: models.iter().copied().map(ToString::to_string).collect(),
-        })
-        .collect()
+    let mut providers = nexora_core::catalog::supported_providers();
+    // S11-11: Desktop-only ChatGPT subscription provider. It carries no
+    // hardcoded model shortlist (models come from the account/plan), and is
+    // shown after the native providers, before the OpenAI-compatible presets.
+    providers.insert(
+        3,
+        SupportedProvider {
+            name: chatgpt_plan::PROVIDER_NAME.to_string(),
+            display_name: chatgpt_plan::PROVIDER_DISPLAY_NAME.to_string(),
+            models: Vec::new(),
+        },
+    );
+    providers
 }
 
 /// Look up the estimated cost rate for (`provider`, `model`): input/output
@@ -72,17 +67,7 @@ pub(crate) fn supported_providers() -> Vec<SupportedProvider> {
 /// application pricing policy).
 #[must_use]
 pub(crate) fn rate_for_model(provider: &str, model: &str) -> Option<(u64, u64)> {
-    if provider == openai::PROVIDER_NAME
-        || provider == openai::COMPAT_NAME
-        || catalog::openai::find_preset(provider).is_some()
-    {
-        return openai::rate_for_model(model);
-    }
-    match provider {
-        anthropic::PROVIDER_NAME => anthropic::rate_for_model(model),
-        gemini::PROVIDER_NAME => gemini::rate_for_model(model),
-        _ => None,
-    }
+    nexora_core::catalog::rate_for_model(provider, model)
 }
 
 /// Look up the estimated cost rate by model ID alone, searching every native
@@ -94,46 +79,7 @@ pub(crate) fn rate_for_model(provider: &str, model: &str) -> Option<(u64, u64)> 
 /// string (e.g. `RunBudget::cost_for`).
 #[must_use]
 pub(crate) fn rate_for_model_id(model: &str) -> Option<(u64, u64)> {
-    openai::rate_for_model(model)
-        .or_else(|| anthropic::rate_for_model(model))
-        .or_else(|| gemini::rate_for_model(model))
-}
-
-/// Collect `(name, display_name, supported_models)` for each registered
-/// provider. Built from the native providers plus the data-driven
-/// [`catalog::openai::OPENAI_COMPAT_PRESETS`] table and `openai_compat`.
-fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
-    let mut schemas = vec![
-        (
-            openai::PROVIDER_NAME,
-            openai::PROVIDER_DISPLAY_NAME,
-            openai::SUPPORTED_MODELS,
-        ),
-        (
-            anthropic::PROVIDER_NAME,
-            anthropic::PROVIDER_DISPLAY_NAME,
-            anthropic::SUPPORTED_MODELS,
-        ),
-        (
-            gemini::PROVIDER_NAME,
-            gemini::PROVIDER_DISPLAY_NAME,
-            gemini::SUPPORTED_MODELS,
-        ),
-    ];
-    schemas.push((
-        chatgpt_plan::PROVIDER_NAME,
-        chatgpt_plan::PROVIDER_DISPLAY_NAME,
-        &[],
-    ));
-    for preset in catalog::openai::OPENAI_COMPAT_PRESETS {
-        schemas.push((preset.name, preset.display_name, preset.models));
-    }
-    // The user-configured OpenAI-compatible endpoint carries no hardcoded
-    // shortlist: the model identifier comes from the endpoint
-    // configuration, so the list is empty by design (the UI accepts the
-    // configured model identifier for it).
-    schemas.push((openai::COMPAT_NAME, openai::COMPAT_DISPLAY_NAME, &[]));
-    schemas
+    nexora_core::catalog::rate_for_model_id(model)
 }
 
 #[cfg(test)]
