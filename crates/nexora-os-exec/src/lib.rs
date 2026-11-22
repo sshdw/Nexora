@@ -630,10 +630,87 @@ mod tests {
                 status.is_verified(),
                 "mandatory native host proof failed: {status:?}"
             );
+            #[cfg(target_os = "linux")]
+            if let Ok(mechanism) = std::env::var("NEXORA_TEST_LINUX_SANDBOX_MECHANISM") {
+                assert_eq!(
+                    status,
+                    SandboxVerificationStatus::Verified { mechanism },
+                    "CI must prove the requested Linux backend"
+                );
+            }
         } else if !status.is_verified() {
             assert_eq!(status.posture(), "PerCommandConsent");
             eprintln!("native isolation proof unavailable on this host: {status:?}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sandboxed_child_blocks_local_socketpair() {
+        use std::os::unix::net::UnixStream;
+
+        const CHILD_ENV: &str = "SANDBOX_SECCOMP_TEST_CHILD";
+        const FILTER_MARKER: &str = "SECCOMP_SOCKETPAIR_BLOCKED";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            assert_eq!(
+                UnixStream::pair()
+                    .expect_err("sandbox must block local socketpair creation")
+                    .raw_os_error(),
+                Some(libc::EPERM)
+            );
+            println!("{FILTER_MARKER}");
+            return;
+        }
+
+        let _native = crate::native_test_lock();
+        let ws = TempDirGuard::new("nexora-sandbox-seccomp");
+        if std::env::var_os("NEXORA_REQUIRE_NATIVE_SANDBOX").is_none() {
+            let status = verify_workspace_sandbox(ws.path());
+            if !status.is_verified() {
+                eprintln!("native seccomp proof unavailable: {status:?}");
+                return;
+            }
+        }
+
+        // An unnamed local socket pair opens no network connection. The same
+        // operation must succeed on the host so it cannot mask a missing filter.
+        drop(UnixStream::pair().expect("host must permit local socketpair creation"));
+        let probe = ws.path().join("seccomp-probe");
+        std::fs::copy(std::env::current_exe().expect("test executable"), &probe)
+            .expect("copy probe executable into its synthetic workspace");
+        let mut command = Command::new(probe);
+        command
+            .args([
+                "--exact",
+                "tests::sandboxed_child_blocks_local_socketpair",
+                "--nocapture",
+            ])
+            .current_dir(ws.path())
+            .env(CHILD_ENV, "1");
+        let config = SandboxSpawnConfig {
+            policy: SandboxPolicy::for_workspace(ws.path()),
+        };
+        let mut child =
+            spawn_sandboxed_in_process_tree(&mut command, &config).expect("spawn seccomp proof");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll seccomp proof") {
+                break status;
+            }
+            assert!(Instant::now() < deadline, "seccomp proof timed out");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let mut stdout = String::new();
+        child
+            .take_stdout()
+            .expect("seccomp proof stdout")
+            .read_to_string(&mut stdout)
+            .expect("read seccomp proof stdout");
+        assert!(
+            status.success() && stdout.lines().any(|line| line.contains(FILTER_MARKER)),
+            "seccomp proof failed: {status}, {stdout}"
+        );
     }
 
     #[test]

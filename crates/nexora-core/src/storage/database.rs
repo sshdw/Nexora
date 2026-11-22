@@ -1723,12 +1723,39 @@ mod core_storage_tests {
         .expect("collect schema")
     }
 
+    fn assert_restored_fixture(conn: &Connection) {
+        let (title, content): (String, String) = conn
+            .query_row(
+                "SELECT conversations.title, messages.content FROM messages \
+                 JOIN conversations ON conversations.id = messages.conversation_id \
+                 JOIN messages_fts ON messages_fts.rowid = messages.id \
+                 WHERE messages_fts MATCH 'canary' AND messages.id = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("recover legacy message and its search index");
+        assert_eq!(title, "Release migration fixture");
+        assert_eq!(content, "Legacy migration canary");
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("run SQLite integrity check");
+        assert_eq!(integrity, "ok");
+        let mut foreign_keys = conn
+            .prepare("PRAGMA foreign_key_check")
+            .expect("prepare foreign key check");
+        assert!(
+            !foreign_keys.exists([]).expect("check foreign keys"),
+            "foreign key check must return zero violations"
+        );
+    }
+
     #[test]
-    fn upgrade_from_v13_fixture_matches_fresh_schema() {
+    fn forward_upgrade_and_file_restore_preserve_legacy_data_and_schema() {
+        const LEGACY_VERSION: i64 = 12; // Before v13 rebuilds messages and other tables.
         let target = target_version();
-        let upgraded = TempDb::new("upgraded");
+        let live = TempDb::new("live");
         {
-            let mut conn = upgraded.config();
+            let mut conn = live.config();
             conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS schema_version (\
                      version INTEGER PRIMARY KEY CHECK (version > 0),\
@@ -1736,27 +1763,55 @@ mod core_storage_tests {
                  );",
             )
             .expect("bookkeeping");
-            for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v < target) {
+            for &(version, sql) in MIGRATIONS.iter().take_while(|(v, _)| *v <= LEGACY_VERSION) {
                 apply_migration(&mut conn, version, sql).expect("apply fixture migration");
             }
+            conn.execute_batch(
+                "INSERT INTO conversations (id, title) VALUES (1, 'Release migration fixture');\
+                 INSERT INTO messages (id, conversation_id, role, content)\
+                 VALUES (2, 1, 'user', 'Legacy migration canary');",
+            )
+            .expect("seed legacy data");
         }
-        let mut upgraded_conn = Connection::open(&upgraded.path).expect("reopen fixture");
-        configure(&upgraded_conn).expect("configure upgraded");
-        migrate(&mut upgraded_conn).expect("finish migrations");
+        // Copy the main file after SQLite closes the last connection and checkpoints WAL.
+        let backup = live.dir.join("pre-upgrade.db");
+        std::fs::copy(&live.path, &backup).expect("back up closed legacy database");
 
         let fresh = TempDb::new("fresh");
         let fresh_conn = fresh.migrated();
+        let fresh_schema = schema_snapshot(&fresh_conn);
+        {
+            let upgraded = open(&live.path).expect("upgrade through application startup");
+            assert_eq!(version_rows(&upgraded), (1..=target).collect::<Vec<_>>());
+            assert_eq!(schema_snapshot(&upgraded), fresh_schema);
+            assert_restored_fixture(&upgraded);
+            upgraded
+                .execute("UPDATE conversations SET title = 'After backup'", [])
+                .expect("change live data after backup");
+        }
 
+        std::fs::copy(backup, &live.path).expect("restore backup over closed live database");
+        {
+            let restored = live.config();
+            assert_eq!(
+                version_rows(&restored),
+                (1..=LEGACY_VERSION).collect::<Vec<_>>(),
+                "restore recovers the original migration history"
+            );
+            assert_restored_fixture(&restored);
+        }
+        let restored = open(&live.path).expect("upgrade restored database through startup");
         assert_eq!(
-            version_rows(&upgraded_conn),
+            version_rows(&restored),
             (1..=target).collect::<Vec<_>>(),
             "one contiguous bookkeeping row per migration"
         );
         assert_eq!(
-            schema_snapshot(&upgraded_conn),
-            schema_snapshot(&fresh_conn),
-            "an upgraded database must have the same schema a fresh one gets"
+            schema_snapshot(&restored),
+            fresh_schema,
+            "an upgraded backup must have the same schema as a fresh database"
         );
+        assert_restored_fixture(&restored);
     }
 
     #[test]
@@ -1765,6 +1820,11 @@ mod core_storage_tests {
         let target = target_version();
         {
             let conn = temp.migrated();
+            conn.execute_batch(
+                "CREATE TABLE future_data (value TEXT NOT NULL);\
+                 INSERT INTO future_data VALUES ('must survive');",
+            )
+            .expect("simulate a newer SQLite schema and data");
             conn.execute(
                 "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
                 params![target + 1, now_millis()],
@@ -1775,7 +1835,7 @@ mod core_storage_tests {
             let conn = temp.config();
             version_rows(&conn)
         };
-        let before_size = std::fs::metadata(&temp.path).expect("metadata").len();
+        let before_file = std::fs::read(&temp.path).expect("read closed newer database");
 
         let err = open(&temp.path).expect_err("a newer schema must be refused");
         let expected = format!(
@@ -1791,10 +1851,13 @@ mod core_storage_tests {
             } if db_version == target + 1 && app_version == target
         ));
 
-        let after_size = std::fs::metadata(&temp.path).expect("metadata").len();
-        let conn = temp.config();
-        assert_eq!(version_rows(&conn), before_rows, "version rows untouched");
-        assert_eq!(after_size, before_size, "file size untouched");
+        let after_file = std::fs::read(&temp.path).expect("read database after refusal");
+        assert_eq!(after_file, before_file, "newer database bytes untouched");
+        assert_eq!(
+            version_rows(&temp.config()),
+            before_rows,
+            "version rows untouched"
+        );
     }
 
     #[test]

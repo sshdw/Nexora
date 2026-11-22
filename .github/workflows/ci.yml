@@ -12,9 +12,9 @@ concurrency:
 
 # Wall-clock split: fmt (no build), Rust gates per OS (clippy + test share
 # one target dir per job), and the frontend gates run concurrently instead
-# of sequentially. On pull requests, each job checks whether its dependency
-# tree was touched relative to base; untouched suites report a fast green
-# pass from the verified main baseline. Pushes to main always run all suites.
+# of sequentially. On pull requests, test and lint jobs check whether their
+# dependency trees changed relative to base. Packaging always builds on each
+# native runner. Pushes to main always run all suites.
 jobs:
   fmt:
     name: fmt
@@ -67,12 +67,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
             timeout: 20
           - os: windows-latest
             timeout: 30
+          - os: macos-latest
+            timeout: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,7 +87,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "affected=true" >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- src-tauri/ crates/ rust-toolchain.toml .github/workflows/ci.yml; then
+          elif git diff --quiet "origin/${{ github.base_ref }}...HEAD" -- src-tauri/ crates/ Cargo.toml rust-toolchain.toml .github/workflows/ci.yml; then
             echo "No changes in src-tauri/ or crates/ — reusing green baseline from ${{ github.base_ref }}"
             echo "affected=false" >> "$GITHUB_OUTPUT"
           else
@@ -137,6 +139,15 @@ jobs:
         if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Create a canonical macOS test fixture directory
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          # macOS TMPDIR can traverse /var, which no-follow fixture readers reject.
+          test_dir="$(mktemp -d "$RUNNER_TEMP/nexora-tests.XXXXXX")"
+          canonical_test_dir="$(cd -- "$test_dir" && pwd -P)"
+          printf 'TMPDIR=%s\n' "$canonical_test_dir" >> "$GITHUB_ENV"
 
       - name: cargo test
         if: steps.changes.outputs.affected == 'true'
@@ -203,7 +214,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -221,6 +232,26 @@ jobs:
             echo "affected=false" >> "$GITHUB_OUTPUT"
           else
             echo "affected=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install bubblewrap for the Linux native sandbox proof
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          # On Ubuntu images that restrict unprivileged namespaces, grant the
+          # permission only to the distro's bubblewrap executable.
+          if [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" == 1 ]] &&
+             ! /usr/bin/bwrap --unshare-all --ro-bind / / -- /bin/true; then
+            profile="$RUNNER_TEMP/nexora-ci-bwrap"
+            cat > "$profile" <<'PROFILE'
+          abi <abi/4.0>,
+          profile nexora-ci-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+            sudo apparmor_parser --replace "$profile"
           fi
 
       - name: Toolchain channels match
@@ -281,7 +312,17 @@ jobs:
 
       - name: cargo test (cli)
         if: steps.changes.outputs.affected == 'true'
+        env:
+          NEXORA_REQUIRE_NATIVE_SANDBOX: '1'
+          NEXORA_TEST_LINUX_SANDBOX_MECHANISM: ${{ runner.os == 'Linux' && 'linux-bwrap-seccomp' || '' }}
         run: cargo test --all
+
+      - name: Native Landlock and seccomp sandbox proof
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'Linux'
+        env:
+          NEXORA_REQUIRE_NATIVE_SANDBOX: '1'
+          NEXORA_TEST_LINUX_SANDBOX_MECHANISM: linux-landlock-seccomp
+        run: cargo test -p nexora-os-exec sandbox
 
       - name: Run stub --help/--version/doctor
         if: steps.changes.outputs.affected == 'true'
@@ -320,10 +361,175 @@ jobs:
         with:
           tool: cargo-deny
 
-      - name: cargo deny check advisories (src-tauri)
+      - name: cargo deny check advisories and licenses (src-tauri)
         if: steps.changes.outputs.affected == 'true'
-        run: cargo deny --manifest-path src-tauri/Cargo.toml check advisories
+        run: cargo deny --locked --manifest-path src-tauri/Cargo.toml --config src-tauri/deny.toml check advisories licenses
 
-      - name: cargo deny check advisories (root workspace)
+      - name: cargo deny check advisories and licenses (root workspace)
         if: steps.changes.outputs.affected == 'true'
-        run: cargo deny --manifest-path Cargo.toml check advisories
+        run: cargo deny --locked --manifest-path Cargo.toml --config deny.toml check advisories licenses
+
+  package:
+    name: package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Linux Tauri and packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev patchelf rpm xdg-utils
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install baseline Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve pinned toolchain (src-tauri/rust-toolchain.toml)
+        working-directory: src-tauri
+        run: rustc --version
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri->target
+          shared-key: ${{ runner.os }}-package
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build release bundles
+        run: npm run tauri -- build --ci --no-sign -- --locked
+
+      - name: Verify Linux bundles
+        if: runner.os == 'Linux'
+        shell: bash
+        working-directory: src-tauri/target/release/bundle
+        run: |
+          shopt -s nullglob
+          debs=(deb/*.deb)
+          rpms=(rpm/*.rpm)
+          appimages=(appimage/*.AppImage)
+          test "${#debs[@]}" -eq 1 && test -s "${debs[0]}" || { echo "::error::Expected one nonempty DEB"; exit 1; }
+          test "${#rpms[@]}" -eq 1 && test -s "${rpms[0]}" || { echo "::error::Expected one nonempty RPM"; exit 1; }
+          test "${#appimages[@]}" -eq 1 && test -s "${appimages[0]}" || { echo "::error::Expected one nonempty AppImage"; exit 1; }
+          dpkg-deb --fsys-tarfile "${debs[0]}" | tar -tf - | grep -Ex '(\./)?usr/bin/nexora'
+          rpm --query --list --package "${rpms[0]}" | grep -Fx /usr/bin/nexora
+          appimage="$PWD/${appimages[0]}"
+          cd "$RUNNER_TEMP"
+          "$appimage" --appimage-extract usr/bin/nexora
+          test -x squashfs-root/usr/bin/nexora
+
+      - name: Verify Windows installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: src-tauri/target/release/bundle
+        run: |
+          $msi = @(Get-ChildItem msi -File -Filter '*.msi')
+          $nsis = @(Get-ChildItem nsis -File -Filter '*-setup.exe')
+          if ($msi.Count -ne 1 -or $nsis.Count -ne 1) {
+            throw 'Expected one MSI and one NSIS installer'
+          }
+          $msiHeader = [Convert]::ToHexString([byte[]](Get-Content -LiteralPath $msi[0].FullName -AsByteStream -TotalCount 8))
+          $nsisHeader = [Convert]::ToHexString([byte[]](Get-Content -LiteralPath $nsis[0].FullName -AsByteStream -TotalCount 2))
+          if ($msiHeader -ne 'D0CF11E0A1B11AE1' -or $nsisHeader -ne '4D5A') {
+            throw 'Windows installers do not have the expected MSI and executable headers'
+          }
+
+          $config = Get-Content -LiteralPath ../../../tauri.conf.json -Raw | ConvertFrom-Json
+          $dark = Join-Path $env:WIX 'bin/dark.exe'
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          $scratch = [System.IO.Directory]::CreateTempSubdirectory('nexora-package-').FullName
+          try {
+            $msiDir = Join-Path $scratch 'msi'
+            $manifest = Join-Path $scratch 'installer.wxs'
+            & $dark -nologo -x $msiDir $msi[0].FullName -out $manifest
+            if ($LASTEXITCODE -ne 0) { throw 'WiX could not extract the MSI' }
+            [xml]$msiManifest = Get-Content -LiteralPath $manifest -Raw
+            $msiEntry = @($msiManifest.SelectNodes("//*[local-name()='File']") |
+              Where-Object { $_.GetAttribute('Name') -ieq 'nexora.exe' })
+            if ($msiEntry.Count -ne 1 -or $msiEntry[0].Id -notmatch '^[A-Za-z_][A-Za-z0-9_.]*$') {
+              throw 'MSI must declare one Nexora executable'
+            }
+            $msiPayload = Join-Path $msiDir "File/$($msiEntry[0].Id)"
+
+            $nsisDir = Join-Path $scratch 'nsis'
+            & $sevenZip x -tNsis "-o$nsisDir" '-ir!nexora.exe' -y $nsis[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw '7-Zip could not extract the NSIS installer' }
+            $nsisPayload = @(Get-ChildItem -LiteralPath $nsisDir -Recurse -File -Filter 'nexora.exe')
+            if ($nsisPayload.Count -ne 1) { throw 'NSIS must contain one Nexora executable' }
+
+            foreach ($payload in @($msiPayload, $nsisPayload[0].FullName)) {
+              $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($payload)
+              if ($version.ProductName -cne $config.productName -or $version.ProductVersion -cne $config.version) {
+                throw "Unexpected Nexora product or version in $payload"
+              }
+              Get-FileHash -LiteralPath $payload -Algorithm SHA256
+            }
+          } finally {
+            Remove-Item -LiteralPath $scratch -Recurse -Force
+          }
+          $msi[0], $nsis[0] | Get-FileHash -Algorithm SHA256
+
+      - name: Verify macOS application and disk image
+        if: runner.os == 'macOS'
+        shell: bash
+        working-directory: src-tauri/target/release/bundle
+        run: |
+          shopt -s nullglob
+          apps=(macos/*.app)
+          dmgs=(dmg/*.dmg)
+          test "${#apps[@]}" -eq 1 || { echo "::error::Expected one application bundle"; exit 1; }
+          test "${#dmgs[@]}" -eq 1 && test -s "${dmgs[0]}" || { echo "::error::Expected one nonempty DMG"; exit 1; }
+          plist="${apps[0]}/Contents/Info.plist"
+          plutil -lint "$plist"
+          executable="$(plutil -extract CFBundleExecutable raw "$plist")"
+          test -x "${apps[0]}/Contents/MacOS/$executable"
+          file "${apps[0]}/Contents/MacOS/$executable" | grep 'Mach-O'
+          hdiutil verify "${dmgs[0]}"
+
+          mount_dir="$(mktemp -d "$RUNNER_TEMP/nexora-dmg.XXXXXX")"
+          mounted=false
+          cleanup() {
+            if [[ "$mounted" == true ]]; then
+              hdiutil detach "$mount_dir" || hdiutil detach -force "$mount_dir" || exit 1
+            fi
+            if [[ -d "$mount_dir" ]]; then
+              rmdir "$mount_dir" || exit 1
+            fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "${dmgs[0]}"
+          mounted=true
+          mounted_app="$mount_dir/${apps[0]##*/}"
+          mounted_plist="$mounted_app/Contents/Info.plist"
+          mounted_executable="$mounted_app/Contents/MacOS/$executable"
+          for entry in "$mounted_app" "$mounted_app/Contents" "$mounted_app/Contents/MacOS" "$mounted_plist" "$mounted_executable"; do
+            test ! -L "$entry"
+          done
+          test -f "$mounted_plist"
+          test -f "$mounted_executable" && test -x "$mounted_executable"
+          expected_version="$(node -p 'require("../../../tauri.conf.json").version ?? ""')"
+          mounted_version="$(plutil -extract CFBundleShortVersionString raw -expect string "$mounted_plist")"
+          if [[ -z "$expected_version" || "$mounted_version" != "$expected_version" ]]; then
+            echo "::error::Mounted app version must match tauri.conf.json"
+            exit 1
+          fi
+          cmp "$plist" "$mounted_plist"
+          cmp "${apps[0]}/Contents/MacOS/$executable" "$mounted_executable"
