@@ -1721,24 +1721,67 @@ fn approval_return_point_reports_local_decision_without_fabricated_resume() {
 #[test]
 fn file_touch_trace_appears_only_with_diff_data() {
     let sources = diff_sources();
+    let unicode = GlyphSet::unicode().spine;
+    let ascii = GlyphSet::ascii().spine;
+    assert_eq!((unicode, ascii), ("│", "|"), "glyph map from the brief");
+
+    // Unicode: the touched row carries the spine, the untouched one does not.
     let mut a = app();
     open_diff(&mut a, &sources);
     let text = draw(&a, 100, 30);
+    let touched = format!("{unicode} src/auth.rs");
+    let untouched = format!("{unicode} src/session.rs");
     assert!(
-        text.contains("│ src/auth.rs"),
+        text.contains(touched.as_str()),
         "touched marker from data: {text}"
     );
     assert!(
-        !text.contains("│ src/session.rs"),
+        !text.contains(untouched.as_str()),
         "untouched file has no marker: {text}"
     );
 
+    // ASCII: the very same trace uses the ASCII spine from GlyphSet.
+    let mut ascii_app = App::new(caps_ascii(), snapshot(), 100, 30);
+    open_diff(&mut ascii_app, &sources);
+    let ascii_text = draw(&ascii_app, 100, 30);
+    let ascii_touched = format!("{ascii} src/auth.rs");
+    let ascii_untouched = format!("{ascii} src/session.rs");
+    assert!(
+        ascii_text.contains(ascii_touched.as_str()),
+        "ASCII touch marker from data: {ascii_text}"
+    );
+    assert!(
+        !ascii_text.contains(ascii_untouched.as_str()),
+        "ASCII untouched file has no marker: {ascii_text}"
+    );
+    assert!(
+        !ascii_text.contains(unicode),
+        "ASCII mode must not emit the Unicode spine: {ascii_text}"
+    );
+
+    // No source data: no marker in either mode.
     let unavailable = super::test_sources(None, None, None, false);
     let mut b = app();
     open_diff(&mut b, &unavailable);
     let text = draw(&b, 100, 30);
     assert!(
-        !text.contains("│"),
+        !text.contains(unicode),
+        "no touch trace without diff data: {text}"
+    );
+    assert!(
+        !text.contains(ascii),
+        "no touch trace without diff data: {text}"
+    );
+
+    let mut ascii_empty = App::new(caps_ascii(), snapshot(), 100, 30);
+    open_diff(&mut ascii_empty, &unavailable);
+    let text = draw(&ascii_empty, 100, 30);
+    assert!(
+        !text.contains(unicode),
+        "no touch trace without diff data: {text}"
+    );
+    assert!(
+        !text.contains(ascii),
         "no touch trace without diff data: {text}"
     );
 }

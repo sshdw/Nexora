@@ -328,6 +328,7 @@ fn render_sessions(frame: &mut Frame<'_>, app: &App, area: Rect) {
 /// Diff overlay: grouped by file with `+N -M`, a `+`/`-` column, the jump map
 /// `file i/N · hunk j/M`, and a thin touch marker only from source data.
 fn render_diff(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let g = app.caps.glyphs;
     let mut lines = vec![Line::from(vec![
         Span::styled("Diff", active(app)),
         Span::raw(if app.copied_label { "  Copied" } else { "" }),
@@ -344,13 +345,17 @@ fn render_diff(frame: &mut Frame<'_>, app: &App, area: Rect) {
         for (index, file) in snapshot.files.iter().enumerate() {
             total_plus = total_plus.saturating_add(file.plus);
             total_minus = total_minus.saturating_add(file.minus);
-            let touch = if file.touched { "│ " } else { "  " };
             let mark = if index == app.diff_file { ">" } else { " " };
-            lines.push(Line::from(vec![
-                Span::raw(format!("{mark}{touch}")),
-                Span::raw(file.path.clone()),
-                Span::raw(format!("  +{} -{}", file.plus, file.minus)),
-            ]));
+            let mut spans = vec![Span::raw(mark.to_string())];
+            if file.touched {
+                // Same spine glyph as the timeline: `│` in Unicode, `|` in ASCII.
+                spans.push(Span::styled(format!("{} ", g.spine), muted(app)));
+            } else {
+                spans.push(Span::raw("  ".to_string()));
+            }
+            spans.push(Span::raw(file.path.clone()));
+            spans.push(Span::raw(format!("  +{} -{}", file.plus, file.minus)));
+            lines.push(Line::from(spans));
         }
         lines.push(Line::from(Span::styled(
             format!("total +{total_plus} -{total_minus}"),
