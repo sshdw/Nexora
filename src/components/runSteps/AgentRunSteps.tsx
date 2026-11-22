@@ -23,17 +23,16 @@ import {
   countedPhrase,
   diffCounts,
   fadeClass,
-  formatCountdown,
   formatRunDuration,
   isFailedStatus,
   isProtectedRow,
   NOUN_COMMANDS,
-  remainingSecs,
   runStateClass,
   statusLabel,
   stepTarget,
 } from "./labels";
 import { foldCounts, foldableRun, groupSteps, isGroup } from "./grouping";
+import ApprovalPanel from "./ApprovalPanel";
 import { DiffView, StepSection } from "./StepSection";
 import { StepGroupSection } from "./StepGroupSection";
 import SubagentCard from "./SubagentCard";
@@ -82,6 +81,9 @@ export interface AgentRunStepsProps {
   showFinalResult?: boolean;
   /** Whether any agent run in this conversation is currently active. */
   hasActiveRun?: boolean;
+  /** Render pending approval controls inline inside the run block (default true;
+   *  ConversationView passes false and pins approvals above the Composer). */
+  renderApprovalInline?: boolean;
 }
 
 type RevertTarget =
@@ -111,47 +113,6 @@ const AgentSpine = memo(function AgentSpine({ live }: { live: boolean }) {
  *  places. The component is gone; the CSS keeps the line's hover tone.
  */
 
-/** Deadline notice + live countdown for a pending approval (NEX-AGENT-004):
- * an unanswered approval expires and cancels the run, so the park is never
- * a silent hang. Hidden when the event carries no deadline (`timeout_secs`
- * 0 from older emitters). Purely presentational: the clock lives in the
- * parent (which also gates the Approve/Deny buttons on it), so the buttons
- * and the notice can never disagree. */
-function ApprovalTimeoutNotice({
-  remaining,
-  expired,
-}: {
-  remaining: number;
-  expired: boolean;
-}) {
-  const { locale, t } = useStrings();
-  if (expired) {
-    return (
-      <p
-        className="nex-agent-approval-timeout nex-agent-approval-timeout-expired"
-        role="status"
-      >
-        {t("agent.approvalElapsed")}
-      </p>
-    );
-  }
-  // Above 60s the clock ticks every 30s, so M:SS seconds would imply a
-  // precision the countdown lacks — show minute-ceiled copy instead and
-  // reserve M:SS for the under-60s 1s-tick branch.
-  const expiry =
-    remaining > 60
-      ? t("agent.approvalExpiresInMin", { n: Math.ceil(remaining / 60) })
-      : t("agent.approvalExpiresIn", {
-          time: formatCountdown(remaining, locale),
-        });
-  return (
-    <p className="nex-agent-approval-timeout">
-      {t("agent.approvalTimeoutNotice")}{" "}
-      <span className="nex-tag nex-tag-mono">{expiry}</span>
-    </p>
-  );
-}
-
 function AgentRunSteps({
   run,
   onResolveApproval,
@@ -169,6 +130,7 @@ function AgentRunSteps({
   supportsThinking = null,
   showFinalResult = true,
   hasActiveRun = false,
+  renderApprovalInline = true,
 }: AgentRunStepsProps) {
   const { locale, t } = useStrings();
   const sorted = useMemo(
@@ -214,65 +176,19 @@ function AgentRunSteps({
     [sorted, streamingSteps]
   );
   const pending = run.status === "interrupted" ? null : run.pending_approval;
-  const pendingDeadline = pending && pending.timeout_secs > 0 ? pending : null;
-  const pendingId = pending?.call_id ?? null;
-
-  // Live clock for the approval countdown. A 1s tick runs only under the
-  // final 60s; a minutes-scale park (default 600s) ticks every 30s, and
-  // prefers-reduced-motion schedules a single one-shot timeout to expiry
-  // (state flip only, zero motion — no interval).
-  const reduceMotion =
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const [now, setNow] = useState<number>(() => Date.now() / 1000);
-  useEffect(() => {
-    setNow(Date.now() / 1000);
-  }, [pendingId]);
-  const remaining = pendingDeadline
-    ? remainingSecs(
-        pendingDeadline.timeout_secs,
-        pendingDeadline.requested_at,
-        now
-      )
-    : null;
-  // 1s tick only under the final 60s; coarser above. The boolean bucket flips
-  // the interval exactly once as the countdown crosses the minute mark.
-  const underMinute = remaining !== null && remaining <= 60;
-  useEffect(() => {
-    if (!pendingDeadline || reduceMotion) return;
-    const intervalMs = underMinute ? 1000 : 30000;
-    const id = window.setInterval(() => setNow(Date.now() / 1000), intervalMs);
-    return () => window.clearInterval(id);
-  }, [pendingDeadline, pendingId, reduceMotion, underMinute]);
-  // Reduced-motion one-shot: no interval, no motion — a single state flip
-  // scheduled exactly at expiry so approvalElapsed can still turn over on
-  // its own. Cleanup on unmount/run-change mirrors the interval above; if
-  // time still remains after the flip fires, the effect re-arms itself.
-  useEffect(() => {
-    if (!pendingDeadline || !reduceMotion) return;
-    if (remaining === null || remaining <= 0) return;
-    const id = window.setTimeout(
-      () => setNow(Date.now() / 1000),
-      remaining * 1000
-    );
-    return () => window.clearTimeout(id);
-  }, [pendingDeadline, pendingId, reduceMotion, remaining]);
-  // Client-math expiry: the window elapsed with no server confirmation. The
-  // buttons go away (never live past the self-declared expiry) and the
-  // notice says so honestly — "was cancelled" appears only below, once the
-  // server actually confirms `cancelled`.
-  const approvalElapsed = remaining !== null && remaining <= 0;
-  // Latch: once the window has observably elapsed, remember it so the
-  // server-confirmed note below can show after `cancelled` clears pending.
-  // Resets only on a newly parked approval, never on the cancel itself.
-  const [elapsedSeen, setElapsedSeen] = useState(false);
-  useEffect(() => {
-    if (approvalElapsed) setElapsedSeen(true);
-  }, [approvalElapsed]);
-  useEffect(() => {
-    if (pendingId !== null) setElapsedSeen(false);
-  }, [pendingId]);
+  const thinkingText = run.streaming_thinking || run.thinking || null;
+  const displayTimelineSteps = useMemo(() => {
+    const finalTrim = run.final_content?.trim() ?? "";
+    const thinkingTrim = thinkingText?.trim() ?? "";
+    return timelineSteps.filter((step) => {
+      if (step.kind !== "model_turn") return true;
+      const obs = step.observation?.trim() ?? "";
+      if (finalTrim && obs === finalTrim) return false;
+      if (thinkingTrim && obs === thinkingTrim) return false;
+      if (!obs && finalTrim) return false;
+      return true;
+    });
+  }, [run.final_content, thinkingText, timelineSteps]);
 
   // ---- #153: spine, fade, fold -------------------------------------------
   // A parked run keeps the persisted `running` status, so `status` alone
@@ -408,7 +324,6 @@ function AgentRunSteps({
     [sorted]
   );
 
-  const thinkingText = run.streaming_thinking || run.thinking || null;
   const planText =
     run.plan_content && run.plan_content.trim().length > 0
       ? run.plan_content
@@ -503,15 +418,13 @@ function AgentRunSteps({
     );
   }
   if (summaryParts.length === 0) {
-    summaryParts.push(
-      finishedClean
-        ? ranCalls > 0
+    if (ranCalls > 0) {
+      summaryParts.push(
+        finishedClean
           ? tr(locale, "agent.summaryNoChanges")
-          : tr(locale, "agent.summaryNothing")
-        : ranCalls > 0
-          ? tp(locale, "toolCalls", ranCalls)
-          : tr(locale, "agent.summaryNothing")
-    );
+          : tp(locale, "toolCalls", ranCalls)
+      );
+    }
   } else if (ranCalls > 0) {
     summaryParts.push(tp(locale, "toolCalls", ranCalls));
   }
@@ -610,7 +523,7 @@ function AgentRunSteps({
             MUST still render as the disclosure — a static line here would
             leave a folded run with no way to expand, so its steps could
             never lazy-load. */}
-        {timelineSteps.length === 0 && !(foldable && !run.steps_loaded) ? (
+        {displayTimelineSteps.length === 0 && !(foldable && !run.steps_loaded) ? (
           <span className="nex-agent-run-disclosure is-static" role="status">
             {isRunning && !parked && (
               <span
@@ -740,100 +653,8 @@ function AgentRunSteps({
         </div>
       )}
 
-      {pending && (
-        <div
-          className="nex-agent-approval nex-fade-in"
-          role="region"
-          aria-label={t("agent.approvalTitle")}
-        >
-          <div className="nex-agent-approval-text">
-            <strong>{pending.name}</strong> {t("agent.approvalSuffix")}
-            {pending.metadata?.shell && (
-              <>
-                <p>{t(`agent.category.${pending.metadata.shell.category}`)}</p>
-                <p>
-                  {pending.metadata.shell.sandbox_posture === "Verified"
-                    ? t("sandbox.verified")
-                    : t("agent.shellFallback")}
-                </p>
-                {pending.metadata.shell.packages.length > 0 && (
-                  <p>{pending.metadata.shell.packages.join(", ")}</p>
-                )}
-                {pending.metadata.shell.category === "DependencyInstall" &&
-                  !pending.metadata.shell.packages_exact && (
-                    <p>{t("agent.packagesUnknown")}</p>
-                  )}
-                {pending.metadata.shell.uncertain && (
-                  <p>{t("agent.shellUncertain")}</p>
-                )}
-              </>
-            )}
-            {pending.metadata?.sensitive_write && (
-              <p>{t("agent.sensitiveWrite")}</p>
-            )}
-            <pre className="nex-agent-step-args nex-tag-mono">
-              {pending.arguments}
-            </pre>
-          </div>
-          {!approvalElapsed && (
-            <div className="nex-agent-approval-actions">
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={() =>
-                  onResolveApproval(run.run_id, pending.call_id, true)
-                }
-              >
-                {t("agent.allowOnce")}
-              </Button>
-              {pending.name !== "execute_command" &&
-                pending.metadata?.allow_for_run && (
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    onClick={() =>
-                      onResolveApproval(
-                        run.run_id,
-                        pending.call_id,
-                        true,
-                        "group"
-                      )
-                    }
-                  >
-                    {t("agent.allowRun")}
-                  </Button>
-                )}
-              {/* Deny is a GHOST, not a red button (O-02: "Approve primary,
-                  Deny ghost"). Declining is the safe answer, so it must not
-                  wear the error colour that the brief reserves for states;
-                  one filled control per decision keeps the primary obvious
-                  without making the refusal look dangerous. */}
-              <Button
-                variant="quiet"
-                size="sm"
-                onClick={() =>
-                  onResolveApproval(run.run_id, pending.call_id, false)
-                }
-              >
-                {t("agent.deny")}
-              </Button>
-            </div>
-          )}
-          {pendingDeadline && remaining !== null && (
-            <ApprovalTimeoutNotice
-              remaining={remaining}
-              expired={approvalElapsed}
-            />
-          )}
-        </div>
-      )}
-      {!pending && run.status === "cancelled" && elapsedSeen && (
-        <p
-          className="nex-agent-approval-timeout nex-agent-approval-timeout-confirmed"
-          role="status"
-        >
-          {t("agent.approvalExpired")}
-        </p>
+      {renderApprovalInline && (
+        <ApprovalPanel run={run} onResolveApproval={onResolveApproval} />
       )}
 
       {thinkingText && (
@@ -844,7 +665,7 @@ function AgentRunSteps({
         />
       )}
 
-      {!collapsed && timelineSteps.length > 0 && (
+      {!collapsed && displayTimelineSteps.length > 0 && summaryText && (
         <div className="nex-agent-run-detail">
           <span className="nex-agent-run-summary">{summaryText}</span>
           <span className="nex-agent-run-meta">
@@ -869,7 +690,7 @@ function AgentRunSteps({
           <p className="nex-agent-empty-state">{t("agent.emptyRunState")}</p>
         )}
 
-      {timelineSteps.length > 0 && (
+      {displayTimelineSteps.length > 0 && (
         <>
           {/* `hidden` and never a `display` override here: the attribute keeps
               every row mounted (so expanding restores the same objects, the
@@ -884,14 +705,7 @@ function AgentRunSteps({
           >
             <AgentSpine live={spineLive} />
             <div className="nex-agent-steps">
-              {!collapsed && !thinkingText && (
-                <ThinkingBlock
-                  thinking={null}
-                  supportsThinking={supportsThinking}
-                  showEmpty
-                />
-              )}
-              {groupSteps(timelineSteps).map((item, idx, all) => {
+              {groupSteps(displayTimelineSteps).map((item, idx, all) => {
                 const isLast = idx === all.length - 1;
                 const protectedRow = isGroup(item)
                   ? item.steps.some(isProtectedRow)
@@ -1226,17 +1040,20 @@ function AgentRunSteps({
             <span className="nex-agent-card-title">
               {t("agent.planCardTitle")}
             </span>
-            {run.plan_decision_status && (
-              <span className="nex-agent-card-badge">
-                {run.plan_decision_status === "accepted"
-                  ? t("plan.statusAccepted")
-                  : run.plan_decision_status === "rejected"
-                    ? t("plan.statusRejected")
-                    : run.plan_decision_status === "custom_reply"
-                      ? t("plan.statusCustomReply")
-                      : t("plan.statusPending")}
-              </span>
-            )}
+            {run.plan_decision_status &&
+              run.plan_decision_status !== "none" &&
+              (run.plan_decision_status !== "accepted" ||
+                run.plan_implemented_run_id !== null) && (
+                <span className="nex-agent-card-badge">
+                  {run.plan_decision_status === "accepted"
+                    ? t("plan.statusAccepted")
+                    : run.plan_decision_status === "rejected"
+                      ? t("plan.statusRejected")
+                      : run.plan_decision_status === "custom_reply"
+                        ? t("plan.statusCustomReply")
+                        : t("plan.statusPending")}
+                </span>
+              )}
           </header>
           <div className="nex-agent-card-body">
             <MessageMarkdown

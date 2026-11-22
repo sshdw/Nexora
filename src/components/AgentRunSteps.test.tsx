@@ -648,7 +648,7 @@ describe("tool group folding (brief 13.33)", () => {
     fireEvent.click(readRows[0]);
     expect(readRows[0]).toHaveAttribute("aria-expanded", "true");
     expect(
-      screen.getByRole("group", { name: "Tool arguments" })
+      readRows[0].parentElement?.querySelector(".nex-agent-step-body")
     ).toBeInTheDocument();
 
     fireEvent.click(line);
@@ -663,7 +663,7 @@ describe("tool group folding (brief 13.33)", () => {
     const reopened = screen.getAllByRole("button", { name: /Read/ });
     expect(reopened[0]).toHaveAttribute("aria-expanded", "true");
     expect(
-      screen.getByRole("group", { name: "Tool arguments" })
+      reopened[0].parentElement?.querySelector(".nex-agent-step-body")
     ).toBeInTheDocument();
   });
 
@@ -1543,7 +1543,7 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
     expect(doneToggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Checking repository layout")).toBeVisible();
 
-    // When unavailable and model doesn't support thinking, shows honest absence (never fabricated).
+    // When unavailable and model doesn't support thinking, does not clutter the timeline with an empty thinking box.
     rerenderRun(
       runView({
         status: "completed",
@@ -1558,8 +1558,51 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
       screen.getByRole("button", { name: /Done in 1 step/ })
     ).toHaveAttribute("aria-expanded", "true");
     expect(
-      screen.getByText("Selected model does not report provider-native thinking.")
-    ).toBeInTheDocument();
+      screen.queryByText("Selected model does not report provider-native thinking.")
+    ).not.toBeInTheDocument();
+  });
+
+  it("PR1: eliminates Thought/FinalAnswer duplication, removes Nothing ran clutter, avoids raw JSON dumps, and enforces Plan state coherence", () => {
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        finished_at: 1005,
+        thinking: "Checking user greeting.",
+        final_content: "Hi! How can I help you today?",
+        is_plan: true,
+        plan_content: "1. Choose Python + pygame or HTML/JS",
+        plan_decision_status: "accepted",
+        plan_implemented_run_id: null,
+        steps: [
+          stepView({
+            id: 1,
+            seq: 1,
+            kind: "model_turn",
+            tool_name: null,
+            arguments: null,
+            observation: "Hi! How can I help you today?",
+          }),
+          stepView({
+            id: 2,
+            seq: 2,
+            kind: "tool_call",
+            tool_name: "list_directory",
+            arguments: '{"path":"Nexora","recursive":true}',
+            observation: "dir: Nexora\\.git",
+          }),
+        ],
+      })
+    );
+    expect(screen.queryByText("Nothing ran")).not.toBeInTheDocument();
+    expect(screen.queryByText("#1")).not.toBeInTheDocument();
+    expect(screen.queryByText('{"path":"Nexora","recursive":true}')).not.toBeInTheDocument();
+    const listRow = screen.getByRole("button", { name: /Listed/ });
+    fireEvent.click(listRow);
+    expect(screen.getByText("recursive")).toBeInTheDocument();
+    expect(screen.getByText("true")).toBeInTheDocument();
+    const planCard = container.querySelector('[data-card-kind="plan"]');
+    expect(planCard).toBeInTheDocument();
+    expect(within(planCard as HTMLElement).queryByText("Accepted")).not.toBeInTheDocument();
   });
 
   it("renders visually distinct Plan and Final Result cards", () => {
