@@ -401,6 +401,30 @@ fn dispatch_one(
             return Ok(());
         }
     }
+    // S11-02 interactive dev-server / watch protection: block known unbounded
+    // servers and watch loops deterministically before parking for approval or
+    // spawning (covers both top-level runs and subagents).
+    if call.name == "execute_command" {
+        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) {
+            if let Some(command) = args.get("command").and_then(serde_json::Value::as_str) {
+                if let Some(pattern) = super::shell_policy::blocked_long_running_command(command) {
+                    let observation = super::shell_policy::long_running_denial_message(pattern);
+                    messages.push(trusted_denial_message(call, &observation));
+                    emit_subagent_tool_step(ctx, call, "denied", Some(&observation));
+                    if let Some(rec) = record.as_mut() {
+                        rec.tool_call_with_provenance(
+                            call,
+                            &observation,
+                            "denied",
+                            None,
+                            StepProvenance::system(),
+                        );
+                    }
+                    return Ok(());
+                }
+            }
+        }
+    }
     // M18 / Invariant 4 fail-closed gate: external MCP tools can NEVER execute
     // without an active interactive ApprovalGate (never auto-approved).
     if permissions::is_mcp_tool(&call.name) && ctx.approval_gate.is_none() {

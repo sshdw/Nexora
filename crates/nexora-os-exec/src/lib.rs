@@ -26,9 +26,10 @@ mod windows;
 mod windows_sandbox;
 
 pub use sandbox::{
-    default_private_user_dirs, evaluate_probe_outcome, is_sensitive_env_key, private_store_path,
-    sensitive_write_path, verify_platform_sandbox, verify_platform_sandbox_with_deny_paths,
-    ProbeOutcome, SandboxPolicy, SandboxSpawnConfig, SandboxVerificationStatus,
+    default_private_user_dirs, evaluate_probe_outcome, is_sensitive_env_key, is_writable_build_dir,
+    private_store_path, sensitive_write_path, verify_platform_sandbox,
+    verify_platform_sandbox_with_deny_paths, ProbeOutcome, SandboxPolicy, SandboxSpawnConfig,
+    SandboxVerificationStatus,
 };
 
 #[cfg(unix)]

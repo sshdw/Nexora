@@ -19,6 +19,10 @@ pub(crate) struct ShellAnalysis {
     pub packages_exact: bool,
     pub uncertain: bool,
     pub sandbox_posture: &'static str,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub long_running: bool,
+    #[serde(skip)]
+    pub long_running_pattern: Option<&'static str>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Shell {
@@ -43,6 +47,8 @@ impl ShellAnalysis {
             packages_exact: true,
             uncertain: false,
             sandbox_posture: "PerCommandConsent",
+            long_running: false,
+            long_running_pattern: None,
         }
     }
     fn merge(&mut self, other: Self) {
@@ -50,6 +56,10 @@ impl ShellAnalysis {
         self.uncertain |= other.uncertain;
         self.packages_exact &= other.packages_exact;
         self.packages.extend(other.packages);
+        self.long_running |= other.long_running;
+        if self.long_running_pattern.is_none() {
+            self.long_running_pattern = other.long_running_pattern;
+        }
     }
 }
 pub(crate) fn analyze(command: &str, shell: Shell) -> ShellAnalysis {
@@ -57,6 +67,32 @@ pub(crate) fn analyze(command: &str, shell: Shell) -> ShellAnalysis {
     result.packages.sort();
     result.packages.dedup();
     result
+}
+/// Returns the matched long-running dev-server/watch pattern if `command` would
+/// start an interactive dev server or unbounded watch loop on the current platform shell.
+pub(crate) fn blocked_long_running_command(command: &str) -> Option<&'static str> {
+    blocked_long_running_command_for(command, Shell::platform())
+}
+pub(crate) fn blocked_long_running_command_for(
+    command: &str,
+    shell: Shell,
+) -> Option<&'static str> {
+    let analysis = analyze(command, shell);
+    if analysis.long_running {
+        analysis
+            .long_running_pattern
+            .or(Some("long-running dev server or watch command"))
+    } else {
+        None
+    }
+}
+/// Fixed-vocabulary denial message for blocked dev-server / watch commands (`S11-02`).
+pub(crate) fn long_running_denial_message(pattern: &str) -> String {
+    format!(
+        "Error: interactive dev-server or watch command ({pattern}) is blocked in execute_command \
+         because it runs indefinitely; use a finite one-shot command instead \
+         (for example 'npx vitest run', 'npm run build', or 'cargo test')"
+    )
 }
 /// Model-supplied posture, escalation flags and unknown execution options never authorize automation.
 pub(crate) fn automatic_general_shell(arguments: &str) -> bool {
@@ -80,7 +116,9 @@ fn automatic_general_shell_for(arguments: &str, shell: Shell) -> bool {
         return false;
     };
     let analysis = analyze(command, shell);
-    analysis.category == ShellCategory::GeneralShell && !analysis.uncertain
+    analysis.category == ShellCategory::GeneralShell
+        && !analysis.uncertain
+        && !analysis.long_running
 }
 
 fn analyze_inner(command: &str, shell: Shell, depth: usize) -> ShellAnalysis {
@@ -141,6 +179,10 @@ fn analyze_inner(command: &str, shell: Shell, depth: usize) -> ShellAnalysis {
             node.kind(),
             "expansion"
                 | "simple_expansion"
+                | "command_substitution"
+                | "process_substitution"
+                | "arithmetic_expansion"
+                | "function_definition"
                 | "variable"
                 | "sub_expression"
                 | "command_name_expr"
@@ -153,6 +195,15 @@ fn analyze_inner(command: &str, shell: Shell, depth: usize) -> ShellAnalysis {
         ) {
             result.uncertain = true;
             result.packages_exact = false;
+        }
+        if shell == Shell::Sh {
+            let mut token_cursor = node.walk();
+            for child in node.children(&mut token_cursor) {
+                if !child.is_named() && child.kind() == "&" {
+                    result.uncertain = true;
+                    result.packages_exact = false;
+                }
+            }
         }
         // Every AST descendant is visited, including redirects, heredoc
         // expansions, loops, pipelines, script blocks and substitutions.
@@ -326,6 +377,13 @@ fn classify_words(words: &[String], shell: Shell, depth: usize, result: &mut She
         return;
     }
     let lower: Vec<_> = args.iter().map(|arg| arg.to_ascii_lowercase()).collect();
+    if let Some(pattern) = detect_long_running(&name, args, &lower, depth) {
+        result.long_running = true;
+        if result.long_running_pattern.is_none() {
+            result.long_running_pattern = Some(pattern);
+        }
+        result.uncertain = true;
+    }
     if matches!(name.as_str(), "npm" | "pnpm" | "yarn" | "bun")
         && lower
             .first()
@@ -389,10 +447,19 @@ fn classify_wrapper(
             _ => Shell::Sh,
         };
         if let Some(index) = lower.iter().position(|arg| match nested {
-            Shell::Cmd => arg == "/c",
+            Shell::Cmd => matches!(arg.as_str(), "/c" | "/k"),
             Shell::Pwsh => matches!(arg.as_str(), "-c" | "-command"),
-            Shell::Sh => arg == "-c",
+            Shell::Sh => {
+                arg == "-c"
+                    || (arg.starts_with('-')
+                        && !arg.starts_with("--")
+                        && arg.chars().skip(1).any(|ch| ch == 'c'))
+            }
         }) {
+            if nested == Shell::Cmd && lower[index] == "/k" {
+                result.uncertain = true;
+                result.packages_exact = false;
+            }
             if let Some(body) = args.get(index + 1) {
                 let tail = &args[index + 1..];
                 if nested == Shell::Sh || tail.len() == 1 {
@@ -485,22 +552,27 @@ fn classify_wrapper(
         }
         return true;
     }
-    if matches!(
-        name,
-        "eval"
-            | "invoke-expression"
-            | "iex"
-            | "python"
-            | "python3"
-            | "node"
-            | "perl"
-            | "ruby"
-            | "source"
-            | "."
-            | "start-process"
-            | "invoke-command"
-            | "npx"
-    ) {
+    if (shell == Shell::Cmd && name == "start")
+        || matches!(
+            name,
+            "eval"
+                | "invoke-expression"
+                | "iex"
+                | "python"
+                | "python3"
+                | "node"
+                | "deno"
+                | "tsx"
+                | "ts-node"
+                | "perl"
+                | "ruby"
+                | "source"
+                | "."
+                | "start-process"
+                | "invoke-command"
+                | "npx"
+        )
+    {
         result.uncertain = true;
         result.packages_exact = false;
         if matches!(name, "python" | "python3")
@@ -513,6 +585,263 @@ fn classify_wrapper(
         }
     }
     false
+}
+
+fn has_info_flag(lower: &[String]) -> bool {
+    lower
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help" | "-v" | "-V" | "--version"))
+}
+
+fn is_dev_or_watch_script_name(script: &str) -> bool {
+    matches!(
+        script,
+        "dev" | "start" | "serve" | "watch" | "preview" | "storybook"
+    ) || script.starts_with("dev:")
+        || script.starts_with("watch:")
+        || script.starts_with("serve:")
+        || script.ends_with(":dev")
+        || script.ends_with(":watch")
+        || script.ends_with(":serve")
+}
+
+/// Detects known interactive dev servers and unbounded watch loops (`S11-02`).
+/// Operates strictly on parsed command argv (never raw substring matching) so
+/// benign commands like `echo "npm run dev"` or `vitest run` are never falsely blocked.
+#[allow(clippy::too_many_lines)] // Bounded argv dispatch table for dev-server and watch commands.
+fn detect_long_running(
+    name: &str,
+    args: &[String],
+    lower: &[String],
+    depth: usize,
+) -> Option<&'static str> {
+    if depth > MAX_DEPTH || has_info_flag(lower) {
+        return None;
+    }
+    match name {
+        "npx" => {
+            let mut idx = 0;
+            while let Some(arg) = lower.get(idx) {
+                if matches!(arg.as_str(), "-p" | "--package" | "-c" | "--call") {
+                    idx += 2;
+                } else if arg.starts_with('-') {
+                    idx += 1;
+                } else {
+                    break;
+                }
+            }
+            let tool = args.get(idx)?;
+            let inner_name = basename(tool);
+            let inner_args = &args[idx + 1..];
+            let inner_lower = &lower[idx + 1..];
+            if inner_name == "serve" {
+                return Some("npx serve");
+            }
+            detect_long_running(&inner_name, inner_args, inner_lower, depth + 1)
+        }
+        "npm" | "pnpm" | "yarn" | "bun" => {
+            if name == "bun"
+                && lower
+                    .iter()
+                    .any(|arg| matches!(arg.as_str(), "--watch" | "--hot"))
+            {
+                return Some("bun --watch");
+            }
+            let mut idx = 0;
+            while let Some(arg) = lower.get(idx) {
+                if matches!(
+                    arg.as_str(),
+                    "--prefix" | "--cwd" | "-c" | "--dir" | "--filter" | "--workspace" | "-w"
+                ) {
+                    idx += 2;
+                } else if arg.starts_with('-') {
+                    idx += 1;
+                } else {
+                    break;
+                }
+            }
+            let sub = lower.get(idx)?.as_str();
+            let rest_args = &args[idx + 1..];
+            let rest_lower = &lower[idx + 1..];
+            match sub {
+                "start" => Some("package manager start"),
+                "dev" | "serve" | "watch" | "preview" => Some("package manager dev/watch"),
+                "tauri" if rest_lower.iter().any(|a| a == "dev") => Some("tauri dev"),
+                "run" => {
+                    let script_idx = rest_lower.iter().position(|a| !a.starts_with('-'))?;
+                    let script = rest_lower[script_idx].as_str();
+                    if is_dev_or_watch_script_name(script) {
+                        return Some("npm/pnpm/yarn/bun dev/watch script");
+                    }
+                    if script == "tauri" && rest_lower[script_idx + 1..].iter().any(|a| a == "dev")
+                    {
+                        return Some("tauri dev");
+                    }
+                    None
+                }
+                "exec" | "dlx" | "x" => {
+                    let tool_idx = rest_lower.iter().position(|a| !a.starts_with('-'))?;
+                    let inner_name = basename(&rest_args[tool_idx]);
+                    detect_long_running(
+                        &inner_name,
+                        &rest_args[tool_idx + 1..],
+                        &rest_lower[tool_idx + 1..],
+                        depth + 1,
+                    )
+                }
+                _ => None,
+            }
+        }
+        "cargo" => {
+            let mut idx = 0;
+            while let Some(arg) = lower.get(idx) {
+                if arg.starts_with('+') {
+                    idx += 1;
+                } else if matches!(arg.as_str(), "-c" | "--manifest-path" | "--config") {
+                    idx += 2;
+                } else if arg.starts_with('-') {
+                    idx += 1;
+                } else {
+                    break;
+                }
+            }
+            let sub = lower.get(idx)?.as_str();
+            let rest = &lower[idx + 1..];
+            match sub {
+                "watch" => Some("cargo watch"),
+                "bacon" => Some("cargo bacon"),
+                "tauri" if rest.iter().any(|a| a == "dev") => Some("cargo tauri dev"),
+                "leptos" if rest.iter().any(|a| a == "watch") => Some("cargo leptos watch"),
+                _ => None,
+            }
+        }
+        "tauri" | "cargo-tauri" => lower
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .is_some_and(|a| a == "dev")
+            .then_some("tauri dev"),
+        "vite" => {
+            let first = lower
+                .iter()
+                .find(|a| !a.starts_with('-'))
+                .map(String::as_str);
+            match first {
+                None | Some("dev" | "serve" | "preview") => Some("vite dev server"),
+                _ => None,
+            }
+        }
+        "vitest" => {
+            let has_explicit_watch = lower.iter().any(|a| {
+                matches!(a.as_str(), "watch" | "--watch" | "-w")
+                    && !lower
+                        .iter()
+                        .any(|b| matches!(b.as_str(), "--watch=false" | "--no-watch"))
+            });
+            let is_finite = lower.iter().any(|a| {
+                matches!(
+                    a.as_str(),
+                    "run"
+                        | "--run"
+                        | "bench"
+                        | "list"
+                        | "related"
+                        | "typecheck"
+                        | "--watch=false"
+                        | "--no-watch"
+                )
+            });
+            (has_explicit_watch || !is_finite).then_some("vitest watch")
+        }
+        "jest" => lower
+            .iter()
+            .any(|a| matches!(a.as_str(), "--watch" | "--watchall"))
+            .then_some("jest --watch"),
+        "tsc" => lower
+            .iter()
+            .any(|a| matches!(a.as_str(), "-w" | "--watch"))
+            .then_some("tsc --watch"),
+        "next" | "nuxt" | "astro" | "remix" | "svelte-kit" | "expo" => lower
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .is_some_and(|a| matches!(a.as_str(), "dev" | "start" | "serve"))
+            .then_some("frontend dev server"),
+        "webpack" => lower
+            .iter()
+            .any(|a| matches!(a.as_str(), "serve" | "--watch" | "-w"))
+            .then_some("webpack serve/watch"),
+        "webpack-dev-server" => Some("webpack-dev-server"),
+        "esbuild" => lower
+            .iter()
+            .any(|a| {
+                a == "--watch"
+                    || a.starts_with("--watch=")
+                    || a == "--serve"
+                    || a.starts_with("--serve=")
+            })
+            .then_some("esbuild serve/watch"),
+        "trunk" => lower
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .is_some_and(|a| matches!(a.as_str(), "serve" | "watch"))
+            .then_some("trunk serve/watch"),
+        "bacon" => Some("bacon watch"),
+        "nodemon" | "ts-node-dev" | "live-server" | "http-server" | "browser-sync" => {
+            Some("dev server / watch")
+        }
+        "storybook" => lower
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .is_none_or(|a| a == "dev")
+            .then_some("storybook dev"),
+        "tsx" => lower
+            .first()
+            .is_some_and(|a| a == "watch")
+            .then_some("tsx watch"),
+        "node" | "deno" => lower
+            .iter()
+            .any(|a| a == "--watch" || a.starts_with("--watch-path"))
+            .then_some("node/deno --watch"),
+        "python" | "python3" => {
+            if let Some(m_idx) = lower.iter().position(|a| a == "-m") {
+                if let Some(module) = lower.get(m_idx + 1).map(String::as_str) {
+                    if matches!(
+                        module,
+                        "http.server" | "uvicorn" | "gunicorn" | "livereload" | "watchfiles"
+                    ) || (module == "flask" && lower[m_idx + 2..].iter().any(|a| a == "run"))
+                    {
+                        return Some("python dev server");
+                    }
+                }
+            }
+            if lower
+                .windows(2)
+                .any(|pair| pair[0].ends_with("manage.py") && pair[1] == "runserver")
+            {
+                return Some("django runserver");
+            }
+            None
+        }
+        "uvicorn" | "gunicorn" => Some("python server"),
+        "flask" => lower.iter().any(|a| a == "run").then_some("flask run"),
+        "watch" => Some("watch loop"),
+        "tail" => (short_flag(args, 'f')
+            || short_flag(args, 'F')
+            || lower
+                .iter()
+                .any(|a| a == "--follow" || a.starts_with("--follow=")))
+        .then_some("tail --follow"),
+        "docker" => {
+            let detached = short_flag(args, 'd') || lower.iter().any(|a| a == "--detach");
+            let is_compose_up = lower.windows(2).any(|w| w == ["compose", "up"]);
+            (is_compose_up && !detached).then_some("docker compose up")
+        }
+        "docker-compose" => {
+            let detached = short_flag(args, 'd') || lower.iter().any(|a| a == "--detach");
+            let is_up = lower.iter().any(|a| a == "up");
+            (is_up && !detached).then_some("docker-compose up")
+        }
+        _ => None,
+    }
 }
 fn short_flag(args: &[String], flag: char) -> bool {
     args.iter().any(|arg| {
@@ -1100,6 +1429,135 @@ mod sandbox_automation_tests {
         assert!(!automatic_general_shell_for(
             &serde_json::json!({"command": redirect}).to_string(),
             Shell::Pwsh
+        ));
+    }
+
+    #[test]
+    fn long_running_dev_server_and_watch_commands_are_detected_without_false_positives() {
+        let blocked = [
+            "npm run dev",
+            "npm run tauri dev",
+            "npm start",
+            "npm run watch:css",
+            "pnpm dev",
+            "pnpm tauri dev",
+            "yarn watch",
+            "bun --watch src/index.ts",
+            "vite",
+            "vite preview",
+            "npx vite",
+            "npx --yes next dev",
+            "cargo watch -x test",
+            "cargo tauri dev",
+            "vitest",
+            "npx vitest",
+            "vitest --watch",
+            "tsc --watch",
+            "tsc -w",
+            "jest --watch",
+            "nodemon index.js",
+            "python -m http.server 8000",
+            "tail -f app.log",
+            "docker compose up",
+            "cmd /c npm run tauri dev",
+            r#"sh -c "cargo watch -x check""#,
+            r#"bash -lc "vite""#,
+            "echo starting && npm run dev",
+        ];
+        for command in blocked {
+            for shell in [Shell::Sh, Shell::Pwsh, Shell::Cmd] {
+                let analysis = analyze(command, shell);
+                assert!(
+                    analysis.long_running,
+                    "expected long_running=true for {shell:?}: {command} ({analysis:?})"
+                );
+                assert!(
+                    blocked_long_running_command_for(command, shell).is_some(),
+                    "expected blocked pattern for {shell:?}: {command}"
+                );
+                assert!(
+                    !automatic_general_shell_for(
+                        &serde_json::json!({"command": command}).to_string(),
+                        shell
+                    ),
+                    "long-running command must never auto-execute ({shell:?}): {command}"
+                );
+            }
+        }
+        // `--` pass-through syntax on POSIX/CMD shells (and quoted `'--'` on PowerShell).
+        for (command, shell) in [
+            ("npm run tauri -- dev", Shell::Sh),
+            ("npm run tauri -- dev", Shell::Cmd),
+            ("npm run tauri '--' dev", Shell::Pwsh),
+        ] {
+            let analysis = analyze(command, shell);
+            assert!(analysis.long_running, "{shell:?}: {command} ({analysis:?})");
+        }
+        assert!(analyze("npm run tauri -- dev", Shell::Pwsh).uncertain);
+
+        let allowed = [
+            "npm test",
+            "npm run build",
+            "npm run tauri build",
+            "vite build",
+            "npx vite build",
+            "vite --version",
+            "vitest run",
+            "npx vitest run",
+            "vitest --run src/app.test.ts",
+            "cargo test",
+            "cargo build",
+            "cargo check",
+            "cargo clippy",
+            "tsc --noEmit",
+            "npx tsc",
+            "docker compose up -d",
+            r#"echo "npm run dev""#,
+            r#"git log --grep="cargo watch""#,
+        ];
+        for command in allowed {
+            for shell in [Shell::Sh, Shell::Pwsh, Shell::Cmd] {
+                let analysis = analyze(command, shell);
+                assert!(
+                    !analysis.long_running,
+                    "unexpected long_running=true for {shell:?}: {command} ({analysis:?})"
+                );
+                assert!(
+                    blocked_long_running_command_for(command, shell).is_none(),
+                    "benign finite command must not be blocked ({shell:?}): {command}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stage7_audit_bash_background_process_substitution_and_bundled_flags_fail_closed() {
+        for command in ["sleep 10 &", "cat <(echo hi)", "foo() { rm -rf tmp; }"] {
+            let analysis = analyze(command, Shell::Sh);
+            assert!(analysis.uncertain, "{command}: {analysis:?}");
+            assert!(
+                !automatic_general_shell_for(
+                    &serde_json::json!({"command": command}).to_string(),
+                    Shell::Sh
+                ),
+                "{command}"
+            );
+        }
+
+        let bundled_git = analyze(r#"sh -ec "git reset --hard""#, Shell::Sh);
+        assert_eq!(bundled_git.category, ShellCategory::DestructiveGit);
+        let bundled_rm = analyze(r#"bash -lc "rm -rf tmp""#, Shell::Sh);
+        assert_eq!(bundled_rm.category, ShellCategory::MassDelete);
+
+        let cmd_k = analyze(r#"cmd /k "rm -rf tmp""#, Shell::Cmd);
+        assert_eq!(cmd_k.category, ShellCategory::MassDelete);
+        assert!(cmd_k.uncertain);
+
+        let cmd_start = analyze("start /b echo hi", Shell::Cmd);
+        assert!(cmd_start.uncertain);
+        assert!(!automatic_general_shell_for(
+            r#"{"command":"start /b echo hi"}"#,
+            Shell::Cmd
         ));
     }
 }

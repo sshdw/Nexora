@@ -123,6 +123,15 @@ impl ToolRegistry {
         if bound.is_some_and(|target| target != resolved_cwd) {
             return Err(ToolError::ConsentInvalidated);
         }
+        if let Some(pattern) =
+            crate::application::agent::shell_policy::blocked_long_running_command(&command)
+        {
+            return Err(ToolError::InvalidArguments(format!(
+                "interactive dev-server or watch command ({pattern}) is blocked in execute_command \
+                 because it runs indefinitely; use a finite one-shot command instead \
+                 (for example 'npx vitest run', 'npm run build', or 'cargo test')"
+            )));
+        }
         Self::run_command_with_limits(
             platform_shell(&command, &["/D", "/C"])?,
             &command,
@@ -799,6 +808,136 @@ mod tests {
         assert!(
             out.contains("MAX_CAPTURE_BYTES") && out.contains("truncated at 128 bytes"),
             "output must surface honest capture-cap truncation notice, got: {out}"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn dev_server_and_watch_commands_are_rejected_before_spawn() {
+        let ws = temp_workspace();
+        let token = CancellationToken::new();
+        for blocked_cmd in [
+            "npm run dev",
+            "npm run tauri dev",
+            "vite",
+            "cargo watch -x test",
+            "vitest",
+            "tsc --watch",
+        ] {
+            let args = serde_json::json!({ "command": blocked_cmd });
+            let err = ToolRegistry::execute_command_with_limits(
+                &args,
+                &ws,
+                &CommandLimits::default(),
+                &token,
+            )
+            .expect_err("dev-server/watch command must be rejected before spawn");
+            assert!(
+                matches!(err, ToolError::InvalidArguments(_)),
+                "expected InvalidArguments for '{blocked_cmd}', got: {err:?}"
+            );
+            assert!(
+                err.to_string().contains("dev-server or watch"),
+                "error should explain why '{blocked_cmd}' was blocked: {err}"
+            );
+        }
+
+        // Benign command echoing a dev-server phrase must still execute cleanly.
+        let ok_args = serde_json::json!({ "command": r#"echo "npm run dev""# });
+        let out = ToolRegistry::execute_command_with_limits(
+            &ok_args,
+            &ws,
+            &CommandLimits::default(),
+            &token,
+        )
+        .expect("benign echo command should execute");
+        assert!(out.contains("npm run dev"));
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    fn pid_is_alive_safe(pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let Ok(out) = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+            else {
+                return false;
+            };
+            let text = String::from_utf8_lossy(&out.stdout);
+            text.contains(&format!("\"{pid}\""))
+        }
+        #[cfg(not(windows))]
+        {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .status()
+                .is_ok_and(|s| s.success())
+        }
+    }
+
+    #[test]
+    fn timeout_terminates_entire_process_tree_including_descendant() {
+        let ws = temp_workspace();
+        let pid_file = ws.join("descendant.pid");
+        let token = CancellationToken::new();
+        let cmd = if cfg!(windows) {
+            let script_path = ws.join("spawn_descendant.ps1");
+            let escaped = pid_file.display().to_string().replace('\'', "''");
+            std::fs::write(
+                &script_path,
+                format!(
+                    "$p = Start-Process -FilePath 'ping.exe' -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru\r\n\
+                     [System.IO.File]::WriteAllText('{escaped}', [string]$p.Id)\r\n\
+                     Start-Sleep -Seconds 60\r\n"
+                ),
+            )
+            .expect("write helper ps1");
+            "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File spawn_descendant.ps1"
+                .to_string()
+        } else {
+            let escaped = pid_file.display().to_string().replace('\'', "'\"'\"'");
+            format!("sleep 60 & echo $! > '{escaped}'; wait")
+        };
+        let args = serde_json::json!({ "command": cmd });
+        let limits = CommandLimits {
+            timeout: Duration::from_secs(3),
+            drain_grace: Duration::from_millis(250),
+            capture_cap: MAX_CAPTURE_BYTES,
+        };
+        let mut saw_killed_done = false;
+        let err = ToolRegistry::execute_command_with_limits_streaming(
+            &args,
+            &ws,
+            &limits,
+            &token,
+            &mut |u| {
+                if let CommandStreamUpdate::Done { killed, .. } = u {
+                    saw_killed_done = killed;
+                }
+            },
+        )
+        .expect_err("long-running descendant command must time out");
+        assert!(matches!(err, ToolError::Timeout(_)), "got: {err:?}");
+        assert!(saw_killed_done, "timeout must emit Done {{ killed: true }}");
+
+        let raw = std::fs::read_to_string(&pid_file)
+            .expect("descendant pid file must be written before timeout");
+        let desc_pid = raw
+            .trim()
+            .trim_start_matches('\u{feff}')
+            .parse::<u32>()
+            .expect("valid descendant pid");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && pid_is_alive_safe(desc_pid) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !pid_is_alive_safe(desc_pid),
+            "descendant PID {desc_pid} must be terminated on COMMAND_TIMEOUT"
         );
         let _ = std::fs::remove_dir_all(&ws);
     }

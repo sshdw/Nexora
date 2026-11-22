@@ -2137,15 +2137,17 @@ mod tests {
         let degrade_req = gate.prepare_pending(&install_call);
         let park_gate = gate.clone();
         let park_call = install_call.clone();
-        let park_thread = std::thread::spawn(move || park_gate.park_until_resolved(&park_call));
-        std::thread::sleep(Duration::from_millis(40));
-        super::super::sandbox::set_test_probe(
-            &workspace,
-            Some(SandboxVerificationStatus::Unavailable {
-                reason: "sandbox degraded".into(),
-            }),
-        );
-        super::super::sandbox::age_test_status(&workspace, Duration::from_secs(31));
+        let park_thread = std::thread::spawn(move || {
+            // Initial identity and first validation are fresh. Degrade posture across
+            // the TTL boundary on the next parked identity check without sleep races.
+            super::super::sandbox::degrade_identity_read_for_test(
+                2,
+                SandboxVerificationStatus::Unavailable {
+                    reason: "sandbox degraded".into(),
+                },
+            );
+            park_gate.park_until_resolved(&park_call)
+        });
         assert_eq!(
             park_thread.join().unwrap(),
             Ok(ApprovalDecision::Invalidated)
