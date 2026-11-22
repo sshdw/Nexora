@@ -295,6 +295,20 @@ jobs:
           echo "nexora-core dependency tree is clean"
           cargo tree -p nexora-core --edges normal
 
+      - name: Shared runtime has no Tauri/UI dependencies
+        if: steps.changes.outputs.affected == 'true'
+        shell: bash
+        run: |
+          if cargo tree -p nexora-runtime --edges normal --prefix none \
+            | tr ' ' '\n' \
+            | grep -Eiq '^(tauri|tauri-[a-z-]+|tauri-plugin-[a-z-]+|react(-[a-z]+)?|ratatui|crossterm|clap)$'; then
+            echo "::error::nexora-runtime must not depend on Tauri/UI/shell crates"
+            cargo tree -p nexora-runtime --edges normal
+            exit 1
+          fi
+          echo "nexora-runtime dependency tree is Tauri-free"
+          cargo tree -p nexora-runtime --edges normal
+
       - name: Cache
         if: steps.changes.outputs.affected == 'true'
         uses: Swatinem/rust-cache@v2
@@ -309,6 +323,16 @@ jobs:
       - name: cargo clippy (cli)
         if: steps.changes.outputs.affected == 'true'
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Create a canonical macOS test fixture directory
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          # macOS TMPDIR can traverse /var, which no-follow fixture readers
+          # (now in nexora-runtime, tested from the CLI/root job) reject.
+          test_dir="$(mktemp -d "$RUNNER_TEMP/nexora-tests.XXXXXX")"
+          canonical_test_dir="$(cd -- "$test_dir" && pwd -P)"
+          printf 'TMPDIR=%s\n' "$canonical_test_dir" >> "$GITHUB_ENV"
 
       - name: cargo test (cli)
         if: steps.changes.outputs.affected == 'true'

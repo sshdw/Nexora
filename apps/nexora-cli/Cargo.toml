@@ -17,6 +17,10 @@ path = "src/main.rs"
 # `doctor` and Desktop `ReleasePanel` read the same facts from the same code
 # instead of maintaining two copies. `nexora-core` does not depend on Clap.
 nexora-core = { path = "../../crates/nexora-core" }
+# Shared backend runtime (PR-1 extraction). Linked here so the CLI and the
+# Desktop compile the same application/infrastructure code; no CLI behavior
+# is wired to it in this PR.
+nexora-runtime = { path = "../../crates/nexora-runtime" }
 # Argument parsing (pure, offline) plus Ratatui for the phase-5 interactive
 # TUI (brief §2.1: Ratatui 0.30.2, Crossterm 0.29). Crossterm is used ONLY
 # through Ratatui's `ratatui::crossterm` re-export (one major, one source of

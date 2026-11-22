@@ -287,7 +287,10 @@ pub(crate) async fn send_message(
 mod tests {
     use crate::application::agent::control::CancellationToken;
     use crate::application::execution::{AiMessage, AiRequest, AiRole, ProviderExecutor};
-    use crate::infrastructure::providers::async_spawner::test_spawner;
+    use crate::async_spawner::TauriSpawner;
+    fn test_spawner() -> std::sync::Arc<dyn nexora_runtime::AsyncSpawner> {
+        std::sync::Arc::new(TauriSpawner)
+    }
     use crate::infrastructure::providers::openai::{OpenAiExecutor, PROVIDER_NAME};
 
     /// Regression for the BUG-005 follow-up ("all sends hang indefinitely"):

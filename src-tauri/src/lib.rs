@@ -1,7 +1,11 @@
-mod application;
+// The application and infrastructure trees now live in the Tauri-free
+// `nexora-runtime` crate. Re-exporting them at the crate root keeps every
+// command's `crate::application::...` / `crate::infrastructure::...` path —
+// and the desktop's composition root — byte-identical.
+pub use nexora_runtime::{application, infrastructure};
+
 mod async_spawner;
 mod commands;
-mod infrastructure;
 
 use tauri::Manager;
 

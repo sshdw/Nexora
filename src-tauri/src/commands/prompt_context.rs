@@ -13,16 +13,7 @@ use crate::infrastructure::database::Database;
 
 use super::error::{CommandError, ErrorKind};
 
-impl From<ContextError> for CommandError {
-    fn from(error: ContextError) -> Self {
-        let kind = match error {
-            ContextError::Settings => ErrorKind::Database,
-            ContextError::ReadUnavailable | ContextError::NoDiff => ErrorKind::Io,
-            _ => ErrorKind::InvalidInput,
-        };
-        Self::new(kind, error.to_string())
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 fn with_context<T>(
     app: &AppHandle,

@@ -2446,6 +2446,7 @@ dependencies = [
  "log",
  "nexora-core",
  "nexora-os-exec",
+ "nexora-runtime",
  "portable-pty",
  "reqwest",
  "ring",
@@ -2482,6 +2483,34 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nexora-runtime"
+version = "2.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "cap-fs-ext",
+ "cap-std",
+ "flate2",
+ "git2",
+ "keyring",
+ "log",
+ "nexora-core",
+ "nexora-os-exec",
+ "portable-pty",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-powershell",
+ "url",
+ "uuid",
+ "winx",
 ]
 
 [[package]]

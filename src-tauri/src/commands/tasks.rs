@@ -58,9 +58,9 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::service::{self, AgentRunHost};
-use crate::application::agent::tasks::{
-    self, TaskError, TaskEvent, TaskRegistry, TaskRunConfig, TaskService,
-};
+#[cfg(test)]
+use crate::application::agent::tasks::TaskError;
+use crate::application::agent::tasks::{self, TaskEvent, TaskRegistry, TaskRunConfig, TaskService};
 use crate::application::execution::RequestExecutionService;
 use crate::infrastructure::database::Database;
 use crate::infrastructure::repository::agent_tasks::{AgentTask, AgentTaskStep, TaskLock};
@@ -338,32 +338,7 @@ pub(crate) fn move_task(
         .map_err(CommandError::from)
 }
 
-impl From<TaskError> for CommandError {
-    fn from(err: TaskError) -> Self {
-        match err {
-            TaskError::TaskNotFound { id } => {
-                Self::new(ErrorKind::NotFound, format!("no task with id {id}"))
-            }
-            TaskError::AlreadyRunning { task_id } => Self::new(
-                ErrorKind::InvalidInput,
-                format!("task {task_id} already has an active run"),
-            ),
-            TaskError::InvalidInput { message } | TaskError::InvalidLock { message } => {
-                Self::new(ErrorKind::InvalidInput, message)
-            }
-            TaskError::RunStart { message } => Self::new(ErrorKind::Request, message),
-            TaskError::LockHeld {
-                task_id,
-                holder,
-                expires_at,
-            } => Self::new(
-                ErrorKind::Conflict,
-                format!("task {task_id} is locked by {holder} until {expires_at}"),
-            ),
-            TaskError::Database(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,11 @@
 # RustSec and license policy for the root workspace and its Cargo.lock.
 # The independent desktop workspace uses src-tauri/deny.toml.
+#
+# PR-1 added `nexora-runtime` (the extracted Tauri-free backend) and its
+# `reqwest`/`ring`/`git2`/keyring dependency tree. The exceptions below are the
+# non-Tauri license exceptions from src-tauri/deny.toml at the EXACT versions in
+# this lockfile. The five MPL-2.0 exceptions are Tauri-only and intentionally
+# stay in src-tauri/deny.toml; RUSTSEC-2024-0370 is likewise Tauri-only.
 
 [advisories]
 version = 2
@@ -20,6 +26,32 @@ ignore = [
 allow = ["MIT", "Apache-2.0"]
 # These exceptions apply to the exact versions already in the root lockfile.
 exceptions = [
+    { crate = "aws-lc-rs@1.19.0", allow = ["ISC"] },
+    { crate = "aws-lc-sys@0.47.0", allow = ["BSD-3-Clause", "ISC"] },
     { crate = "foldhash@0.2.0", allow = ["Zlib"] },
+    { crate = "icu_collections@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_locale_core@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_normalizer@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_normalizer_data@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_properties@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_properties_data@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_provider@2.4.0", allow = ["Unicode-3.0"] },
+    { crate = "litemap@0.8.3", allow = ["Unicode-3.0"] },
+    { crate = "potential_utf@0.1.6", allow = ["Unicode-3.0"] },
+    { crate = "ring@0.17.14", allow = ["ISC"] },
+    { crate = "rustls-webpki@0.103.17", allow = ["ISC"] },
+    { crate = "subtle@2.6.1", allow = ["BSD-3-Clause"] },
+    { crate = "tinystr@0.8.5", allow = ["Unicode-3.0"] },
     { crate = "unicode-ident@1.0.27", allow = ["Unicode-3.0"] },
+    { crate = "untrusted@0.9.0", allow = ["ISC"] },
+    { crate = "webpki-root-certs@1.0.12", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "winx@0.36.4", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { crate = "writeable@0.6.4", allow = ["Unicode-3.0"] },
+    { crate = "yoke@0.8.4", allow = ["Unicode-3.0"] },
+    { crate = "yoke-derive@0.8.4", allow = ["Unicode-3.0"] },
+    { crate = "zerofrom@0.1.8", allow = ["Unicode-3.0"] },
+    { crate = "zerofrom-derive@0.1.8", allow = ["Unicode-3.0"] },
+    { crate = "zerotrie@0.2.5", allow = ["Unicode-3.0"] },
+    { crate = "zerovec@0.11.9", allow = ["Unicode-3.0"] },
+    { crate = "zerovec-derive@0.11.7", allow = ["Unicode-3.0"] },
 ]
