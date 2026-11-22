@@ -1,23 +1,13 @@
 /* ============================================================
-   Terminal — workspace command panel layout (survivors).
+   Terminal — workspace PTY drawer + surviving task layout hooks.
 
-   #230 Phase 0 (dead-weight audit): the TerminalPanel/Entry that
-   this sheet was written for are deleted, and every rule below the
-   two kept here (`.nex-term-scroll`, the `.nex-term-exit-*`
-   badges, `.nex-term-input-row`, `.nex-term-prompt`, `.nex-term-cwd`,
-   `.nex-term-input*`) had ZERO consumers in the tree. They are
-   removed here. What remains is the two layout rules the Tasks
-   surfaces still render:
-
-     .nex-term        TaskPanel's full-height panel column
-     .nex-term-body   TaskPanel + KanbanBoard's flexed body region
-
-   The whole sheet — and these two rules with it — is deleted in
-   Phase 6 once the Tasks panel migrates; the import in src/index.css
-   stays until then because these two classes are live.
+   `.nex-term` and `.nex-term-body` remain live for TaskPanel and
+   KanbanBoard; everything below styles the interactive xterm.js
+   workspace terminal drawer using CSS tokens only (no raw colour
+   literals, honours `prefers-reduced-motion`).
    ============================================================ */
 
-/* ---- Full surface ---- */
+/* ---- Surviving TaskPanel / KanbanBoard layout hooks ---- */
 .nex-term {
   display: flex;
   flex-direction: column;
@@ -36,15 +26,14 @@
   overflow: hidden;
 }
 
-/* ---- Workspace Terminal Drawer (Stage 7 M10/P09) ---------------------- */
+/* ---- Interactive Workspace Terminal Drawer (PR 3) ---- */
 .nex-terminal-drawer {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
-  max-height: 40vh;
-  min-height: 180px;
-  padding: var(--space-sm) var(--space-md);
+  height: 36vh;
+  min-height: 220px;
+  max-height: 55vh;
   background: var(--color-surface-container-low);
   border-top: 1px solid var(--color-outline-variant);
   color: var(--color-on-surface);
@@ -71,10 +60,14 @@
 }
 
 .nex-terminal-drawer-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-sm);
+  padding: var(--space-xxs) var(--space-md);
+  border-bottom: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-container-low);
   min-width: 0;
 }
 
@@ -82,17 +75,18 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  font-size: var(--type-size-title-small);
+  font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-emphasized);
   color: var(--color-on-surface);
   min-width: 0;
+  flex: 1 1 auto;
 }
 
-.nex-terminal-drawer-status {
+.nex-terminal-drawer-meta {
   display: inline-flex;
   align-items: center;
   gap: var(--space-xxs);
-  padding: 0 var(--space-xs);
+  padding: var(--space-xxxs) var(--space-xs);
   border-radius: var(--shape-extra-small);
   border: 1px solid var(--color-outline-variant);
   background: var(--color-surface-container);
@@ -100,29 +94,30 @@
   font-family: var(--type-family-mono);
   font-size: var(--type-size-label-small);
   font-weight: var(--type-weight-regular);
+  min-width: 0;
+  max-width: 48vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.nex-terminal-drawer-status.is-running {
-  color: var(--color-on-surface);
-  border-color: var(--color-outline);
-}
-
-.nex-terminal-drawer-status.is-failed {
-  color: var(--color-error);
-  border-color: var(--color-error);
-}
-
-.nex-terminal-drawer-badge {
+.nex-terminal-drawer-status {
   display: inline-flex;
   align-items: center;
-  padding: 0 var(--space-xs);
+  padding: var(--space-xxxs) var(--space-xs);
   border-radius: var(--shape-extra-small);
   border: 1px solid var(--color-outline-variant);
-  background: var(--color-surface-container-high);
+  background: var(--color-surface-container);
   color: var(--color-on-surface-variant);
   font-family: var(--type-family-mono);
   font-size: var(--type-size-label-small);
   font-weight: var(--type-weight-regular);
+  flex-shrink: 0;
+}
+
+.nex-terminal-drawer-status.is-exited {
+  color: var(--color-error);
+  border-color: var(--color-error);
 }
 
 .nex-terminal-drawer-actions {
@@ -132,29 +127,9 @@
   flex-shrink: 0;
 }
 
-.nex-terminal-drawer-form {
-  display: flex;
-  align-items: center;
-  gap: var(--space-xs);
-  flex-shrink: 0;
-}
-
-.nex-terminal-drawer-cmd {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-body-small);
-}
-
-.nex-terminal-drawer-cwd {
-  flex: 0 0 140px;
-  min-width: 0;
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-body-small);
-}
-
 .nex-terminal-drawer-error {
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  margin: var(--space-xs) var(--space-md) 0;
   padding: var(--space-xs) var(--space-sm);
   border-radius: var(--shape-extra-small);
   border: 1px solid var(--color-error);
@@ -163,90 +138,22 @@
   font-size: var(--type-size-body-small);
 }
 
-.nex-terminal-drawer-output {
+.nex-terminal-drawer-viewport {
   flex: 1 1 auto;
-  min-height: 72px;
-  overflow-y: auto;
+  min-height: 0;
+  position: relative;
   padding: var(--space-xs) var(--space-sm);
-  background: var(--color-surface-container);
-  border: 1px solid var(--color-outline-variant);
-  border-radius: var(--shape-extra-small);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xxs);
+  background: var(--color-surface-container-lowest);
+  overflow: hidden;
+  cursor: text;
 }
 
-.nex-terminal-drawer-stdout {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-body-small);
-  color: var(--color-on-surface);
+.nex-terminal-drawer-viewport .xterm {
+  height: 100%;
+  width: 100%;
 }
 
-.nex-terminal-drawer-stderr {
-  margin: 0;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-body-small);
-  color: var(--color-error);
-}
-
-.nex-terminal-drawer-empty {
-  color: var(--color-on-surface-faint);
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-body-small);
-}
-
-.nex-terminal-drawer-explain {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xxs);
-  padding: var(--space-xs) var(--space-sm);
-  background: var(--color-surface-container-high);
-  border: 1px solid var(--color-outline-variant);
-  border-radius: var(--shape-extra-small);
-  max-height: 150px;
+.nex-terminal-drawer-viewport .xterm-viewport {
+  background-color: var(--color-surface-container-lowest);
   overflow-y: auto;
-}
-
-.nex-terminal-drawer-explain-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-xs);
-}
-
-.nex-terminal-drawer-explain-label {
-  font-size: var(--type-size-label-small);
-  font-weight: var(--type-weight-emphasized);
-  color: var(--color-on-surface-variant);
-}
-
-.nex-terminal-drawer-explain-text {
-  margin: 0;
-  font-size: var(--type-size-body-small);
-  color: var(--color-on-surface);
-}
-
-.nex-terminal-drawer-fix-box {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xxxs);
-}
-
-.nex-terminal-drawer-fix {
-  margin: 0;
-  padding: var(--space-xxs) var(--space-xs);
-  background: var(--color-surface-container);
-  border: 1px solid var(--color-outline-variant);
-  border-radius: var(--shape-extra-small);
-  font-family: var(--type-family-mono);
-  font-size: var(--type-size-body-small);
-  color: var(--color-on-surface);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }

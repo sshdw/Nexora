@@ -54,6 +54,7 @@ ring = "=0.17.14"
 uuid = { version = "=1.24.0", features = ["v4"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 flate2 = "1"
+portable-pty = "0.9.0"
 
 [target.'cfg(windows)'.dependencies]
 # Query the actual case of no-follow handles before admitting context reads.

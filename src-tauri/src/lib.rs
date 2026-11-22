@@ -178,6 +178,10 @@ pub fn run() {
             commands::terminal::terminal_run,
             commands::terminal::terminal_kill,
             commands::terminal::terminal_explain,
+            commands::terminal::terminal_pty_spawn,
+            commands::terminal::terminal_pty_write,
+            commands::terminal::terminal_pty_resize,
+            commands::terminal::terminal_pty_kill,
             commands::version_control::git_info,
             commands::version_control::git_file_diff,
             commands::version_control::git_commit_diff,
@@ -298,6 +302,11 @@ pub fn run() {
             app.manage(std::sync::Arc::new(
                 application::terminal::TerminalRegistry::new(),
             ));
+            // Hold the interactive PTY terminal manager as managed state so
+            // IPC commands and orderly window shutdown share live shell handles.
+            app.manage(std::sync::Arc::new(
+                application::pty_terminal::PtyTerminalManager::new(),
+            ));
             // Hold the server-side confirmation registry as managed state
             // (NEX-SEC-004): an `Arc` so the mint command and the consuming
             // destructive commands share the pending single-use ids.
@@ -349,11 +358,15 @@ pub fn run() {
                     &app.state::<std::sync::Arc<crate::application::agent::tasks::TaskRegistry>>(),
                     &app.state::<std::sync::Arc<crate::application::terminal::TerminalRegistry>>(),
                 );
+                let pty_killed = app
+                    .state::<commands::terminal::ManagedPtyTerminal>()
+                    .kill_all();
                 log::info!(
-                    "orderly shutdown: {} run(s) + {} task(s) cancelled (terminal: {}), {} run + {} task handle(s) unjoined past the deadline",
+                    "orderly shutdown: {} run(s) + {} task(s) cancelled (terminal: {}, pty: {}), {} run + {} task handle(s) unjoined past the deadline",
                     summary.runs_cancelled,
                     summary.tasks_cancelled,
                     summary.terminal_cancelled,
+                    pty_killed,
                     summary.runs_unjoined,
                     summary.tasks_unjoined,
                 );

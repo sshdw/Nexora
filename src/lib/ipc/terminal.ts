@@ -108,3 +108,72 @@ export function onTerminalOutput(
     handler(event.payload)
   );
 }
+
+// ---- Interactive workspace PTY terminal (`portable-pty`) ----------------
+
+/** Metadata returned when an interactive PTY shell session spawns. */
+export interface PtySessionInfo {
+  session_id: string;
+  shell_name: string;
+  cwd: string;
+}
+
+/** Live output chunk payload emitted on `terminal-pty-output`. */
+export interface TerminalPtyOutputEvent {
+  session_id: string;
+  data: string;
+}
+
+/** Process exit payload emitted on `terminal-pty-exit`. */
+export interface TerminalPtyExitEvent {
+  session_id: string;
+  exit_code: number | null;
+}
+
+/** Spawn an interactive OS shell in a real PTY rooted at the active workspace. */
+export function terminalPtySpawn(
+  cols: number,
+  rows: number
+): Promise<PtySessionInfo> {
+  return invoke<PtySessionInfo>("terminal_pty_spawn", { cols, rows });
+}
+
+/** Send raw UTF-8 keystrokes / input bytes to an active PTY session. */
+export function terminalPtyWrite(
+  sessionId: string,
+  data: string
+): Promise<void> {
+  return invoke<void>("terminal_pty_write", { sessionId, data });
+}
+
+/** Resize an active PTY session to match the xterm viewport grid. */
+export function terminalPtyResize(
+  sessionId: string,
+  cols: number,
+  rows: number
+): Promise<void> {
+  return invoke<void>("terminal_pty_resize", { sessionId, cols, rows });
+}
+
+/** Terminate an active PTY session cleanly. Returns `true` if a live session existed. */
+export function terminalPtyKill(sessionId: string): Promise<boolean> {
+  return invoke<boolean>("terminal_pty_kill", { sessionId });
+}
+
+/** Subscribe to raw UTF-8/ANSI output chunks from an interactive PTY session. */
+export function onTerminalPtyOutput(
+  handler: (event: TerminalPtyOutputEvent) => void
+): Promise<UnlistenFn> {
+  return listen<TerminalPtyOutputEvent>("terminal-pty-output", (event) =>
+    handler(event.payload)
+  );
+}
+
+/** Subscribe to exit notifications from an interactive PTY session. */
+export function onTerminalPtyExit(
+  handler: (event: TerminalPtyExitEvent) => void
+): Promise<UnlistenFn> {
+  return listen<TerminalPtyExitEvent>("terminal-pty-exit", (event) =>
+    handler(event.payload)
+  );
+}

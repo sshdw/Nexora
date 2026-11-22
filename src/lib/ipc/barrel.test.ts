@@ -156,6 +156,8 @@ const SNAPSHOT: readonly string[] = [
   "providerHealth",
   "refactorApply",
   "onTerminalOutput",
+  "onTerminalPtyExit",
+  "onTerminalPtyOutput",
   "refreshProviderModelMetadata",
   "releaseStatus",
   "releaseTaskLock",
@@ -193,6 +195,10 @@ const SNAPSHOT: readonly string[] = [
   "supportedProviders",
   "terminalExplain",
   "terminalKill",
+  "terminalPtyKill",
+  "terminalPtyResize",
+  "terminalPtySpawn",
+  "terminalPtyWrite",
   "terminalRun",
   "testgenDrafts",
   "updateCheck",
@@ -331,4 +337,30 @@ it("routes the ChatGPT OAuth IPC wrappers", async () => {
 
   await barrel.chatgptOAuthDisconnect();
   expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_disconnect");
+});
+
+it("routes the interactive PTY terminal IPC wrappers with camelCase args", async () => {
+  await barrel.terminalPtySpawn(100, 30);
+  expect(invoke).toHaveBeenLastCalledWith("terminal_pty_spawn", {
+    cols: 100,
+    rows: 30,
+  });
+
+  await barrel.terminalPtyWrite("sess-1", "ls\r");
+  expect(invoke).toHaveBeenLastCalledWith("terminal_pty_write", {
+    sessionId: "sess-1",
+    data: "ls\r",
+  });
+
+  await barrel.terminalPtyResize("sess-1", 120, 40);
+  expect(invoke).toHaveBeenLastCalledWith("terminal_pty_resize", {
+    sessionId: "sess-1",
+    cols: 120,
+    rows: 40,
+  });
+
+  await barrel.terminalPtyKill("sess-1");
+  expect(invoke).toHaveBeenLastCalledWith("terminal_pty_kill", {
+    sessionId: "sess-1",
+  });
 });

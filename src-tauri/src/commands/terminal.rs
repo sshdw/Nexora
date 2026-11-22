@@ -43,6 +43,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::tools::CommandStreamUpdate;
 use crate::application::confirmations::ManagedConfirmations;
+use crate::application::pty_terminal::{PtyError, PtySessionInfo, PtyTerminalManager};
 use crate::application::terminal::{ErrorExplanation, TerminalRegistry};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -53,6 +54,10 @@ use super::workspace::default_root;
 /// Managed terminal registry state is an [`Arc`] so commands can clone an
 /// owned handle into `spawn_blocking` without borrowing the managed value.
 pub(crate) type ManagedTerminal = Arc<TerminalRegistry>;
+
+/// Managed interactive PTY terminal state shared across IPC commands and
+/// orderly window shutdown.
+pub(crate) type ManagedPtyTerminal = Arc<PtyTerminalManager>;
 
 /// Live event channel emitted while a workspace terminal command executes.
 pub(crate) const TERMINAL_OUTPUT_EVENT: &str = "terminal-output";
@@ -321,6 +326,117 @@ pub(crate) async fn terminal_explain(
     }
 }
 
+/// Spawn an interactive workspace shell in a real OS PTY rooted at the
+/// effective workspace directory.
+///
+/// # Errors
+///
+/// Classified [`CommandError`]s when the workspace root cannot be resolved or
+/// the OS PTY / shell fails to start.
+#[tauri::command]
+pub(crate) async fn terminal_pty_spawn(
+    cols: u16,
+    rows: u16,
+    app: AppHandle,
+    db: State<'_, Database>,
+    pty: State<'_, ManagedPtyTerminal>,
+) -> Result<PtySessionInfo, CommandError> {
+    let fallback = default_root(&app)?;
+    let root = resolve_workspace_root(db.inner(), &fallback);
+    let manager = Arc::clone(pty.inner());
+    let app_for_spawn = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        manager
+            .spawn_session(app_for_spawn, &root, cols, rows)
+            .map_err(CommandError::from)
+    })
+    .await;
+    match outcome {
+        Ok(result) => result,
+        Err(err) => {
+            log::error!("terminal_pty_spawn blocking task failed: {err}");
+            Err(CommandError::new(
+                ErrorKind::Io,
+                "the interactive terminal session could not be started",
+            ))
+        }
+    }
+}
+
+/// Write raw UTF-8 input / keystrokes into an active PTY session.
+///
+/// # Errors
+///
+/// Classified [`CommandError`]s when the session is missing or the write fails.
+#[tauri::command]
+pub(crate) fn terminal_pty_write(
+    session_id: String,
+    data: String,
+    pty: State<'_, ManagedPtyTerminal>,
+) -> Result<(), CommandError> {
+    pty.write_session(&session_id, &data)
+        .map_err(CommandError::from)
+}
+
+/// Resize an active PTY session's terminal grid.
+///
+/// # Errors
+///
+/// Classified [`CommandError`]s when the session is missing or the resize fails.
+#[tauri::command]
+pub(crate) fn terminal_pty_resize(
+    session_id: String,
+    cols: u16,
+    rows: u16,
+    pty: State<'_, ManagedPtyTerminal>,
+) -> Result<(), CommandError> {
+    pty.resize_session(&session_id, cols, rows)
+        .map_err(CommandError::from)
+}
+
+/// Terminate an active PTY session and clean up its OS handles. Returns `true`
+/// if a live session existed and was terminated.
+///
+/// # Errors
+///
+/// Classified [`CommandError`] if the session table lock is unavailable.
+#[tauri::command]
+pub(crate) fn terminal_pty_kill(
+    session_id: String,
+    pty: State<'_, ManagedPtyTerminal>,
+) -> Result<bool, CommandError> {
+    pty.kill_session(&session_id).map_err(CommandError::from)
+}
+
+impl From<PtyError> for CommandError {
+    fn from(err: PtyError) -> Self {
+        match err {
+            PtyError::InvalidWorkingDirectory => Self::new(
+                ErrorKind::InvalidInput,
+                "the workspace directory is not available for the terminal",
+            ),
+            PtyError::SpawnFailed => Self::new(
+                ErrorKind::Io,
+                "the interactive terminal session could not be started",
+            ),
+            PtyError::SessionNotFound => Self::new(
+                ErrorKind::NotFound,
+                "the terminal session is no longer active",
+            ),
+            PtyError::WriteFailed => Self::new(
+                ErrorKind::Io,
+                "could not write input to the terminal session",
+            ),
+            PtyError::ResizeFailed => {
+                Self::new(ErrorKind::Io, "could not resize the terminal session")
+            }
+            PtyError::InternalLock => {
+                Self::new(ErrorKind::Io, "the terminal session state is unavailable")
+            }
+        }
+    }
+}
+
 impl From<crate::application::terminal::TerminalError> for CommandError {
     fn from(err: crate::application::terminal::TerminalError) -> Self {
         use crate::application::terminal::TerminalError as Source;
@@ -572,5 +688,23 @@ mod tests {
         assert!(truncated);
         assert!(!killed);
         assert!(success);
+    }
+
+    #[test]
+    fn pty_error_mapping_is_classified_and_secret_free() {
+        let cases = [
+            (PtyError::InvalidWorkingDirectory, ErrorKind::InvalidInput),
+            (PtyError::SpawnFailed, ErrorKind::Io),
+            (PtyError::SessionNotFound, ErrorKind::NotFound),
+            (PtyError::WriteFailed, ErrorKind::Io),
+            (PtyError::ResizeFailed, ErrorKind::Io),
+            (PtyError::InternalLock, ErrorKind::Io),
+        ];
+        for (source, kind) in cases {
+            let mapped = CommandError::from(source);
+            assert_eq!(mapped.kind, kind);
+            assert!(!mapped.message.is_empty());
+            assert!(safe_message(&mapped), "secret leaked into: {mapped:?}");
+        }
     }
 }

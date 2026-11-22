@@ -7,35 +7,159 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TerminalOutputEvent } from "../lib/tauri";
+import type {
+  TerminalPtyExitEvent,
+  TerminalPtyOutputEvent,
+} from "../lib/tauri";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import TerminalDrawer, { type TerminalDrawerProps } from "./TerminalDrawer";
 
-type TauriEvent = { payload: TerminalOutputEvent };
+type TauriEvent<T> = { payload: T };
 
-const { mockInvoke, mockListen, emitTerminal } = vi.hoisted(() => {
-  const listeners: Array<(event: TauriEvent) => void> = [];
+const {
+  mockInvoke,
+  mockListen,
+  emitPtyOutput,
+  emitPtyExit,
+  xtermInstances,
+  fitAddonInstances,
+  resizeCallbacks,
+} = vi.hoisted(() => {
+  const outputListeners: Array<(ev: TauriEvent<TerminalPtyOutputEvent>) => void> =
+    [];
+  const exitListeners: Array<(ev: TauriEvent<TerminalPtyExitEvent>) => void> =
+    [];
+
   const mockInvoke = vi.fn();
   const mockListen = vi.fn(
     async (
-      _eventName: string,
-      handler: (event: TauriEvent) => void
+      eventName: string,
+      handler: (event: TauriEvent<unknown>) => void
     ): Promise<() => void> => {
-      listeners.push(handler);
-      return () => {
-        const i = listeners.indexOf(handler);
-        if (i >= 0) listeners.splice(i, 1);
-      };
+      if (eventName === "terminal-pty-output") {
+        const typed = handler as (ev: TauriEvent<TerminalPtyOutputEvent>) => void;
+        outputListeners.push(typed);
+        return () => {
+          const idx = outputListeners.indexOf(typed);
+          if (idx >= 0) outputListeners.splice(idx, 1);
+        };
+      }
+      if (eventName === "terminal-pty-exit") {
+        const typed = handler as (ev: TauriEvent<TerminalPtyExitEvent>) => void;
+        exitListeners.push(typed);
+        return () => {
+          const idx = exitListeners.indexOf(typed);
+          if (idx >= 0) exitListeners.splice(idx, 1);
+        };
+      }
+      return () => {};
     }
   );
-  const emitTerminal = (payload: TerminalOutputEvent): void => {
-    for (const handler of [...listeners]) handler({ payload });
+
+  const emitPtyOutput = (payload: TerminalPtyOutputEvent): void => {
+    for (const handler of [...outputListeners]) handler({ payload });
   };
-  return { mockInvoke, mockListen, emitTerminal };
+
+  const emitPtyExit = (payload: TerminalPtyExitEvent): void => {
+    for (const handler of [...exitListeners]) handler({ payload });
+  };
+
+  interface MockTerminalInstance {
+    cols: number;
+    rows: number;
+    options: Record<string, unknown>;
+    dataHandlers: Array<(data: string) => void>;
+    loadAddon: ReturnType<typeof vi.fn>;
+    open: ReturnType<typeof vi.fn>;
+    write: ReturnType<typeof vi.fn>;
+    clear: ReturnType<typeof vi.fn>;
+    reset: ReturnType<typeof vi.fn>;
+    focus: ReturnType<typeof vi.fn>;
+    dispose: ReturnType<typeof vi.fn>;
+    onData: ReturnType<typeof vi.fn>;
+    triggerData: (data: string) => void;
+  }
+
+  interface MockFitAddonInstance {
+    fit: ReturnType<typeof vi.fn>;
+  }
+
+  const xtermInstances: MockTerminalInstance[] = [];
+  const fitAddonInstances: MockFitAddonInstance[] = [];
+  const resizeCallbacks: Array<() => void> = [];
+
+  return {
+    mockInvoke,
+    mockListen,
+    emitPtyOutput,
+    emitPtyExit,
+    xtermInstances,
+    fitAddonInstances,
+    resizeCallbacks,
+  };
 });
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mockListen }));
+
+vi.mock("@xterm/xterm", () => {
+  class MockTerminal {
+    cols = 80;
+    rows = 24;
+    options: Record<string, unknown>;
+    dataHandlers: Array<(data: string) => void> = [];
+    loadAddon = vi.fn();
+    open = vi.fn();
+    write = vi.fn();
+    clear = vi.fn();
+    reset = vi.fn();
+    focus = vi.fn();
+    dispose = vi.fn();
+    onData = vi.fn((cb: (data: string) => void) => {
+      this.dataHandlers.push(cb);
+      return {
+        dispose: () => {
+          const idx = this.dataHandlers.indexOf(cb);
+          if (idx >= 0) this.dataHandlers.splice(idx, 1);
+        },
+      };
+    });
+
+    constructor(opts: Record<string, unknown> = {}) {
+      this.options = { ...opts };
+      xtermInstances.push(this);
+    }
+
+    triggerData(data: string) {
+      for (const cb of [...this.dataHandlers]) cb(data);
+    }
+  }
+  return { Terminal: MockTerminal };
+});
+
+vi.mock("@xterm/addon-fit", () => {
+  class MockFitAddon {
+    fit = vi.fn();
+    constructor() {
+      fitAddonInstances.push(this);
+    }
+  }
+  return { FitAddon: MockFitAddon };
+});
+
+class MockResizeObserver {
+  private cb: () => void;
+  constructor(cb: () => void) {
+    this.cb = cb;
+    resizeCallbacks.push(cb);
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {
+    const idx = resizeCallbacks.indexOf(this.cb);
+    if (idx >= 0) resizeCallbacks.splice(idx, 1);
+  }
+}
 
 function renderDrawer(overrides: Partial<TerminalDrawerProps> = {}) {
   const props: TerminalDrawerProps = {
@@ -53,245 +177,196 @@ function renderDrawer(overrides: Partial<TerminalDrawerProps> = {}) {
   return { ...view, props };
 }
 
-describe("TerminalDrawer", () => {
+describe("TerminalDrawer (interactive PTY)", () => {
+  const originalResizeObserver = globalThis.ResizeObserver;
+
   beforeEach(() => {
     localStorage.setItem(LOCALE_KEY, "en");
     mockInvoke.mockReset();
     mockListen.mockClear();
+    xtermInstances.length = 0;
+    fitAddonInstances.length = 0;
+    resizeCallbacks.length = 0;
+    globalThis.ResizeObserver =
+      MockResizeObserver as unknown as typeof ResizeObserver;
   });
 
   afterEach(() => {
     cleanup();
+    globalThis.ResizeObserver = originalResizeObserver;
   });
 
-  it("renders nothing when closed and focuses command input when opened", () => {
-    const { container, rerender } = renderDrawer({ open: false });
+  it("renders nothing and does not spawn a PTY when closed", () => {
+    const { container } = renderDrawer({ open: false });
     expect(container.firstChild).toBeNull();
-
-    rerender(
-      <LocaleProvider>
-        <TerminalDrawer
-          open
-          onClose={vi.fn()}
-          selectedProvider="openai"
-          selectedModel="gpt-5.6-terra"
-        />
-      </LocaleProvider>
-    );
-    const input = screen.getByLabelText("Command");
-    expect(input).toHaveFocus();
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(xtermInstances).toHaveLength(0);
   });
 
-  it("streams redacted stdout and stderr chunks and shows Truncated badge", async () => {
-    let resolveRun!: (value: unknown) => void;
+  it("auto-spawns PTY on open, streams output, forwards keystrokes, and focuses terminal", async () => {
     mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "request_confirmation") return "confirm-1";
-      if (cmd === "terminal_run") {
-        return new Promise((resolve) => {
-          resolveRun = resolve;
-        });
+      if (cmd === "terminal_pty_spawn") {
+        return {
+          session_id: "pty-1",
+          shell_name: "pwsh",
+          cwd: "D:\\projects\\nx",
+        };
       }
       return null;
     });
 
     renderDrawer();
 
-    fireEvent.change(screen.getByLabelText("Command"), {
-      target: { value: "cargo test" },
-    });
-    fireEvent.change(screen.getByLabelText("Working directory (optional)"), {
-      target: { value: "src-tauri" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
     await waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith("terminal_run", {
-        command: "cargo test",
-        cwd: "src-tauri",
-        confirmationId: "confirm-1",
+      expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_spawn", {
+        cols: 80,
+        rows: 24,
       })
     );
+
+    expect(await screen.findByText("pwsh · D:\\projects\\nx")).toBeInTheDocument();
+    const term = xtermInstances[0];
+    expect(term).toBeDefined();
+    expect(term.focus).toHaveBeenCalled();
+    expect(term.options.fontFamily).toBe('"Cascadia Code", Consolas, monospace');
+    expect(term.options.fontSize).toBe(13);
+
+    // Streams matching session output and ignores foreign sessions.
+    act(() => {
+      emitPtyOutput({ session_id: "other-session", data: "ignored" });
+      emitPtyOutput({ session_id: "pty-1", data: "PS D:\\projects\\nx> " });
+    });
+    expect(term.write).toHaveBeenCalledTimes(1);
+    expect(term.write).toHaveBeenCalledWith("PS D:\\projects\\nx> ");
+
+    // Forwards user keystrokes to terminal_pty_write.
+    act(() => {
+      term.triggerData("git status\r");
+    });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_write", {
+        sessionId: "pty-1",
+        data: "git status\r",
+      })
+    );
+  });
+
+  it("resizes the PTY when ResizeObserver fires and terminal grid changes", async () => {
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "terminal_pty_spawn") {
+        return {
+          session_id: "pty-resize",
+          shell_name: "bash",
+          cwd: "/workspace",
+        };
+      }
+      return null;
+    });
+
+    renderDrawer();
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_spawn", {
+        cols: 80,
+        rows: 24,
+      })
+    );
+
+    const term = xtermInstances[0];
+    const fitAddon = fitAddonInstances[0];
+    fitAddon.fit.mockImplementation(() => {
+      term.cols = 112;
+      term.rows = 30;
+    });
 
     act(() => {
-      emitTerminal({
-        run_id: 1,
-        stream: "stdout",
-        chunk: "hello [REDACTED]\n",
-        done: false,
-        truncated: false,
-        killed: false,
-        success: null,
-      });
-      emitTerminal({
-        run_id: 1,
-        stream: "stderr",
-        chunk: "minor warn\n",
-        done: false,
-        truncated: true,
-        killed: false,
-        success: null,
-      });
+      for (const cb of [...resizeCallbacks]) cb();
     });
-
-    expect(
-      screen.getByText((txt) => txt.includes("hello [REDACTED]"))
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText((txt) => txt.includes("minor warn"))
-    ).toBeInTheDocument();
-    expect(screen.getByText("Truncated")).toBeInTheDocument();
-
-    await act(async () => {
-      emitTerminal({
-        run_id: 1,
-        stream: "status",
-        chunk: "",
-        done: true,
-        truncated: true,
-        killed: false,
-        success: true,
-      });
-      resolveRun({
-        run_id: 1,
-        output:
-          "hello [REDACTED]\n--- stderr ---\nminor warn\n[warning: command stream capture truncated at 1048576 bytes (MAX_CAPTURE_BYTES); 32 additional bytes discarded]",
-        truncated: true,
-        success: true,
-      });
-    });
-
-    expect(screen.getByText("Exited OK")).toBeInTheDocument();
-  });
-
-  it("calls terminal_kill when Stop is clicked and marks Stopped status", async () => {
-    let rejectRun!: (err: unknown) => void;
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "request_confirmation") return "confirm-2";
-      if (cmd === "terminal_run") {
-        return new Promise((_resolve, reject) => {
-          rejectRun = reject;
-        });
-      }
-      if (cmd === "terminal_kill") return true;
-      return null;
-    });
-
-    renderDrawer();
-    fireEvent.change(screen.getByLabelText("Command"), {
-      target: { value: "sleep 30" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    const stopBtn = await screen.findByRole("button", { name: "Stop" });
-    fireEvent.click(stopBtn);
-
-    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("terminal_kill"));
-
-    await act(async () => {
-      emitTerminal({
-        run_id: 2,
-        stream: "status",
-        chunk: "",
-        done: true,
-        truncated: false,
-        killed: true,
-        success: false,
-      });
-      rejectRun({
-        kind: "cancelled",
-        message: "the terminal command was stopped",
-      });
-    });
-
-    expect(screen.getByText("Stopped")).toBeInTheDocument();
-  });
-
-  it("explains failed commands via terminal_explain and copies suggested fix", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText },
-    });
-
-    mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "request_confirmation") return "confirm-3";
-      if (cmd === "terminal_run") {
-        return {
-          run_id: 3,
-          output: "--- stderr ---\ncargo test failed\n",
-          truncated: false,
-          success: false,
-        };
-      }
-      if (cmd === "terminal_explain") {
-        return {
-          explanation: "Missing dependency in workspace.",
-          suggested_fix: "cargo check --workspace",
-          truncated_input: false,
-        };
-      }
-      return null;
-    });
-
-    renderDrawer();
-    fireEvent.change(screen.getByLabelText("Command"), {
-      target: { value: "cargo test" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    const explainBtn = await screen.findByRole("button", {
-      name: "Explain error",
-    });
-    fireEvent.click(explainBtn);
 
     await waitFor(() =>
-      expect(mockInvoke).toHaveBeenCalledWith("terminal_explain", {
-        output: "--- stderr ---\ncargo test failed\n",
-        exitContext: "Command failed",
-        provider: "openai",
-        model: "gpt-5.6-terra",
+      expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_resize", {
+        sessionId: "pty-resize",
+        cols: 112,
+        rows: 30,
+      })
+    );
+  });
+
+  it("supports Clear, Restart, exit status display, and Close cleanup", async () => {
+    let spawnCount = 0;
+    mockInvoke.mockImplementation(async (cmd: string) => {
+      if (cmd === "terminal_pty_spawn") {
+        spawnCount += 1;
+        return {
+          session_id: `pty-${spawnCount}`,
+          shell_name: "pwsh",
+          cwd: "D:\\projects\\nx",
+        };
+      }
+      if (cmd === "terminal_pty_kill") return true;
+      return null;
+    });
+
+    const { props, unmount } = renderDrawer();
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_spawn", {
+        cols: 80,
+        rows: 24,
       })
     );
 
-    expect(
-      screen.getByText("Missing dependency in workspace.")
-    ).toBeInTheDocument();
-    expect(screen.getByText("cargo check --workspace")).toBeInTheDocument();
+    const term = xtermInstances[0];
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy fix" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith("cargo check --workspace"));
-    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+    // Clear clears scrollback and refocuses terminal.
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(term.clear).toHaveBeenCalledTimes(1);
+
+    // Process exit event shows Exited status badge.
+    act(() => {
+      emitPtyExit({ session_id: "pty-1", exit_code: 0 });
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Exited (0)");
+
+    // Restart resets xterm and spawns a fresh PTY session.
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    expect(term.reset).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(spawnCount).toBe(2));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    // Restart while active kills previous session before spawning next.
+    fireEvent.click(screen.getByRole("button", { name: "Restart" }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_kill", {
+        sessionId: "pty-2",
+      })
+    );
+    await waitFor(() => expect(spawnCount).toBe(3));
+
+    // Close button invokes onClose.
+    fireEvent.click(screen.getByRole("button", { name: "Close terminal" }));
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+
+    // Unmount kills the currently live PTY session cleanly.
+    unmount();
+    expect(mockInvoke).toHaveBeenCalledWith("terminal_pty_kill", {
+      sessionId: "pty-3",
+    });
+    expect(term.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it("shows provider warning if Explain error is clicked without active provider/model", async () => {
+  it("shows an error alert when terminal_pty_spawn fails", async () => {
     mockInvoke.mockImplementation(async (cmd: string) => {
-      if (cmd === "request_confirmation") return "confirm-4";
-      if (cmd === "terminal_run") {
-        return {
-          run_id: 4,
-          output: "exit code 1",
-          truncated: false,
-          success: false,
+      if (cmd === "terminal_pty_spawn") {
+        throw {
+          kind: "io",
+          message: "the interactive terminal session could not be started",
         };
       }
       return null;
     });
 
-    renderDrawer({ selectedProvider: null, selectedModel: null });
-    fireEvent.change(screen.getByLabelText("Command"), {
-      target: { value: "false" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Run" }));
-
-    const explainBtn = await screen.findByRole("button", {
-      name: "Explain error",
-    });
-    fireEvent.click(explainBtn);
-
-    expect(
-      screen.getByText(
-        "Select a provider and model first (Settings), then explain."
-      )
-    ).toBeInTheDocument();
+    renderDrawer();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "the interactive terminal session could not be started"
+    );
   });
 });
