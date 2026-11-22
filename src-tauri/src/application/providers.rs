@@ -24,7 +24,10 @@
 use serde::Serialize;
 
 use crate::infrastructure::database::{Database, DatabaseError};
+use crate::infrastructure::providers::chatgpt_oauth::ChatGptOAuthStore;
+use crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME as CHATGPT_PLAN_PROVIDER;
 use crate::infrastructure::providers::credentials::{CredentialError, CredentialStore};
+use crate::infrastructure::providers::is_retired_cli_provider;
 use crate::infrastructure::providers::openai::COMPAT_NAME;
 use crate::infrastructure::repository::providers::{Provider, ProviderRepository};
 
@@ -112,11 +115,15 @@ impl<'a> ProviderService<'a> {
     /// Report whether the provider named `name` has a stored credential
     /// (FR-014); presence only, never the secret value.
     ///
-    /// # Errors
-    ///
-    /// Returns [`ProviderError::Credential`] when the OS keyring cannot be
-    /// reached to determine presence.
+    /// Subscription availability is private to its own provider. An unreadable
+    /// subscription grant cannot make other providers unavailable.
     pub(crate) fn has_credentials(name: &str) -> Result<bool> {
+        if is_retired_cli_provider(name) {
+            return Ok(false);
+        }
+        if name == CHATGPT_PLAN_PROVIDER {
+            return Ok(ChatGptOAuthStore::status().is_ok_and(|status| status.connected));
+        }
         Ok(CredentialStore::exists(name)?)
     }
 
@@ -182,7 +189,7 @@ impl<'a> ProviderService<'a> {
         if self.repo.read_by_name(name)?.is_none() {
             return Ok(false);
         }
-        Ok(CredentialStore::exists(name)?)
+        Self::has_credentials(name)
     }
 
     /// List the providers that are available (configured and with credentials),
@@ -197,7 +204,7 @@ impl<'a> ProviderService<'a> {
     pub(crate) fn available(&self) -> Result<Vec<Provider>> {
         let mut available = Vec::new();
         for provider in self.repo.list()? {
-            if CredentialStore::exists(&provider.name)? {
+            if Self::has_credentials(&provider.name)? {
                 available.push(provider);
             }
         }

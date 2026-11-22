@@ -7,10 +7,12 @@ export const en = {
   "sandbox.checking": "Checking isolation…",
   "sandbox.verified": "Isolation verified",
   "sandbox.consent": "Per-command consent",
-  "sandbox.hint": "General shell commands can run automatically in Standard. Dangerous commands still require approval. General shell can update existing ordinary files; creating, deleting or renaming workspace entries is blocked.",
-  "sandbox.failed": "Isolation is unverified. Every shell command requires approval.",
-  "sandbox.unavailable": "Sandbox status is unavailable. Every shell command requires approval.",
-
+  "sandbox.hint":
+    "General shell commands can run automatically in Standard. Dangerous commands still require approval. General shell can update existing ordinary files; creating, deleting or renaming workspace entries is blocked.",
+  "sandbox.failed":
+    "Isolation is unverified. Every shell command requires approval.",
+  "sandbox.unavailable":
+    "Sandbox status is unavailable. Every shell command requires approval.",
 
   "access.legacyAutonomy": "Legacy autonomy",
   "access.label": "Access profile",
@@ -206,7 +208,8 @@ export const en = {
   "conv.responding": "Assistant is responding",
   "conv.agentWorking": "Agent is working",
   "conv.attachmentMissing": "Missing",
-  "conv.attachmentsWaitForRun": "Attachments stay in this draft. Wait for the run to finish, or remove them before clarifying or queuing.",
+  "conv.attachmentsWaitForRun":
+    "Attachments stay in this draft. Wait for the run to finish, or remove them before clarifying or queuing.",
   "conv.attachedFiles": "Attached files",
   "conv.removeFile": "Remove {name}",
   // The field has no chrome of its own (the shell is the control), so the
@@ -236,6 +239,8 @@ export const en = {
   "conv.hintSend": "Enter to send · Shift+Enter for a new line",
   "conv.hintSetup": "Choose a provider and model in Settings to send messages.",
   "conv.openSettings": "Open Settings",
+  "conv.chatgptPlanUsage": "Using your ChatGPT plan",
+  "conv.chatgptPlanManageUsage": "Manage usage",
   "conv.autonomyLabel": "Autonomy",
   "conv.autonomyAria": "Autonomy mode",
   "conv.autonomySupervised": "Supervised",
@@ -296,14 +301,17 @@ export const en = {
   "prompt.autoSelect": "Suggest automatically when the draft names this skill",
   "prompt.include": "Include in message",
   "prompt.path": "Workspace-relative path",
-  "prompt.diffPath": "Workspace-relative file, or leave empty for the working tree",
+  "prompt.diffPath":
+    "Workspace-relative file, or leave empty for the working tree",
   "prompt.symbol": "Exact symbol name",
   "prompt.preview": "Preview",
   "prompt.omitted": "Some items exceeded scope or size limits.",
   "prompt.reviewAction": "Preview a read-only review of the working tree",
   "prompt.reviewTitle": "Review working tree changes",
-  "prompt.reviewScope": "Review uses the changes in the preview and runs in Chat without tools. Enter a tracked file path to narrow the review.",
-  "prompt.reviewPartial": "This preview is partial. Review sends only the changes shown.",
+  "prompt.reviewScope":
+    "Review uses the changes in the preview and runs in Chat without tools. Enter a tracked file path to narrow the review.",
+  "prompt.reviewPartial":
+    "This preview is partial. Review sends only the changes shown.",
   "prompt.sendReview": "Send for review",
   "prompt.reviewFailed": "Could not send the review.",
   "prompt.manageSkills": "View, trust or manage skills",
@@ -313,10 +321,12 @@ export const en = {
   "prompt.kind.symbol": "Include matching lines from a file",
   "prompt.included": "Context included in this message",
   "prompt.remove": "Remove {name} from this message",
-  "prompt.noShell": "Shell commands are unavailable in Agent turns with selected prompt context.",
+  "prompt.noShell":
+    "Shell commands are unavailable in Agent turns with selected prompt context.",
   "prompt.undoAction": "Revert the latest Agent turn with checkpoints",
   "prompt.undoTitle": "Revert the latest saved turn?",
-  "prompt.undoBody": "Restore {count} file checkpoints from this turn. Nexora stops if a target has changed since the checkpoint.",
+  "prompt.undoBody":
+    "Restore {count} file checkpoints from this turn. Nexora stops if a target has changed since the checkpoint.",
   "prompt.undoEmpty": "No Agent turn with changes to revert.",
   "prompt.undoFailed": "Could not load turn checkpoints.",
   "conv.slashTriggerAria": "Slash commands",
@@ -339,8 +349,7 @@ export const en = {
   "conv.mentionChooseFolder": "Choose workspace folder…",
   "conv.mentionRecentFolder": "Recent workspace",
   "conv.mentionAttachment": "Attached file",
-  "conv.mentionEmpty":
-    "No matching context — open a folder or type @path",
+  "conv.mentionEmpty": "No matching context — open a folder or type @path",
   "conv.provenance.manual_override": "Manual",
   "conv.provenance.api_metadata": "API",
   "conv.provenance.built_in_catalog": "Catalog",
@@ -552,8 +561,7 @@ export const en = {
   "ctx.compacting": "Compacting…",
   "ctx.compactedNotice":
     "Context compacted ({summarized} folded, {retained} kept).",
-  "ctx.compactedScheduled":
-    "Compaction scheduled for the next step boundary.",
+  "ctx.compactedScheduled": "Compaction scheduled for the next step boundary.",
   "ctx.compactedNothing": "Nothing older to compact yet.",
   "ctx.compactFailed": "Could not compact context.",
   "ctx.compactedAt": "Compacted ({count})",
@@ -649,6 +657,32 @@ export const en = {
   "settings.connect": "Connect",
   "settings.update": "Update",
   "settings.disconnect": "Disconnect",
+  "settings.chatgptOAuthHeading": "ChatGPT Plus / Pro OAuth (Experimental)",
+  "settings.chatgptOAuthNotice":
+    "Opt-in experimental feature. When you choose ChatGPT subscription and send a request, Nexora sends the conversation context, including relevant history, attachments and tool results, to OpenAI. Nexora stores sign-in tokens in your OS keyring. OpenAI’s Sign in with ChatGPT Terms apply.",
+  "settings.chatgptOAuthOptInLabel":
+    "I understand this is experimental and subject to OpenAI's Terms of Service",
+  "settings.chatgptOAuthConnected": "OAuth connected",
+  "settings.chatgptOAuthNotConnected": "Not connected",
+  "settings.chatgptOAuthActiveHint":
+    "Select ChatGPT subscription as the provider to use your plan allowance.",
+  "settings.chatgptOAuthSignIn": "Sign in with ChatGPT",
+  "settings.chatgptOAuthSigningIn": "Waiting for browser…",
+  "settings.chatgptOAuthRefresh": "Refresh token",
+  "settings.chatgptOAuthDisconnect": "Disconnect OAuth",
+  "settings.chatgptOAuthProviderNote":
+    "Requests to this provider use your ChatGPT plan allowance.",
+  "settings.chatgptOAuthOtherInstance":
+    "ChatGPT sign-in is in use in another Nexora instance",
+  "settings.chatgptOAuthCheckAgain": "Check again",
+  "settings.chatgptOAuthCleanupRequired": "Cleanup required",
+  "settings.chatgptOAuthCleanupHint":
+    "Nexora cannot use the stored connection. Retry cleanup to reconnect.",
+  "settings.chatgptOAuthRetryCleanup": "Retry cleanup",
+  "settings.chatgptOAuthReauthRequired": "Reauthorization required",
+  "settings.chatgptOAuthReauthHint":
+    "Your ChatGPT authorization expired or was revoked. Sign in again to reconnect, or disconnect.",
+  "settings.chatgptOAuthManageUsage": "Manage usage in ChatGPT",
   "settings.dataHint":
     "All application data lives in a single local SQLite database on this device. Nothing is synchronized anywhere. Individual conversations and prompts are managed from the sidebar and Prompt Library.",
   "settings.transfer": "Conversation transfer",
@@ -709,7 +743,8 @@ export const en = {
   "settings.mcpCommandPh": "e.g. npx or /usr/local/bin/mcp-server",
   "settings.mcpArgsLabel": "Arguments (one per line)",
   "settings.mcpArgsPh": "-y\n@example/mcp-server",
-  "settings.mcpEnvLabel": "Environment variables (KEY=VALUE, one per line; non-secret only)",
+  "settings.mcpEnvLabel":
+    "Environment variables (KEY=VALUE, one per line; non-secret only)",
   "settings.mcpEnvPh": "NODE_ENV=production",
   "settings.mcpUrlLabel": "Endpoint URL (https:// or localhost)",
   "settings.mcpUrlPh": "https://mcp.example.com/v1",
@@ -743,11 +778,14 @@ export const en = {
   "settings.mcpToolsFound": "{n} tool(s) discovered",
   "settings.mcpToolsNone": "Connected — server exposed 0 tools.",
   "settings.mcpValidationNameRequired": "Server name is required.",
-  "settings.mcpValidationCommandRequired": "Command is required for stdio servers.",
-  "settings.mcpValidationUrlRequired": "Endpoint URL is required for Streamable HTTP servers.",
+  "settings.mcpValidationCommandRequired":
+    "Command is required for stdio servers.",
+  "settings.mcpValidationUrlRequired":
+    "Endpoint URL is required for Streamable HTTP servers.",
   "settings.mcpValidationOAuthRequired":
     "Authorization URL, Token URL, and Client ID are required when OAuth is enabled.",
-  "settings.mcpValidationEnvFormat": "Each environment line must use KEY=VALUE format.",
+  "settings.mcpValidationEnvFormat":
+    "Each environment line must use KEY=VALUE format.",
   "settings.presetTitle": "Agent preset",
   "settings.presetHint":
     "Stored agent preset override. Unset means the built-in default applies.",
@@ -1144,8 +1182,8 @@ export const en = {
   "vcs.branchDelete": "Delete",
   "vcs.branchDeleting": "Deleting…",
   "vcs.branchForceDeletePrompt":
-    "Branch \"{name}\" has unmerged commits. Force delete permanently removes it.",
-  "vcs.branchForceDeleteConfirm": "Force delete \"{name}\"",
+    'Branch "{name}" has unmerged commits. Force delete permanently removes it.',
+  "vcs.branchForceDeleteConfirm": 'Force delete "{name}"',
   "vcs.cancel": "Cancel",
   "vcs.stashSection": "Stash: {n}",
   "vcs.stashMessagePh": "Optional stash message",
@@ -1156,8 +1194,7 @@ export const en = {
   "vcs.stashPopping": "Popping…",
   "vcs.stashEmpty": "No stashed changes.",
   "vcs.stashPopApplied": "Stash applied cleanly.",
-  "vcs.stashPopConflicts":
-    "Stash popped with {n} conflict(s) — resolve above.",
+  "vcs.stashPopConflicts": "Stash popped with {n} conflict(s) — resolve above.",
   "vcs.reviewSection": "AI /review",
   "vcs.reviewWorking": "Review working tree",
   "vcs.reviewBranch": "Review branch",
@@ -1831,7 +1868,8 @@ export const en = {
   "agent.questionFreeTextPlaceholder": "Type your response…",
   "agent.questionSubmit": "Submit answer",
   "agent.questionSubmitting": "Submitting…",
-  "agent.questionValidationEmpty": "Select an option or enter a response before submitting.",
+  "agent.questionValidationEmpty":
+    "Select an option or enter a response before submitting.",
 
   "composer.clarifyNow": "Clarify now",
   "composer.clarifySent": "Clarification sent to the active run.",
@@ -1840,7 +1878,8 @@ export const en = {
 
   "queue.title": "Queued follow-ups",
   "queue.count": "{count} queued",
-  "queue.pausedBanner": "Queue paused — previous run did not complete. Resume when ready.",
+  "queue.pausedBanner":
+    "Queue paused — previous run did not complete. Resume when ready.",
   "queue.runNext": "Run next",
   "queue.moveUp": "Move up",
   "queue.moveDown": "Move down",

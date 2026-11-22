@@ -34,6 +34,10 @@ const SNAPSHOT: readonly string[] = [
   "attachFile",
   "cancelAgentRun",
   "cancelWorkQueueItem",
+  "chatgptOAuthDisconnect",
+  "chatgptOAuthRefresh",
+  "chatgptOAuthStart",
+  "chatgptOAuthStatus",
   "clarifyAgentRun",
   "clearApplicationData",
   "clearModelCapabilityOverride",
@@ -176,8 +180,8 @@ const SNAPSHOT: readonly string[] = [
   "saveWorkspaceProfile",
   "search",
   "sendMessage",
-  "setCompatConfig",
   "setAccessProfile",
+  "setCompatConfig",
   "setModelCapabilityOverride",
   "setSetting",
   "setWorkspaceRoot",
@@ -239,20 +243,37 @@ it("reads authoritative sandbox status without arguments", async () => {
   expect(invoke).toHaveBeenLastCalledWith("get_sandbox_status");
 });
 
-
 const promptReferences = {
   skills: [{ source_id: "skill-source", revision: "skill-revision" }],
-  contexts: [{ selector: { kind: "file", path: "README.md" }, revision: "file-revision" }],
+  contexts: [
+    {
+      selector: { kind: "file", path: "README.md" },
+      revision: "file-revision",
+    },
+  ],
   review: true,
 } satisfies barrel.PromptReferences;
 
 it("routes Agent attachments and prompt references with the same Plan and effort selection", async () => {
   await barrel.startAgentRun(
-    7, "read these files", "openai", "gpt-4o", "high", true, [12, 13], promptReferences
+    7,
+    "read these files",
+    "openai",
+    "gpt-4o",
+    "high",
+    true,
+    [12, 13],
+    promptReferences
   );
   expect(invoke).toHaveBeenLastCalledWith("start_agent_run", {
-    conversationId: 7, content: "read these files", provider: "openai", model: "gpt-4o",
-    effort: "high", isPlan: true, attachmentIds: [12, 13], promptReferences,
+    conversationId: 7,
+    content: "read these files",
+    provider: "openai",
+    model: "gpt-4o",
+    effort: "high",
+    isPlan: true,
+    attachmentIds: [12, 13],
+    promptReferences,
   });
 });
 
@@ -271,10 +292,22 @@ it("sends empty Agent attachments and null prompt references when callers omit t
 });
 
 it.each([
-  { state: "provided", references: promptReferences, expected: promptReferences },
+  {
+    state: "provided",
+    references: promptReferences,
+    expected: promptReferences,
+  },
   { state: "omitted", references: undefined, expected: null },
 ])("routes $state Chat prompt references", async ({ references, expected }) => {
-  await barrel.sendMessage(7, "read these files", "openai", "gpt-4o", [12], "high", references);
+  await barrel.sendMessage(
+    7,
+    "read these files",
+    "openai",
+    "gpt-4o",
+    [12],
+    "high",
+    references
+  );
   expect(invoke).toHaveBeenLastCalledWith("send_message", {
     conversationId: 7,
     content: "read these files",
@@ -284,4 +317,18 @@ it.each([
     effort: "high",
     promptReferences: expected,
   });
+});
+
+it("routes the ChatGPT OAuth IPC wrappers", async () => {
+  await barrel.chatgptOAuthStatus();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_status");
+
+  await barrel.chatgptOAuthStart();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_start");
+
+  await barrel.chatgptOAuthRefresh();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_refresh");
+
+  await barrel.chatgptOAuthDisconnect();
+  expect(invoke).toHaveBeenLastCalledWith("chatgpt_oauth_disconnect");
 });

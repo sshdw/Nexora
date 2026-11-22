@@ -23,7 +23,7 @@ use crate::application::providers::ProviderHealth;
 use crate::application::providers::ProviderService;
 use crate::application::settings::SettingScope;
 use crate::infrastructure::database::Database;
-use crate::infrastructure::providers::SupportedProvider;
+use crate::infrastructure::providers::{is_retired_cli_provider, SupportedProvider};
 use crate::infrastructure::repository::providers::Provider;
 
 use super::error::{CommandError, ErrorKind};
@@ -87,6 +87,14 @@ pub(crate) fn create_provider(
     display_name: String,
     db: State<'_, Database>,
 ) -> Result<i64, CommandError> {
+    if is_retired_cli_provider(&name)
+        || name.trim() == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME
+    {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "this provider requires its dedicated setup flow",
+        ));
+    }
     ProviderService::new(db.inner())
         .create(&name, &display_name)
         .map_err(Into::into)

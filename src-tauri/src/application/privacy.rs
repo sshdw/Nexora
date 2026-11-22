@@ -201,7 +201,9 @@ pub(crate) fn record(db: &Database, kind: &str) {
 /// Destination host for a supported provider name (static map over the
 /// hardcoded endpoints; the user-configured endpoint has no fixed host).
 fn endpoint_destination(name: &str) -> &'static str {
-    if name == openai::PROVIDER_NAME {
+    if name == openai::PROVIDER_NAME
+        || name == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME
+    {
         "api.openai.com"
     } else if name == anthropic::PROVIDER_NAME {
         "api.anthropic.com"

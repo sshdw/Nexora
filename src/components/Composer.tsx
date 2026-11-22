@@ -64,13 +64,15 @@ import ComposerPromptSheet from "./ComposerPromptSheet";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { formatBytes } from "../lib/format";
-import type {
-  Attachment,
-  AutonomyMode,
-  CompactionResult,
-  ConnectionModelCapabilities,
+import {
+  openExternalUrl,
+  type Attachment,
+  type AutonomyMode,
+  type CompactionResult,
+  type ConnectionModelCapabilities,
 } from "../lib/tauri";
 import type { AutonomyStore } from "../lib/useAutonomy";
+import { CHATGPT_PLAN_PROVIDER } from "../lib/useProviders";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
 import AccessProfileControl from "./AccessProfileControl";
@@ -93,6 +95,7 @@ import {
 } from "./ui/popover";
 import {
   ArrowUpIcon,
+  ChatGptMarkIcon,
   ChevronDownIcon,
   CloseIcon,
   FolderIcon,
@@ -102,6 +105,8 @@ import {
   StopIcon,
   TaskIcon,
 } from "./icons";
+
+const CHATGPT_MANAGE_USAGE_URL = "https://chatgpt.com/#settings";
 
 export interface ComposerProps {
   /** Current draft (lifted so the Prompt Library can stage text). */
@@ -1334,6 +1339,25 @@ export default function Composer({
             to send" restated what the field already does and sat under the
             composer on every screen; the setup hint is the one case where
             the composer cannot work and says what to do about it. */}
+        {selectedConnectionId === CHATGPT_PLAN_PROVIDER && (
+          <div className="nex-composer-plan-bar" role="note">
+            <ChatGptMarkIcon size={16} className="nex-composer-plan-icon" />
+            <span className="nex-composer-plan-text">
+              {t("conv.chatgptPlanUsage")}
+            </span>
+            <a
+              href={CHATGPT_MANAGE_USAGE_URL}
+              rel="noreferrer noopener"
+              className="nex-composer-plan-link"
+              onClick={(event) => {
+                event.preventDefault();
+                void openExternalUrl(CHATGPT_MANAGE_USAGE_URL).catch(() => {});
+              }}
+            >
+              {t("conv.chatgptPlanManageUsage")}
+            </a>
+          </div>
+        )}
         {live && attachments.length > 0 && <p className="nex-composer-hint" role="status">{t("conv.attachmentsWaitForRun")}</p>}
         {!ready && (
           <p className="nex-composer-hint">

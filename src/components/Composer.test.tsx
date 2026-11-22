@@ -53,7 +53,7 @@ import { tr } from "../lib/strings";
 import { REDUCED_MOTION_QUERY } from "../lib/useReducedMotion";
 import type { AutonomyStore } from "../lib/useAutonomy";
 import type { Attachment, PromptSkill } from "../lib/tauri";
-import { listPromptSkills, previewPromptContext, updatePromptSkill, viewPromptSkill } from "../lib/tauri";
+import { listPromptSkills, openExternalUrl, previewPromptContext, updatePromptSkill, viewPromptSkill } from "../lib/tauri";
 import { type ComposerPromptDraft, useComposerContext } from "../lib/useComposerContext";
 import { LOCALE_KEY, LocaleProvider } from "../lib/useLocale";
 import type { WorkspaceStore } from "../lib/useWorkspace";
@@ -63,6 +63,7 @@ import Composer, { type ComposerProps } from "./Composer";
 vi.mock("../lib/tauri", async (importOriginal) => ({
   ...await importOriginal<typeof import("../lib/tauri")>(),
   listPromptSkills: vi.fn().mockResolvedValue([]),
+  openExternalUrl: vi.fn().mockResolvedValue(undefined),
   previewPromptContext: vi.fn(),
   updatePromptSkill: vi.fn(),
   viewPromptSkill: vi.fn(),
@@ -2315,5 +2316,36 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
 
     fireEvent.click(stopBtn);
     expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("displays ChatGPT plan usage notice and Manage usage link at the composer only when ChatGPT subscription is active", () => {
+    vi.mocked(openExternalUrl).mockClear();
+    const { unmount } = renderComposer({
+      selectedConnectionId: "openai",
+      selectedModel: "gpt-5.2",
+    });
+    expect(screen.queryByText("Using your ChatGPT plan")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Manage usage" })).toBeNull();
+    unmount();
+
+    renderComposer({
+      selectedConnectionId: "chatgpt_subscription",
+      selectedModel: "gpt-5.4-plan",
+      connectionGroups: [
+        {
+          connectionId: "chatgpt_subscription",
+          connectionName: "ChatGPT subscription",
+          models: ["gpt-5.4-plan"],
+          modelLabels: { "gpt-5.4-plan": "GPT-5.4" },
+        },
+      ],
+    });
+    expect(screen.getByText("Using your ChatGPT plan")).toBeInTheDocument();
+    const manageLink = screen.getByRole("link", { name: "Manage usage" });
+    expect(manageLink).toHaveAttribute("href", "https://chatgpt.com/#settings");
+    fireEvent.click(manageLink);
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      "https://chatgpt.com/#settings"
+    );
   });
 });

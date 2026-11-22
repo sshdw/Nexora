@@ -22,6 +22,7 @@ use nexora_core::provider::{
 
 use super::anthropic::{AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME};
 use super::catalog::openai::OPENAI_COMPAT_PRESETS;
+use super::chatgpt_plan::{ChatGptPlanExecutor, PROVIDER_NAME as CHATGPT_PLAN_PROVIDER};
 use super::credentials::CredentialStore;
 use super::gemini::{GeminiExecutor, PROVIDER_NAME as GEMINI_PROVIDER_NAME};
 use super::openai::{CompatConfig, OpenAiExecutor, COMPAT_NAME, PROVIDER_NAME};
@@ -41,6 +42,7 @@ impl NexoraProviderExecutors {
     pub(crate) fn new() -> Self {
         let mut registry = ExecutorRegistry::new()
             .with_executor(PROVIDER_NAME, Arc::new(OpenAiExecutor::new()))
+            .with_executor(CHATGPT_PLAN_PROVIDER, Arc::new(ChatGptPlanExecutor::new()))
             .with_executor(ANTHROPIC_PROVIDER_NAME, Arc::new(AnthropicExecutor::new()))
             .with_executor(GEMINI_PROVIDER_NAME, Arc::new(GeminiExecutor::new()));
         for preset in OPENAI_COMPAT_PRESETS {
@@ -195,5 +197,12 @@ mod tests {
                 preset.name
             );
         }
+    }
+
+    #[test]
+    fn registry_keeps_external_cli_adapters_unavailable() {
+        let r = registry();
+        assert!(r.resolve("cli_codex").is_none());
+        assert!(r.resolve("cli_claude").is_none());
     }
 }

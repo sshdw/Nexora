@@ -47,6 +47,7 @@ use crate::application::search::SearchError;
 use crate::application::settings::ScopedSaveError;
 use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
+use crate::infrastructure::providers::chatgpt_oauth::ChatGptOAuthError;
 
 /// Stable, secret-free error categories the frontend can branch on.
 ///
@@ -607,6 +608,34 @@ impl From<McpError> for CommandError {
     }
 }
 
+impl From<ChatGptOAuthError> for CommandError {
+    fn from(err: ChatGptOAuthError) -> Self {
+        match err {
+            ChatGptOAuthError::KeyringUnavailable => {
+                Self::new(ErrorKind::Credential, err.to_string())
+            }
+            ChatGptOAuthError::InvalidEndpoint => {
+                Self::new(ErrorKind::InvalidInput, err.to_string())
+            }
+            ChatGptOAuthError::LoopbackBindFailed
+            | ChatGptOAuthError::BrowserOpenFailed
+            | ChatGptOAuthError::CallbackTimeout
+            | ChatGptOAuthError::StateMismatch
+            | ChatGptOAuthError::AuthorizationDenied
+            | ChatGptOAuthError::MissingCode
+            | ChatGptOAuthError::TokenExchangeFailed
+            | ChatGptOAuthError::TokenRefreshFailed
+            | ChatGptOAuthError::TokenRefreshTransient
+            | ChatGptOAuthError::ReauthorizationRequired
+            | ChatGptOAuthError::ResponseTooLarge
+            | ChatGptOAuthError::NotConnected
+            | ChatGptOAuthError::OtherInstance
+            | ChatGptOAuthError::RevocationUnconfirmed
+            | ChatGptOAuthError::Cancelled => Self::new(ErrorKind::Request, err.to_string()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -671,6 +700,30 @@ mod tests {
                 err.message,
                 "a database operation failed; no data was changed"
             );
+        }
+    }
+
+    #[test]
+    fn chatgpt_oauth_error_mapping_is_classified_and_secret_free() {
+        let keyring_err = CommandError::from(ChatGptOAuthError::KeyringUnavailable);
+        assert_eq!(keyring_err.kind, ErrorKind::Credential);
+
+        let endpoint_err = CommandError::from(ChatGptOAuthError::InvalidEndpoint);
+        assert_eq!(endpoint_err.kind, ErrorKind::InvalidInput);
+
+        for req_err in [
+            ChatGptOAuthError::StateMismatch,
+            ChatGptOAuthError::CallbackTimeout,
+            ChatGptOAuthError::TokenExchangeFailed,
+            ChatGptOAuthError::TokenRefreshFailed,
+            ChatGptOAuthError::TokenRefreshTransient,
+            ChatGptOAuthError::ReauthorizationRequired,
+        ] {
+            let mapped = CommandError::from(req_err);
+            assert_eq!(mapped.kind, ErrorKind::Request);
+            let lower = mapped.message.to_lowercase();
+            assert!(!lower.contains("sk-"));
+            assert!(!lower.contains("bearer"));
         }
     }
 }

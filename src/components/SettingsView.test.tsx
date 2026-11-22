@@ -872,4 +872,13 @@ describe("SettingsView — Stage 4 provenance, scope & capability overrides", ()
       expect(screen.getByText("Source: Catalog")).toBeInTheDocument()
     );
   });
+
+  it("does not advertise deferred External CLI adapters in Settings search", async () => {
+    renderSettings();
+    const search = await screen.findByRole("searchbox", {
+      name: /Search settings/i,
+    });
+    fireEvent.change(search, { target: { value: "External CLI adapters" } });
+    expect(screen.getByText(/No settings match/i)).toBeInTheDocument();
+  });
 });

@@ -944,48 +944,52 @@ pub(crate) fn generate_and_apply_auto_title(
     model: &str,
 ) -> Option<String> {
     let expected_default = should_attempt_auto_title(db, conversation_id)?;
-    let excerpt: String = first_prompt
-        .trim()
-        .chars()
-        .take(AUTO_TITLE_PROMPT_EXCERPT_CHARS)
-        .collect();
-    if excerpt.is_empty() {
-        return None;
-    }
+    let candidate = if provider == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME {
+        fallback_title_from_prompt(first_prompt)?
+    } else {
+        let excerpt: String = first_prompt
+            .trim()
+            .chars()
+            .take(AUTO_TITLE_PROMPT_EXCERPT_CHARS)
+            .collect();
+        if excerpt.is_empty() {
+            return None;
+        }
 
-    let request = AiRequest {
-        provider: provider.to_string(),
-        model: model.to_string(),
-        messages: std::sync::Arc::new(vec![
-            AiMessage {
-                role: AiRole::System,
-                content: AUTO_TITLE_SYSTEM_PROMPT.to_string(),
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            },
-            AiMessage {
-                role: AiRole::User,
-                content: excerpt,
-                attachments: Vec::new(),
-                tool_calls: Vec::new(),
-                tool_result: None,
-            },
-        ]),
-        tools: std::sync::Arc::new(Vec::new()),
-        model_config: Some(
-            ModelConfig::new(model)
-                .with_max_tokens(Some(32))
-                .with_temperature(Some(0.3)),
-        ),
-        request_timeout: Some(AUTO_TITLE_TIMEOUT),
+        let request = AiRequest {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            messages: std::sync::Arc::new(vec![
+                AiMessage {
+                    role: AiRole::System,
+                    content: AUTO_TITLE_SYSTEM_PROMPT.to_string(),
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                },
+                AiMessage {
+                    role: AiRole::User,
+                    content: excerpt,
+                    attachments: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_result: None,
+                },
+            ]),
+            tools: std::sync::Arc::new(Vec::new()),
+            model_config: Some(
+                ModelConfig::new(model)
+                    .with_max_tokens(Some(32))
+                    .with_temperature(Some(0.3)),
+            ),
+            request_timeout: Some(AUTO_TITLE_TIMEOUT),
+        };
+
+        executor
+            .execute(&request)
+            .ok()
+            .and_then(|resp| sanitize_generated_title(&resp.content))
+            .or_else(|| fallback_title_from_prompt(first_prompt))?
     };
-
-    let candidate = executor
-        .execute(&request)
-        .ok()
-        .and_then(|resp| sanitize_generated_title(&resp.content))
-        .or_else(|| fallback_title_from_prompt(first_prompt))?;
 
     if is_default_conversation_title(&candidate) {
         return None;
@@ -2964,6 +2968,25 @@ mod tests {
         assert_eq!(updated.as_deref(), Some("Rust Borrow Checker Lifetimes"));
         let row = ConversationRepository::new(&db).read(id).unwrap().unwrap();
         assert_eq!(row.title, "Rust Borrow Checker Lifetimes");
+    }
+
+    #[test]
+    fn chatgpt_subscription_automatic_title_stays_local() {
+        let db = test_db();
+        let service = ConversationService::new(&db);
+        let id = service.create("New Conversation").unwrap();
+        let prompt = "Explain this example";
+        service.persist_user_message(id, prompt).unwrap();
+        let executor = title_stub_ok("Remote Response");
+        let updated = generate_and_apply_auto_title(
+            &db,
+            &executor,
+            id,
+            prompt,
+            crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME,
+            "fixture-model",
+        );
+        assert_eq!(updated, fallback_title_from_prompt(prompt));
     }
 
     #[test]

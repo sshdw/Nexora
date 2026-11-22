@@ -53,6 +53,19 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       provenance: string;
       has_manual_override: boolean;
     }[],
+    chatgptOAuth: {
+      connected: false,
+      has_refresh_token: false,
+      expires_at: null as number | null,
+      connected_at: null as number | null,
+      auth_mode: "none" as "oauth" | "none",
+      problem: null as
+        | "cleanup_required"
+        | "other_instance"
+        | "reauthorization_required"
+        | null,
+      models: [] as { slug: string; display_name: string }[],
+    },
     refreshedByConnection: new Map<
       string,
       {
@@ -110,6 +123,19 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
             (provider) => provider.id !== (args as { id: number }).id
           );
           return null;
+        case "chatgpt_oauth_status":
+          return JSON.parse(JSON.stringify(state.chatgptOAuth));
+        case "chatgpt_oauth_disconnect":
+          state.chatgptOAuth = {
+            connected: false,
+            has_refresh_token: false,
+            expires_at: null,
+            connected_at: null,
+            auth_mode: "none",
+            problem: null,
+            models: [],
+          };
+          return null;
         case "list_model_capabilities":
           return JSON.parse(JSON.stringify(state.capabilities));
         case "get_model_capabilities": {
@@ -119,8 +145,7 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           };
           return (
             state.capabilities.find(
-              (c) =>
-                c.connection_id === connectionId && c.model_id === modelId
+              (c) => c.connection_id === connectionId && c.model_id === modelId
             ) ?? {
               connection_id: connectionId,
               model_id: modelId,
@@ -144,21 +169,24 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
           return {
             base_url: state.settings.get("openai_compat.base_url") ?? "",
             model: state.settings.get("openai_compat.model") ?? "",
-            organization: state.settings.get("openai_compat.organization") ?? null,
+            organization:
+              state.settings.get("openai_compat.organization") ?? null,
             headers: [],
             supports_tools:
               (state.settings.get("openai_compat.supports_tools") ?? "true") !==
               "false",
           };
         case "set_compat_config": {
-          const cfg = (args as {
-            config: {
-              base_url: string;
-              model: string;
-              organization: string | null;
-              supports_tools: boolean;
-            };
-          }).config;
+          const cfg = (
+            args as {
+              config: {
+                base_url: string;
+                model: string;
+                organization: string | null;
+                supports_tools: boolean;
+              };
+            }
+          ).config;
           state.settings.set("openai_compat.base_url", cfg.base_url);
           state.settings.set("openai_compat.model", cfg.model);
           if (cfg.organization) {
@@ -224,6 +252,15 @@ beforeEach(() => {
     ["provider.model", "gpt-5.2"],
   ]);
   state.capabilities = [];
+  state.chatgptOAuth = {
+    connected: false,
+    has_refresh_token: false,
+    expires_at: null,
+    connected_at: null,
+    auth_mode: "none",
+    problem: null,
+    models: [],
+  };
   state.refreshedByConnection = new Map();
 });
 
@@ -583,22 +620,126 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
     ).toBe(false);
     expect(result.current.selectedProvider).toBe("openai");
   });
+
+  it("disconnects ChatGPT without removing the OpenAI API key, row, or selection", async () => {
+    state.chatgptOAuth = {
+      connected: true,
+      has_refresh_token: true,
+      expires_at: 1_900_000_000,
+      connected_at: 1_899_996_400,
+      auth_mode: "oauth",
+      problem: null,
+      models: [],
+    };
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    mockInvoke.mockClear();
+
+    await act(async () => {
+      await result.current.disconnectChatGptOAuth?.();
+    });
+
+    expect(mockInvoke).toHaveBeenCalledWith("chatgpt_oauth_disconnect");
+    expect(
+      mockInvoke.mock.calls.some(
+        ([command]) => command === "remove_provider_credential"
+      )
+    ).toBe(false);
+    expect(
+      mockInvoke.mock.calls.some(([command]) => command === "remove_provider")
+    ).toBe(false);
+    expect(result.current.selectedProvider).toBe("openai");
+    expect(result.current.providers[0]).toMatchObject({ available: true });
+    expect(result.current.chatgptOAuth?.connected).toBe(false);
+  });
+
+  it("keeps cleanup available when connection status cannot be read", async () => {
+    failNext.command = "chatgpt_oauth_status";
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.chatgptOAuth).toMatchObject({
+      connected: false,
+      problem: "cleanup_required" as const,
+    });
+    expect(result.current.providers[0]).toMatchObject({ available: true });
+  });
+
+  it("rejects stale persisted ChatGPT subscription slugs and exposes returned display names", async () => {
+    state.supported.push({
+      name: "chatgpt_subscription",
+      display_name: "ChatGPT subscription",
+      models: [],
+    });
+    state.configured.push({
+      id: 99,
+      name: "chatgpt_subscription",
+      display_name: "ChatGPT subscription",
+    });
+    state.chatgptOAuth = {
+      connected: true,
+      has_refresh_token: true,
+      expires_at: 1_900_000_000,
+      connected_at: 1_899_996_400,
+      auth_mode: "oauth",
+      problem: null,
+      models: [{ slug: "gpt-5.4-plan", display_name: "GPT-5.4" }],
+    };
+    state.settings.set("provider.selected", "chatgpt_subscription");
+    state.settings.set("provider.model", "stale-retired-slug");
+
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.selectedProvider).toBe("chatgpt_subscription");
+    // Stale persisted slug not in the live visible catalog must be rejected.
+    expect(result.current.selectedModel).toBeNull();
+    const planProvider = result.current.providers.find(
+      (p) => p.supported.name === "chatgpt_subscription"
+    );
+    expect(planProvider?.supported.models).toEqual(["gpt-5.4-plan"]);
+    expect(planProvider?.modelLabels).toEqual({ "gpt-5.4-plan": "GPT-5.4" });
+
+    // Attempting to select a slug outside the visible catalog is rejected.
+    mockInvoke.mockClear();
+    await act(async () => {
+      await result.current.selectModel("unlisted-capability-slug");
+    });
+    expect(result.current.selectedModel).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalledWith("set_setting", {
+      key: "provider.model",
+      value: "unlisted-capability-slug",
+    });
+
+    // Selecting a slug present in the visible catalog succeeds.
+    await act(async () => {
+      await result.current.selectModel("gpt-5.4-plan");
+    });
+    expect(result.current.selectedModel).toBe("gpt-5.4-plan");
+  });
 });
 
 describe("useProviders — OpenAI-compatible validation & config", () => {
   it("enforces strict HTTPS except explicit localhost and rejects embedded credentials", () => {
-    expect(validateCompatBaseUrl("https://api.deepseek.com/v1/chat/completions")).toBeNull();
-    expect(validateCompatBaseUrl("http://localhost:11434/v1/chat/completions")).toBeNull();
-    expect(validateCompatBaseUrl("http://127.0.0.1:8080/v1/chat/completions")).toBeNull();
-    expect(validateCompatBaseUrl("http://[::1]:8080/v1/chat/completions")).toBeNull();
+    expect(
+      validateCompatBaseUrl("https://api.deepseek.com/v1/chat/completions")
+    ).toBeNull();
+    expect(
+      validateCompatBaseUrl("http://localhost:11434/v1/chat/completions")
+    ).toBeNull();
+    expect(
+      validateCompatBaseUrl("http://127.0.0.1:8080/v1/chat/completions")
+    ).toBeNull();
+    expect(
+      validateCompatBaseUrl("http://[::1]:8080/v1/chat/completions")
+    ).toBeNull();
 
     expect(validateCompatBaseUrl("")).toBe("settings.compatErrMissingUrl");
     expect(validateCompatBaseUrl("http://remote.example.com/v1")).toBe(
       "settings.compatErrInsecureHttp"
     );
-    expect(validateCompatBaseUrl("https://user:pass@remote.example.com/v1")).toBe(
-      "settings.compatErrCredentials"
-    );
+    expect(
+      validateCompatBaseUrl("https://user:pass@remote.example.com/v1")
+    ).toBe("settings.compatErrCredentials");
     expect(validateCompatBaseUrl("ftp://remote.example.com/v1")).toBe(
       "settings.compatErrInvalidUrl"
     );
@@ -622,13 +763,14 @@ describe("useProviders — OpenAI-compatible validation & config", () => {
 
     let saved = false;
     await act(async () => {
-      saved = (await result.current.saveCompatConfig?.({
-        base_url: "https://proxy.example.com/v1/chat/completions",
-        model: "custom-deepseek-v4",
-        organization: "org-1",
-        headers: [],
-        supports_tools: true,
-      })) ?? false;
+      saved =
+        (await result.current.saveCompatConfig?.({
+          base_url: "https://proxy.example.com/v1/chat/completions",
+          model: "custom-deepseek-v4",
+          organization: "org-1",
+          headers: [],
+          supports_tools: true,
+        })) ?? false;
     });
 
     expect(saved).toBe(true);

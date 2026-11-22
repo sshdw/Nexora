@@ -511,6 +511,9 @@ fn refresh_connection_metadata_with_execution(
     execution: &RequestExecutionService<'_>,
     connection_id: &str,
 ) -> Result<Vec<ConnectionModelCapabilities>, ExecutorError> {
+    if connection_id == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME {
+        return Err(ExecutorError::InvalidRequest);
+    }
     // Validate compat configuration before any credential lookup or HTTP call.
     let target = compat_metadata_target(db, connection_id)?;
     let credential = execution

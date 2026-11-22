@@ -277,6 +277,7 @@ impl SseParser {
 /// Shared async HTTP client (one per executor, reused across requests).
 pub(crate) struct HttpClient {
     inner: reqwest::Client,
+    stream_attempts: u32,
 }
 
 impl HttpClient {
@@ -284,7 +285,20 @@ impl HttpClient {
     pub(crate) fn new() -> Self {
         Self {
             inner: reqwest::Client::new(),
+            stream_attempts: MAX_SEND_ATTEMPTS,
         }
+    }
+
+    /// Fix the set of hosts to which a subscription bearer can be sent.
+    pub(crate) fn single_stream_attempt() -> Option<Self> {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .ok()
+            .map(|inner| Self {
+                inner,
+                stream_attempts: 1,
+            })
     }
 
     /// Send `request` with cancellable bounded retries (see module docs).
@@ -502,7 +516,7 @@ impl HttpClient {
                     return Err(StreamPostError::Handler(err));
                 }
                 StreamAttemptOutcome::PreNetwork { retryable } => {
-                    if retryable && completed + 1 < MAX_SEND_ATTEMPTS {
+                    if retryable && completed + 1 < self.stream_attempts {
                         completed += 1;
                         if !sleep_cancellable(token, retry_delay(None, completed - 1)) {
                             return Err(StreamPostError::Transport(ExecutorError::Cancelled));
@@ -517,7 +531,7 @@ impl HttpClient {
                     body,
                 } => {
                     let merged = header_retry_after.or_else(|| extract_retry_after(&body));
-                    if is_retryable_status(status) && completed + 1 < MAX_SEND_ATTEMPTS {
+                    if is_retryable_status(status) && completed + 1 < self.stream_attempts {
                         completed += 1;
                         if !sleep_cancellable(token, retry_delay(merged, completed - 1)) {
                             return Err(StreamPostError::Transport(ExecutorError::Cancelled));

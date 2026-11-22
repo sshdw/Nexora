@@ -149,13 +149,48 @@ export function removeProviderCredential(provider: string): Promise<void> {
   return invoke<void>("remove_provider_credential", { provider });
 }
 
+// ---- Opt-in ChatGPT Plus/Pro OAuth (`S11-11a`) -------------------------
+// Tokens live strictly in the OS secure keyring; IPC only carries status.
+
+/** Secret-free connection status for opt-in ChatGPT Plus/Pro OAuth. */
+export interface ChatGptOAuthStatus {
+  connected: boolean;
+  has_refresh_token: boolean;
+  expires_at: number | null;
+  connected_at: number | null;
+  auth_mode: "oauth" | "none";
+  problem:
+    | "cleanup_required"
+    | "other_instance"
+    | "reauthorization_required"
+    | null;
+  models: { slug: string; display_name: string }[];
+}
+
+/** Read secret-free ChatGPT OAuth status from the OS keyring. */
+export function chatgptOAuthStatus(): Promise<ChatGptOAuthStatus> {
+  return invoke<ChatGptOAuthStatus>("chatgpt_oauth_status");
+}
+
+/** Start interactive opt-in ChatGPT Plus/Pro OAuth 2.0 + PKCE sign-in. */
+export function chatgptOAuthStart(): Promise<ChatGptOAuthStatus> {
+  return invoke<ChatGptOAuthStatus>("chatgpt_oauth_start");
+}
+
+/** Refresh stored ChatGPT OAuth tokens in the OS keyring. */
+export function chatgptOAuthRefresh(): Promise<ChatGptOAuthStatus> {
+  return invoke<ChatGptOAuthStatus>("chatgpt_oauth_refresh");
+}
+
+/** Disconnect opt-in ChatGPT OAuth (removes keyring tokens; keeps API keys). */
+export function chatgptOAuthDisconnect(): Promise<void> {
+  return invoke<void>("chatgpt_oauth_disconnect");
+}
+
 // ---- (connection_id, model_id) Capability Catalog & Provenance --------
 
 export type CapabilityProvenance =
-  | "manual_override"
-  | "api_metadata"
-  | "built_in_catalog"
-  | "unknown";
+  "manual_override" | "api_metadata" | "built_in_catalog" | "unknown";
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh";
 
@@ -205,15 +240,12 @@ export function setModelCapabilityOverride(
   overrideSpec: ModelCapabilityOverride | null,
   scope?: SettingScope
 ): Promise<ConnectionModelCapabilities> {
-  return invoke<ConnectionModelCapabilities>(
-    "set_model_capability_override",
-    {
-      connectionId,
-      modelId,
-      overrideSpec,
-      scope: scope ?? null,
-    }
-  );
+  return invoke<ConnectionModelCapabilities>("set_model_capability_override", {
+    connectionId,
+    modelId,
+    overrideSpec,
+    scope: scope ?? null,
+  });
 }
 
 /** Clear a manual capability override for `(connectionId, modelId)` in `scope`. */

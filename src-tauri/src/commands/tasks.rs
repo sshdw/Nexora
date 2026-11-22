@@ -175,6 +175,13 @@ pub(crate) async fn start_task_run(app: AppHandle, task_id: i64) -> Result<(), C
             ));
         };
 
+        if provider == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME {
+            return Err(CommandError::new(
+                ErrorKind::InvalidInput,
+                "ChatGPT subscription is available for interactive conversations only",
+            ));
+        }
+
         // 2. Resolve the credential inside the backend (FR-014 path shared
         //    with plain chat and agent runs). The value lives only inside
         //    the loop thread.

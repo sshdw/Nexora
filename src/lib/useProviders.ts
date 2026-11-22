@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import {
+  type ChatGptOAuthStatus,
   type CommandError,
   type CompatConfig,
   type CompatStatus,
@@ -20,6 +21,10 @@ import {
   type SettingScope,
   type SupportedProvider,
   addProviderCredential,
+  chatgptOAuthDisconnect,
+  chatgptOAuthRefresh,
+  chatgptOAuthStart,
+  chatgptOAuthStatus,
   clearModelCapabilityOverride,
   compatStatus as fetchCompatStatus,
   createProvider,
@@ -46,6 +51,7 @@ const SELECTED_MODEL_KEY = "provider.model";
 const SELECTED_EFFORT_KEY = "provider.effort";
 const VALID_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 const OPENAI_COMPAT_PROVIDER = "openai_compat";
+export const CHATGPT_PLAN_PROVIDER = "chatgpt_subscription";
 
 export type CompatUrlErrorKey =
   | "settings.compatErrMissingUrl"
@@ -117,7 +123,10 @@ function isValidPort(port: string): boolean {
   return parsed >= 1 && parsed <= 65535;
 }
 
-/** Merge static provider models with metadata-discovered capability models. */
+/** Merge static provider models with metadata-discovered capability models.
+ *  For `chatgpt_subscription`, the visible account catalog returned by the
+ *  backend is the single source of truth — stale or capability-only slugs are
+ *  never merged because the executor rejects them. */
 export function mergeConnectionModels(
   staticModels: readonly string[],
   connectionId: string,
@@ -135,6 +144,9 @@ export function mergeConnectionModels(
     }
   };
   for (const model of staticModels) pushUnique(model);
+  if (connectionId === CHATGPT_PLAN_PROVIDER) {
+    return merged;
+  }
   pushUnique(extraModel);
   for (const cap of capabilities) {
     if (cap.connection_id === connectionId) pushUnique(cap.model_id);
@@ -158,6 +170,8 @@ export function isCustomModelId(value: string): boolean {
 export interface ProviderStatus {
   /** Build-supported provider definition. */
   supported: SupportedProvider;
+  /** Optional display labels keyed by model slug (e.g. ChatGPT account catalog). */
+  modelLabels?: Readonly<Record<string, string>>;
   /** Whether a `providers` row exists for this provider. */
   configured: boolean;
   /** Whether the OS keyring holds a credential for this provider. */
@@ -224,6 +238,17 @@ export interface ProvidersStore {
   ) => Promise<boolean>;
   /** Remove the provider definition and its keyring credential. */
   disconnect: (name: string) => Promise<void>;
+  /** Secret-free status of opt-in ChatGPT Plus/Pro OAuth (`S11-11a`). */
+  chatgptOAuth?: ChatGptOAuthStatus | null;
+  /** True while an opt-in ChatGPT OAuth flow/refresh/disconnect is running. */
+  chatgptOAuthWorking?: boolean;
+  /** Start interactive opt-in ChatGPT Plus/Pro OAuth 2.0 + PKCE sign-in. */
+  startChatGptOAuth?: () => Promise<boolean>;
+  /** Refresh stored opt-in ChatGPT OAuth tokens in the OS keyring. */
+  refreshChatGptOAuth?: () => Promise<boolean>;
+  /** Disconnect opt-in ChatGPT OAuth (removes OS keyring tokens). */
+  disconnectChatGptOAuth?: () => Promise<void>;
+  /** Detected external CLI adapters (`codex` / `claude`) & opt-in state (`S11-11b`). */
 }
 
 export function useProviders(): ProvidersStore {
@@ -243,6 +268,11 @@ export function useProviders(): ProvidersStore {
   const [compatConfig, setCompatConfig] = useState<CompatConfig | null>(null);
   const [compatStatus, setCompatStatus] = useState<CompatStatus | null>(null);
   const [compatSaving, setCompatSaving] = useState<boolean>(false);
+  const [chatgptOAuth, setChatGptOAuth] = useState<ChatGptOAuthStatus | null>(
+    null
+  );
+  const [chatgptOAuthWorking, setChatGptOAuthWorking] =
+    useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<CommandError | null>(null);
   const [working, setWorking] = useState<boolean>(false);
@@ -267,22 +297,41 @@ export function useProviders(): ProvidersStore {
         modelSetting,
         effortSetting,
         capList,
+        oauthStatus,
       ] = await Promise.all([
         supportedProviders(),
         listProviders(),
         getSetting(SELECTED_PROVIDER_KEY),
         getSetting(SELECTED_MODEL_KEY),
         getSetting(SELECTED_EFFORT_KEY).catch(() => null),
-        listModelCapabilities().catch(() => [] as ConnectionModelCapabilities[]),
+        listModelCapabilities().catch(
+          () => [] as ConnectionModelCapabilities[]
+        ),
+        chatgptOAuthStatus().catch(() => ({
+          connected: false,
+          has_refresh_token: false,
+          expires_at: null,
+          connected_at: null,
+          auth_mode: "none" as const,
+          problem: "cleanup_required" as const,
+          models: [],
+        })),
       ]);
       setSupported(defs);
       setConfiguredProviders(configured);
+      setChatGptOAuth(
+        oauthStatus && typeof oauthStatus.connected === "boolean"
+          ? oauthStatus
+          : null
+      );
 
-      // Credential presence is checked per provider (values never leave the
-      // keyring; only presence is reported).
+      // Credential presence is checked per API provider (values never leave the
+      // keyring; only presence is reported). ChatGPT subscription credentials
+      // are managed through OAuth status above.
       const credentialed = new Set<string>();
       await Promise.all(
         defs.map(async (provider) => {
+          if (provider.name === CHATGPT_PLAN_PROVIDER) return;
           if (await hasProviderCredential(provider.name))
             credentialed.add(provider.name);
         })
@@ -292,24 +341,31 @@ export function useProviders(): ProvidersStore {
       // FR-012: a persisted selection only becomes active state if it still
       // belongs to the supported provider/model domains; anything else (a
       // stale or hand-edited value) falls back to the default (no selection).
-      // A valid custom model ID persists like a listed one.
+      // For `chatgpt_subscription`, ONLY models present in the live visible
+      // account catalog are valid; custom/stale slugs are rejected.
       const validProvider = defs.some(
         (provider) => provider.name === providerSetting
       )
         ? providerSetting
         : null;
+      const planCatalogSlugs =
+        oauthStatus && oauthStatus.connected && Array.isArray(oauthStatus.models)
+          ? oauthStatus.models.map((model) => model.slug)
+          : [];
       const validModel =
         modelSetting === null
           ? null
-          : defs.some((provider) => provider.models.includes(modelSetting)) ||
-              isCustomModelId(modelSetting)
-            ? modelSetting
-            : null;
+          : validProvider === CHATGPT_PLAN_PROVIDER
+            ? planCatalogSlugs.includes(modelSetting)
+              ? modelSetting
+              : null
+            : defs.some((provider) => provider.models.includes(modelSetting)) ||
+                isCustomModelId(modelSetting)
+              ? modelSetting
+              : null;
       const validEffort =
         effortSetting !== null &&
-        VALID_EFFORTS.includes(
-          effortSetting as (typeof VALID_EFFORTS)[number]
-        )
+        VALID_EFFORTS.includes(effortSetting as (typeof VALID_EFFORTS)[number])
           ? effortSetting
           : null;
       setSelectedProvider(validProvider);
@@ -321,8 +377,7 @@ export function useProviders(): ProvidersStore {
         validProvider &&
         validModel &&
         !capList.some(
-          (c) =>
-            c.connection_id === validProvider && c.model_id === validModel
+          (c) => c.connection_id === validProvider && c.model_id === validModel
         )
       ) {
         const single = await getModelCapabilities(
@@ -349,18 +404,32 @@ export function useProviders(): ProvidersStore {
     }
   }, [selectedProvider, loadCompatState]);
 
+  const planCatalogSlugs = useMemo(
+    () =>
+      chatgptOAuth?.connected
+        ? (chatgptOAuth.models ?? []).map((model) => model.slug)
+        : [],
+    [chatgptOAuth]
+  );
+
   const selectProvider = useCallback(
     async (name: string): Promise<void> => {
       setError(null);
       try {
         // Keep the persisted model valid: clear it when the newly selected
         // provider does not support the previously selected model — except a
-        // valid custom model ID, which is provider-independent and kept.
+        // valid custom model ID on non-plan providers. For ChatGPT
+        // subscription, only the visible account catalog is authoritative.
         const def = supported.find((provider) => provider.name === name);
+        const allowedModels =
+          name === CHATGPT_PLAN_PROVIDER
+            ? planCatalogSlugs
+            : (def?.models ?? []);
         const nextModel =
           def &&
           selectedModel &&
-          (def.models.includes(selectedModel) || isCustomModelId(selectedModel))
+          (allowedModels.includes(selectedModel) ||
+            (name !== CHATGPT_PLAN_PROVIDER && isCustomModelId(selectedModel)))
             ? selectedModel
             : null;
         if (nextModel !== selectedModel) {
@@ -373,7 +442,7 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [supported, selectedModel]
+    [supported, selectedModel, planCatalogSlugs]
   );
 
   const loadModelCapabilitiesIfMissing = useCallback(
@@ -407,9 +476,15 @@ export function useProviders(): ProvidersStore {
     async (model: string, providerId?: string): Promise<void> => {
       setError(null);
       try {
+        const targetProvider = providerId ?? selectedProvider;
+        if (
+          targetProvider === CHATGPT_PLAN_PROVIDER &&
+          !planCatalogSlugs.includes(model)
+        ) {
+          return;
+        }
         await setSetting(SELECTED_MODEL_KEY, model);
         setSelectedModel(model);
-        const targetProvider = providerId ?? selectedProvider;
         if (targetProvider) {
           await loadModelCapabilitiesIfMissing(targetProvider, model);
         }
@@ -417,13 +492,19 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [selectedProvider, loadModelCapabilitiesIfMissing]
+    [selectedProvider, planCatalogSlugs, loadModelCapabilitiesIfMissing]
   );
 
   const selectProviderAndModel = useCallback(
     async (providerId: string, model: string): Promise<void> => {
       setError(null);
       try {
+        if (
+          providerId === CHATGPT_PLAN_PROVIDER &&
+          !planCatalogSlugs.includes(model)
+        ) {
+          return;
+        }
         if (providerId !== selectedProvider) {
           await setSetting(SELECTED_PROVIDER_KEY, providerId);
           setSelectedProvider(providerId);
@@ -435,7 +516,7 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [selectedProvider, loadModelCapabilitiesIfMissing]
+    [selectedProvider, planCatalogSlugs, loadModelCapabilitiesIfMissing]
   );
 
   const selectEffort = useCallback(
@@ -619,24 +700,102 @@ export function useProviders(): ProvidersStore {
     [configuredProviders, selectedProvider, reload]
   );
 
+  const startChatGptOAuth = useCallback(async (): Promise<boolean> => {
+    setChatGptOAuthWorking(true);
+    setError(null);
+    try {
+      const next = await chatgptOAuthStart();
+      setChatGptOAuth(next);
+      await reload();
+      return true;
+    } catch (e) {
+      setError(toCommandError(e));
+      return false;
+    } finally {
+      setChatGptOAuthWorking(false);
+    }
+  }, [reload]);
+
+  const refreshChatGptOAuth = useCallback(async (): Promise<boolean> => {
+    setChatGptOAuthWorking(true);
+    setError(null);
+    try {
+      const next = await chatgptOAuthRefresh();
+      setChatGptOAuth(next);
+      return true;
+    } catch (e) {
+      await reload();
+      setError(toCommandError(e));
+      return false;
+    } finally {
+      setChatGptOAuthWorking(false);
+    }
+  }, [reload]);
+
+  const disconnectChatGptOAuth = useCallback(async (): Promise<void> => {
+    setChatGptOAuthWorking(true);
+    setError(null);
+    try {
+      await chatgptOAuthDisconnect();
+      if (selectedProvider === CHATGPT_PLAN_PROVIDER) {
+        await setSetting(SELECTED_PROVIDER_KEY, null);
+        await setSetting(SELECTED_MODEL_KEY, null);
+      }
+      await reload();
+    } catch (e) {
+      await reload();
+      setError(toCommandError(e));
+    } finally {
+      setChatGptOAuthWorking(false);
+    }
+  }, [selectedProvider, reload]);
+
   // Memoized derivation (NEX-FE-002 audit): without this the `providers`
   // array — and therefore the whole store — is a fresh reference every
   // render, defeating the store memo below.
   const providers: ProviderStatus[] = useMemo(
     () =>
-      supported.map((definition) => ({
-        supported: definition,
-        configured: configuredProviders.some(
+      supported.map((definition) => {
+        const isConfigured = configuredProviders.some(
           (provider) => provider.name === definition.name
-        ),
-        credentialed: credentialedNames.has(definition.name),
-        available:
-          credentialedNames.has(definition.name) &&
-          configuredProviders.some(
-            (provider) => provider.name === definition.name
-          ),
-      })),
-    [supported, configuredProviders, credentialedNames]
+        );
+        const credentialed =
+          definition.name === CHATGPT_PLAN_PROVIDER
+            ? Boolean(chatgptOAuth?.connected)
+            : credentialedNames.has(definition.name);
+        const visiblePlanModels =
+          definition.name === CHATGPT_PLAN_PROVIDER && chatgptOAuth?.connected
+            ? (chatgptOAuth.models ?? [])
+            : [];
+        const models =
+          definition.name === CHATGPT_PLAN_PROVIDER
+            ? visiblePlanModels.map((model) => model.slug)
+            : definition.models;
+        const modelLabels =
+          definition.name === CHATGPT_PLAN_PROVIDER &&
+          visiblePlanModels.length > 0
+            ? Object.fromEntries(
+                visiblePlanModels.map((model) => [
+                  model.slug,
+                  model.display_name,
+                ])
+              )
+            : undefined;
+        return {
+          supported:
+            definition.name === CHATGPT_PLAN_PROVIDER
+              ? { ...definition, models }
+              : definition,
+          modelLabels,
+          configured: isConfigured,
+          credentialed,
+          available:
+            isConfigured &&
+            credentialed &&
+            (definition.name !== CHATGPT_PLAN_PROVIDER || models.length > 0),
+        };
+      }),
+    [supported, configuredProviders, credentialedNames, chatgptOAuth]
   );
 
   const selectedCapabilities = useMemo(() => {
@@ -661,6 +820,8 @@ export function useProviders(): ProvidersStore {
       compatConfig,
       compatStatus,
       compatSaving,
+      chatgptOAuth,
+      chatgptOAuthWorking,
       loading,
       error,
       working,
@@ -675,6 +836,9 @@ export function useProviders(): ProvidersStore {
       saveCompatConfig,
       connect,
       disconnect,
+      startChatGptOAuth,
+      refreshChatGptOAuth,
+      disconnectChatGptOAuth,
     }),
     [
       providers,
@@ -686,6 +850,8 @@ export function useProviders(): ProvidersStore {
       compatConfig,
       compatStatus,
       compatSaving,
+      chatgptOAuth,
+      chatgptOAuthWorking,
       loading,
       error,
       working,
@@ -700,6 +866,9 @@ export function useProviders(): ProvidersStore {
       saveCompatConfig,
       connect,
       disconnect,
+      startChatGptOAuth,
+      refreshChatGptOAuth,
+      disconnectChatGptOAuth,
     ]
   );
 }

@@ -13,6 +13,8 @@
 
 pub mod anthropic;
 pub mod catalog;
+pub mod chatgpt_oauth;
+pub mod chatgpt_plan;
 pub mod credentials;
 pub mod gemini;
 pub mod metadata;
@@ -21,6 +23,10 @@ pub mod registry;
 pub mod transport;
 
 use serde::Serialize;
+
+pub(crate) fn is_retired_cli_provider(provider: &str) -> bool {
+    matches!(provider.trim(), "cli_codex" | "cli_claude")
+}
 
 /// A supported AI provider definition, exposed for the UI (DATABASE.md §7.5).
 ///
@@ -114,6 +120,11 @@ fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str
             gemini::SUPPORTED_MODELS,
         ),
     ];
+    schemas.push((
+        chatgpt_plan::PROVIDER_NAME,
+        chatgpt_plan::PROVIDER_DISPLAY_NAME,
+        &[],
+    ));
     for preset in catalog::openai::OPENAI_COMPAT_PRESETS {
         schemas.push((preset.name, preset.display_name, preset.models));
     }
@@ -130,7 +141,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn supported_providers_lists_sixteen() {
+    fn supported_providers_list() {
         let providers = supported_providers();
         let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
@@ -139,6 +150,7 @@ mod tests {
                 "openai",
                 "anthropic",
                 "gemini",
+                "chatgpt_subscription",
                 "xkiro",
                 "openrouter",
                 "nvidia",
@@ -161,7 +173,7 @@ mod tests {
                 "nvidia" | "opencode_zen" => 5,
                 "deepseek" | "minimax" => 2,
                 "qwen" | "moonshot" | "groq" | "mistral" => 4,
-                "openai_compat" => 0,
+                "openai_compat" | "chatgpt_subscription" => 0,
                 _ => 3,
             };
             assert_eq!(
@@ -171,7 +183,7 @@ mod tests {
                 provider.name,
                 provider.models.len()
             );
-            if provider.name == "openai_compat" {
+            if expected == 0 {
                 continue;
             }
             assert!(
