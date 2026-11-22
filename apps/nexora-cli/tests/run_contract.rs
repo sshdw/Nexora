@@ -1,15 +1,18 @@
-//! Phase 4a contract (issue #163, brief §17 items 3/10/15): the `run`
-//! foundation never opens a TUI on redirected output, emits no ANSI or secret
-//! bytes in any mode, and exits through the shared 0–5 table.
+//! Real-run contract (issue #163 4b, brief §17 items 3/10/15): `run` never
+//! opens a TUI on redirected output, emits no ANSI or secret bytes in any mode,
+//! and exits through the shared 0–5 table.
 //!
-//! The shipped host is intentionally unavailable, so no frame is fabricated:
-//! `run` exits `2` (usage) with a fixed stderr message. Every child uses
-//! `env_clear()` and an isolated synthetic app-data base, plus a bounded
-//! wait — no real provider, keyring value, personal app data, or hang.
+//! With no provider configured the real host fails before any agent starts:
+//! `run` exits `2` (usage) with a fixed stderr message and no frames. Every
+//! child uses `env_clear()` and an isolated synthetic app-data base, plus a
+//! bounded wait — no real provider, keyring value, personal app data, or hang.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+
+use nexora_core::storage::repository::settings::SettingsRepository;
+use nexora_core::storage::Database;
 
 const PLANTED_SECRETS: &[&str] = &[
     "sk-ant-testsecret-0000000000000001",
@@ -156,7 +159,11 @@ fn run_with_redirected_output_never_starts_a_tui() {
             &base,
             true,
         );
-        assert_eq!(output.status.code(), Some(2), "unavailable host -> usage");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "no provider configured -> usage"
+        );
         let stdout = stdout_text(&output);
         assert!(
             stdout.is_empty()
@@ -168,9 +175,33 @@ fn run_with_redirected_output_never_starts_a_tui() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// A real run may create/open the shared store to persist its conversation and
+/// run row, but a CLI override must never become a persisted setting.
+fn assert_no_run_overrides(db_path: &Path) {
+    if !db_path.exists() {
+        return;
+    }
+    let conn = rusqlite::Connection::open(db_path).expect("open synthetic store");
+    let db = Database::new(conn);
+    for key in [
+        nexora_core::config::AUTONOMY_KEY,
+        nexora_core::config::SELECTED_PROVIDER_KEY,
+        nexora_core::config::SELECTED_MODEL_KEY,
+        nexora_core::config::SPEND_LIMIT_KEY,
+    ] {
+        assert_eq!(
+            SettingsRepository::new(&db)
+                .get(key)
+                .expect("settings read"),
+            None,
+            "run override leaked into app_settings under {key}"
+        );
+    }
+}
+
 #[test]
-fn run_unavailable_host_is_honest_and_secret_free() {
-    let (base, dir) = sandbox("unavailable");
+fn run_without_a_provider_is_honest_and_secret_free() {
+    let (base, dir) = sandbox("unconfigured");
     let db_path = dir.join(nexora_core::storage::app_data::DB_FILE_NAME);
 
     let output = run(
@@ -188,10 +219,13 @@ fn run_unavailable_host_is_honest_and_secret_free() {
         &base,
         true,
     );
-    assert_eq!(output.status.code(), Some(2), "no fabricated success exit");
+    // An explicit provider override reaches credential resolution, which
+    // fails before any agent starts because this synthetic store has no
+    // provider row: provider/network/auth failures map to exit 3.
+    assert_eq!(output.status.code(), Some(3), "no fabricated success exit");
     let stderr = stderr_text(&output);
     assert!(
-        stderr.contains("agent execution is not available in this CLI build yet"),
+        stderr.contains("the selected provider could not be used"),
         "fixed honesty message missing:\n{stderr}"
     );
     assert!(
@@ -199,17 +233,14 @@ fn run_unavailable_host_is_honest_and_secret_free() {
         "safety hint must survive --verbose:\n{stderr}"
     );
     assert!(
-        stderr.contains("diagnostic category: InvalidInput"),
+        stderr.contains("diagnostic category: Request"),
         "verbose adds fixed classification only:\n{stderr}"
     );
     assert!(
         stdout_text(&output).is_empty(),
         "no frames means no stdout bytes"
     );
-    assert!(
-        !db_path.exists(),
-        "run overrides must never write settings or create a database"
-    );
+    assert_no_run_overrides(&db_path);
     assert_no_leak(&output);
 
     // --quiet keeps the error and the approval hint, and is equally silent.
@@ -220,9 +251,10 @@ fn run_unavailable_host_is_honest_and_secret_free() {
     );
     assert_eq!(quiet.status.code(), Some(2));
     let quiet_stderr = stderr_text(&quiet);
-    assert!(quiet_stderr.contains("not available in this CLI build"));
+    assert!(quiet_stderr.contains("no provider is selected"));
     assert!(quiet_stderr.contains("no approval was granted"));
     assert!(stdout_text(&quiet).is_empty());
+    assert_no_run_overrides(&db_path);
     assert_no_leak(&quiet);
     let _ = std::fs::remove_dir_all(&base);
 }
@@ -257,12 +289,12 @@ fn run_flag_redaction_sweep() {
         assert_eq!(output.status.code(), Some(2), "flags must be rejected");
         let combined = format!("{}{}", stdout_text(&output), stderr_text(&output));
         // A hostile *prompt* is accepted (it is never echoed); its outcome is
-        // the honest unavailable-host failure. Every hostile flag value is
+        // the honest no-provider failure. Every hostile flag value is
         // rejected with a redacted, loud diagnostic.
         assert!(
             combined.contains("[redacted]")
                 || combined.contains("not supported")
-                || combined.contains("not available in this CLI build")
+                || combined.contains("no provider is selected")
                 || combined.contains("workspace path failed syntax validation"),
             "rejection must be loud: {args:?}\n{combined}"
         );

@@ -1,25 +1,25 @@
-//! `nexora run` — the phase 4a foundation (issue #163, brief §9.2–9.5/§11/§17).
+//! `nexora run` — machine output over the real shared agent backend
+//! (issue #163 4b, brief §9.2–9.5/§11/§17).
 //!
-//! This module is deliberately *only* the part of `run` that does not need an
-//! agent backend:
+//! The Clap surface, the bounded stdin-prompt fallback and the pure validation
+//! domain are unchanged from the foundation stage. What changed is the host:
 //!
-//! - a full Clap flag surface with a bounded stdin-prompt fallback that never
-//!   waits on an interactive terminal;
-//! - pure validation against the shared catalog/config domains. CLI overrides
-//!   are validated into a local [`LaunchSettings`] value and are **never**
-//!   written back to settings — no `config::set`/`store::write` reachable here;
-//! - a CLI-local [`RunHost`] seam. [`UnavailableRunHost`] is the shipped host:
-//!   it returns a fixed, honest failure. [`ScriptedRunHost`] exists only under
-//!   `cfg(test)` and supplies deterministic frames (including a terminal one)
-//!   so the seam and render ordering are testable without an agent;
+//! - [`CliAgentHost`] is the shipped [`AgentRunHost`] implementation. It emits
+//!   each real [`RunFrame`] verbatim (serde `tag = "type"`, `snake_case`) into
+//!   a std `mpsc` channel, which the [`RunHost`] seam drains on the calling
+//!   thread until the forwarder's terminal `Finished` frame. The agent loop
+//!   and the forwarder still live on plain std threads owned by the runtime;
+//! - CLI overrides are validated into a local [`LaunchSettings`] value and
+//!   are **never** written back to `app_settings`. The launch is recorded
+//!   through the existing `agent_runs` repository by the runtime bridge;
+//! - non-interactive approval is fail-closed: the first
+//!   `ApprovalRequested`/`QuestionRequested` governance frame cancels the run
+//!   through the shared registry, never auto-approves, and exits `4` with the
+//!   fixed safety hint on stderr;
 //! - versioned machine output. Every JSON object / JSONL line carries
 //!   `schema_version: 1`; stdout is machine-only (no prose, ANSI, prompt,
 //!   argv, paths, or secrets) and every diagnostic goes through the curated
 //!   [`CliError`] path on stderr.
-//!
-//! The later extraction stage replaces only [`host`] with a real backend and
-//! maps richer failures through the same `CliExitCode` table. Nothing here
-//! invents agent states, steps, approvals, or a success path.
 //!
 //! `RunArgs`/`RunHost` keep their contract names even though this module is
 //! named `run`; that repetition is intentional API vocabulary, not a smell.
@@ -27,14 +27,30 @@
 
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Read};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use nexora_core::catalog;
 use nexora_core::config as core_config;
-use nexora_core::error::CoreErrorKind;
+use nexora_core::error::{CliExitCode, CliRunOutcome, CoreErrorKind};
+use nexora_runtime::application::agent::approval::AutonomyMode;
+use nexora_runtime::application::agent::control::AgentRunEvent;
+use nexora_runtime::application::agent::service::{
+    resolve_preset_for_workspace, resolve_spend_limit_for_workspace, start_run_with_options,
+    AgentRunHost, AgentRunRegistry, AgentRunRequest, RunFrame, RunLaunchOptions,
+};
+use nexora_runtime::application::conversations::ConversationService;
+use nexora_runtime::application::execution::{
+    ProviderExecutor, RequestError, RequestExecutionService,
+};
+use nexora_runtime::infrastructure::database::Database;
+use nexora_runtime::infrastructure::providers::registry::execution_sources;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::error::{is_secret_shaped, safe_key_label, CliError};
+use crate::provider_reactor::TokioSpawner;
 
 /// Version of the machine-output envelope. Bump only on a breaking schema
 /// change; scripts branch on this field.
@@ -50,10 +66,17 @@ pub(crate) const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 const MICRO_USD_PER_USD: u64 = 1_000_000;
 const MAX_BUDGET_FRACTION_DIGITS: usize = 6;
 
-/// Fixed failure text. No host data, no argv, no prompt, no path, no secret.
-const UNAVAILABLE_MESSAGE: &str = "agent execution is not available in this CLI build yet; \
-     this stage ships parsing/validation/machine output only";
-/// Safety hint appended to every host failure. `--quiet` never removes it.
+/// Fixed failure texts. No host data, no argv, no prompt, no path, no secret.
+const PROVIDER_MESSAGE: &str = "the selected provider could not be used; no approval was granted";
+const CREDENTIAL_MESSAGE: &str =
+    "a provider credential was missing or unavailable; no secret was read";
+const DATABASE_MESSAGE: &str = "a database operation failed; no setting was changed";
+const INTERNAL_MESSAGE: &str = "the agent run could not be started; no approval was granted";
+const VALIDATION_MESSAGE: &str = "the requested workspace cannot be used as an agent workspace";
+const NO_PROVIDER_MESSAGE: &str =
+    "no provider is selected; pass --provider or set one with `nexora config set`";
+const NO_MODEL_MESSAGE: &str =
+    "no model is selected for this provider; pass --model or set one with `nexora config set`";
 const NO_APPROVAL_HINT: &str = "no approval was granted; no settings were changed";
 
 // ---------------------------------------------------------------------------
@@ -521,11 +544,20 @@ pub(crate) struct WireFrame {
     fields: serde_json::Map<String, Value>,
 }
 
-// Constructors are the seam's public envelope API: used by the scripted test
-// host today and by the real host in the later extraction. The shipped host
-// emits no frames at all, so they are unused in this stage's binary.
-#[allow(dead_code)]
+// Constructors are the seam's envelope API: used by the scripted test host and
+// by the real host's verbatim frame mapping.
 impl WireFrame {
+    /// Serialize a real runtime frame verbatim. `RunFrame` is internally
+    /// tagged (`"type"`) with `snake_case` fields; `to_value` preserves that
+    /// shape exactly. No field is renamed, dropped, or reclassified here.
+    pub(crate) fn from_run_frame(frame: &RunFrame) -> Self {
+        let serde_json::Value::Object(fields) = serde_json::to_value(frame).unwrap_or_default()
+        else {
+            return Self::new("event");
+        };
+        Self { fields }
+    }
+
     /// Create an envelope with a `type` discriminator supplied by the host.
     pub(crate) fn new(event_type: &str) -> Self {
         let mut fields = serde_json::Map::new();
@@ -534,6 +566,7 @@ impl WireFrame {
     }
 
     /// Add one `snake_case` field. Callers supply only host-owned safe values.
+    #[cfg(test)]
     pub(crate) fn with(mut self, key: &str, value: Value) -> Self {
         self.fields.insert(key.to_string(), value);
         self
@@ -560,34 +593,205 @@ pub(crate) struct RunFailure {
 }
 
 impl RunFailure {
-    fn unavailable() -> Self {
+    #[cfg(test)]
+    fn validation(message: &str) -> Self {
         Self {
             kind: CoreErrorKind::InvalidInput,
-            message: UNAVAILABLE_MESSAGE.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    fn provider() -> Self {
+        Self {
+            kind: CoreErrorKind::Request,
+            message: PROVIDER_MESSAGE.to_string(),
+        }
+    }
+
+    fn credential() -> Self {
+        Self {
+            kind: CoreErrorKind::Credential,
+            message: CREDENTIAL_MESSAGE.to_string(),
+        }
+    }
+
+    fn database() -> Self {
+        Self {
+            kind: CoreErrorKind::Database,
+            message: DATABASE_MESSAGE.to_string(),
+        }
+    }
+
+    fn internal() -> Self {
+        Self {
+            kind: CoreErrorKind::Io,
+            message: INTERNAL_MESSAGE.to_string(),
+        }
+    }
+
+    /// A pre-spawn runtime failure, mapped without ever formatting the error:
+    /// classified error payloads can carry provider text, so only the variant
+    /// decides the (fixed) CLI message.
+    fn from_agent_run_error(
+        error: &nexora_runtime::application::agent::service::AgentRunError,
+    ) -> Self {
+        use nexora_runtime::application::agent::service::AgentRunError as E;
+        match error {
+            E::WorkspaceProtected => Self {
+                kind: CoreErrorKind::InvalidInput,
+                message: VALIDATION_MESSAGE.to_string(),
+            },
+            E::Request(_) => Self::provider(),
+            E::Database(_) | E::RunNotPersisted | E::ThreadSpawn(_) | E::Attachment(_) => {
+                Self::database()
+            }
+            E::ConversationNotFound { .. }
+            | E::RunAlreadyActive { .. }
+            | E::RunNotFound { .. }
+            | E::RunNotInterrupted { .. } => Self::internal(),
         }
     }
 }
 
-/// The CLI-local seam a real agent backend will implement in a later stage.
+/// Map a classified request-execution failure without formatting its payload.
+fn from_request_error(error: &RequestError) -> RunFailure {
+    match error {
+        RequestError::Credential(_)
+        | RequestError::MissingCredentials { .. }
+        | RequestError::ProviderUnavailable { .. } => RunFailure::credential(),
+        RequestError::UnknownProvider { .. }
+        | RequestError::ExecutorUnavailable { .. }
+        | RequestError::InvalidCompatEndpoint { .. }
+        | RequestError::Execution { .. }
+        | RequestError::Database(_) => RunFailure::provider(),
+    }
+}
+
+/// The CLI-local seam over the real agent backend.
 ///
-/// `Send + Sync` lets the phase-5 TUI call it from its run thread through a
-/// shared `&'static dyn RunHost`. `request_cancel` has a default no-op so the
-/// shipped/thin hosts stay valid: the TUI still shows honest `cancel pending`
-/// feedback, and a real backend overrides it with an actual cancellation.
+/// `Send + Sync` lets the TUI call it from its run thread through a shared
+/// `&'static dyn RunHost`. `request_cancel` reaches the live run through the
+/// process-wide registry, so a cancel gesture is a real core cancellation, not
+/// UI-only feedback.
 pub(crate) trait RunHost: Send + Sync {
     fn start(&self, launch: &LaunchSettings) -> Result<Vec<WireFrame>, RunFailure>;
 
-    /// Ask a running agent to cancel. One request per cancel gesture; the
-    /// shipped host has nothing to cancel, so the default is a no-op.
+    /// Ask the active run to cancel. Idempotent: repeats are swallowed by the
+    /// UI before reaching here, and the registry tolerates them regardless.
     fn request_cancel(&self) {}
 }
 
-/// Shipped host: honest, fixed failure. Starts nothing, grants nothing.
-pub(crate) struct UnavailableRunHost;
+/// Process-wide run registry. Shared with the TUI's approval/pause/resume/cancel
+/// paths so every surface governs the same live run.
+static REGISTRY: OnceLock<Arc<AgentRunRegistry>> = OnceLock::new();
 
-impl RunHost for UnavailableRunHost {
+pub(crate) fn registry() -> Arc<AgentRunRegistry> {
+    Arc::clone(REGISTRY.get_or_init(|| Arc::new(AgentRunRegistry::default())))
+}
+
+/// The run id started by the most recent `start` (0 when none). Atomic because
+/// `request_cancel` may be called from the TUI input loop on another thread.
+static ACTIVE_RUN_ID: AtomicI64 = AtomicI64::new(0);
+
+fn install_provider_sources() {
+    // The composition root installs the HTTP reactor + keyring credential
+    // source exactly once per process. A repeated call (several `run`
+    // invocations in one process, or a test that already installed sources)
+    // is harmless: the already-installed sources are the correct ones.
+    let (executors, credentials) = execution_sources(Arc::new(TokioSpawner));
+    let _ =
+        nexora_runtime::application::execution::install_execution_sources(executors, credentials);
+}
+
+/// Whether a governance frame is an interactive gate the CLI must never answer
+/// on the user's behalf. Returns the owning run id.
+fn gated_run_id(frame: &RunFrame) -> Option<i64> {
+    match frame {
+        RunFrame::Governance { run_id, event, .. } if gated_event(event) => Some(*run_id),
+        _ => None,
+    }
+}
+
+fn gated_event(event: &AgentRunEvent) -> bool {
+    matches!(
+        event,
+        AgentRunEvent::ApprovalRequested { .. } | AgentRunEvent::QuestionRequested { .. }
+    )
+}
+
+/// The shipped host: a thin adapter from the runtime's `AgentRunHost` frames to
+/// the CLI's versioned machine-output seam. Per-run instances carry a clone of
+/// the frame sender (so one can be handed to the runtime's run/forwarder
+/// threads); the `'static` seam instance is stateless.
+#[derive(Clone)]
+pub(crate) struct CliAgentHost {
+    registry: Arc<AgentRunRegistry>,
+    tx: mpsc::Sender<WireFrame>,
+}
+
+impl CliAgentHost {
+    fn new() -> (Self, mpsc::Receiver<WireFrame>) {
+        let (tx, rx) = mpsc::channel();
+        (
+            Self {
+                registry: registry(),
+                tx,
+            },
+            rx,
+        )
+    }
+}
+
+impl AgentRunHost for CliAgentHost {
+    fn emit(&self, frame: &RunFrame) {
+        // Non-interactive approval fail-closed: the first gate frame cancels
+        // the run through the shared registry. The runner then emits an honest
+        // `Cancelled` terminal outcome; no approval is ever auto-granted.
+        if let Some(run_id) = gated_run_id(frame) {
+            let _ = self.registry.cancel(run_id);
+        }
+        // Best effort: a disconnected receiver means the caller stopped
+        // draining, which never affects the run itself.
+        let _ = self.tx.send(WireFrame::from_run_frame(frame));
+    }
+
+    fn persist_assistant_message(
+        &self,
+        conversation_id: i64,
+        content: &str,
+        provider: &str,
+        model: &str,
+    ) {
+        let Ok(db) = crate::store::open_run_db() else {
+            return;
+        };
+        let _ = ConversationService::new(&db).persist_assistant_message(
+            conversation_id,
+            content,
+            provider,
+            model,
+        );
+    }
+
+    fn checkpoint_store(
+        &self,
+    ) -> Option<nexora_runtime::application::agent::checkpoints::CheckpointStore> {
+        // Fail-closed `PerCommandConsent` gating: no verified checkpoint store
+        // from the CLI, so dangerous commands still require approval.
+        None
+    }
+
+    // `on_run_completed` stays at its no-op default: the CLI owns no work queue.
+}
+
+/// Deterministic failure host for the validation/diagnostic tests.
+#[cfg(test)]
+pub(crate) struct ScriptedFailureHost;
+
+#[cfg(test)]
+impl RunHost for ScriptedFailureHost {
     fn start(&self, _launch: &LaunchSettings) -> Result<Vec<WireFrame>, RunFailure> {
-        Err(RunFailure::unavailable())
+        Err(RunFailure::validation("scripted host failure"))
     }
 }
 
@@ -614,6 +818,161 @@ impl ScriptedRunHost {
 impl RunHost for ScriptedRunHost {
     fn start(&self, _launch: &LaunchSettings) -> Result<Vec<WireFrame>, RunFailure> {
         Ok(self.frames.clone())
+    }
+}
+
+/// Resolve the provider from a validated CLI override, else from the shared
+/// settings store. Never writes settings: an override stays in this process.
+fn resolve_provider(launch: &LaunchSettings) -> Result<String, RunFailure> {
+    if let Some(provider) = &launch.provider {
+        return Ok(provider.clone());
+    }
+    match crate::store::read(core_config::SELECTED_PROVIDER_KEY) {
+        Ok(Some(provider)) if catalog::is_supported_provider(&provider) => Ok(provider),
+        _ => Err(RunFailure {
+            kind: CoreErrorKind::InvalidInput,
+            message: NO_PROVIDER_MESSAGE.to_string(),
+        }),
+    }
+}
+
+/// Resolve the model from a validated CLI override, else the persisted
+/// selection, else the provider's first catalog model. Never writes settings.
+fn resolve_model(launch: &LaunchSettings, provider: &str) -> Result<String, RunFailure> {
+    if let Some(model) = &launch.model {
+        return Ok(model.clone());
+    }
+    if let Ok(Some(model)) = crate::store::read(core_config::SELECTED_MODEL_KEY) {
+        if catalog::is_listed_model(&model)
+            || catalog::models_for_provider(provider)
+                .iter()
+                .any(|info| info.name == model)
+            || core_config::is_valid_custom_model_id(&model)
+        {
+            return Ok(model);
+        }
+    }
+    catalog::models_for_provider(provider)
+        .into_iter()
+        .next()
+        .map(|info| info.name)
+        .ok_or_else(|| RunFailure {
+            kind: CoreErrorKind::InvalidInput,
+            message: NO_MODEL_MESSAGE.to_string(),
+        })
+}
+
+/// Map a validated autonomy string onto the runtime's ladder. The CLI's
+/// validation domain and the core domain are the same three values.
+fn autonomy_mode(mode: &str) -> AutonomyMode {
+    match mode {
+        "supervised" => AutonomyMode::Supervised,
+        "full_autonomous" => AutonomyMode::FullAutonomous,
+        _ => AutonomyMode::SemiAutonomous,
+    }
+}
+
+impl RunHost for CliAgentHost {
+    fn start(&self, launch: &LaunchSettings) -> Result<Vec<WireFrame>, RunFailure> {
+        // Composition root for the CLI process: installs the scoped Tokio HTTP
+        // reactor and the OS-keyring credential source exactly once.
+        install_provider_sources();
+        Self::start_real(launch, None, None, None)
+    }
+
+    fn request_cancel(&self) {
+        let run_id = ACTIVE_RUN_ID.load(Ordering::Acquire);
+        if run_id > 0 {
+            let _ = self.registry.cancel(run_id);
+        }
+    }
+}
+
+impl CliAgentHost {
+    /// The real run path. Every injected argument is a test seam: `db` uses an
+    /// in-memory/shared synthetic database, `executor` is a scripted
+    /// `ProviderExecutor`, and `credential` is a stub value. None of them is
+    /// reachable from `RunHost::start`, which always uses the real DB, the real
+    /// provider registry and the real keyring seam.
+    #[allow(clippy::too_many_lines)]
+    fn start_real(
+        launch: &LaunchSettings,
+        db: Option<Database>,
+        executor: Option<Arc<dyn ProviderExecutor + Send + Sync>>,
+        credential: Option<String>,
+    ) -> Result<Vec<WireFrame>, RunFailure> {
+        let db = match db {
+            Some(db) => db,
+            None => crate::store::open_run_db().map_err(|_| RunFailure::database())?,
+        };
+        let provider = resolve_provider(launch)?;
+        let model = resolve_model(launch, &provider)?;
+
+        let executor = match executor {
+            Some(executor) => executor,
+            None => RequestExecutionService::new(&db)
+                .resolve_executor_for(&provider)
+                .map_err(|err| from_request_error(&err))?,
+        };
+        let secret = match credential {
+            Some(secret) => secret,
+            None => RequestExecutionService::new(&db)
+                .resolve_credential(&provider)
+                .map_err(|err| from_request_error(&err))?,
+        };
+
+        let workspace = launch.workspace.as_ref().map_or_else(
+            || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            PathBuf::from,
+        );
+        let mode = autonomy_mode(&launch.mode);
+        // Read-only resolution from the shared settings tiers: a CLI override
+        // never reaches any settings writer.
+        let preset = resolve_preset_for_workspace(&db, Some(&workspace));
+        let spend_limit = launch
+            .budget_micro_usd
+            .or_else(|| resolve_spend_limit_for_workspace(&db, Some(&workspace)));
+        let conversation_id = ConversationService::new(&db)
+            .create("CLI run")
+            .map_err(|_| RunFailure::database())?;
+
+        let request = AgentRunRequest {
+            conversation_id,
+            user_request: launch.prompt.clone(),
+            provider,
+            model,
+            credential: secret,
+            max_iterations: Some(usize::try_from(launch.max_steps).unwrap_or(usize::MAX)),
+            spend_limit_micro_usd: spend_limit,
+        };
+        let (host, rx) = Self::new();
+        let run_id = start_run_with_options(
+            &db,
+            Arc::clone(&host.registry),
+            Arc::new(host.clone()) as Arc<dyn AgentRunHost>,
+            executor,
+            workspace,
+            request,
+            mode,
+            preset,
+            RunLaunchOptions::default(),
+        )
+        .map_err(|err| RunFailure::from_agent_run_error(&err))?;
+        ACTIVE_RUN_ID.store(run_id, Ordering::Release);
+
+        // std-only drain on the calling thread: `recv` ends when the runtime's
+        // forwarder drops its sender, and the forwarder guarantees `Finished`
+        // is the last frame. No Tokio, no busy loop, no fabricated terminal.
+        let mut frames = Vec::new();
+        for frame in rx {
+            let terminal = frame.get("type").and_then(Value::as_str) == Some("finished");
+            frames.push(frame);
+            if terminal {
+                break;
+            }
+        }
+        ACTIVE_RUN_ID.store(0, Ordering::Release);
+        Ok(frames)
     }
 }
 
@@ -691,13 +1050,66 @@ pub(crate) fn render_machine(frames: &[WireFrame], format: OutputFormat) -> Stri
     }
 }
 
-/// The only host implementation linked into the shipped binary. A later,
-/// separately authorized stage swaps this for the extracted real host.
-/// `pub(crate)` so the TUI's run thread can drive the same seam (no parallel
-/// event model).
+/// The only host implementation linked into the shipped binary. `pub(crate)`
+/// so the TUI's run thread drives the same seam (no parallel event model).
 pub(crate) fn host() -> &'static dyn RunHost {
-    static HOST: UnavailableRunHost = UnavailableRunHost;
+    // Keep the receiver alive alongside the stateless seam host: any frame an
+    // external caller emits through this handle is drained instead of silently
+    // dropped, and `request_cancel` still reaches the global registry.
+    static HOST: OnceLock<(CliAgentHost, Mutex<mpsc::Receiver<WireFrame>>)> = OnceLock::new();
     &HOST
+        .get_or_init(|| {
+            let (host, rx) = CliAgentHost::new();
+            (host, Mutex::new(rx))
+        })
+        .0
+}
+
+/// The result of a real `run`: machine stdout, the shared exit code, and an
+/// optional fixed stderr notice (the non-interactive approval hint).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunOutcome {
+    pub(crate) text: String,
+    pub(crate) code: CliExitCode,
+    pub(crate) notice: Option<String>,
+}
+
+/// Whether the stream carried a governance gate that the CLI could not answer.
+fn saw_gate(frames: &[WireFrame]) -> bool {
+    frames.iter().any(|frame| {
+        frame.get("type").and_then(Value::as_str) == Some("governance")
+            && matches!(
+                frame
+                    .get("event")
+                    .and_then(|e| e.get("type"))
+                    .and_then(Value::as_str),
+                Some("approval_requested" | "question_requested")
+            )
+    })
+}
+
+/// Map the terminal frame's persisted status onto the shared 0–5 table. A
+/// missing non-terminal frame fails closed as `Internal` — never a fake zero.
+fn exit_code_for_frames(frames: &[WireFrame]) -> CliExitCode {
+    let Some(last) = frames.last() else {
+        return CliExitCode::Internal;
+    };
+    if last.get("type").and_then(Value::as_str) != Some("finished") {
+        return CliExitCode::Internal;
+    }
+    let status = last
+        .get("event")
+        .and_then(|event| event.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("error");
+    let outcome = match status {
+        "completed" => CliRunOutcome::Completed,
+        "cancelled" => CliRunOutcome::Cancelled,
+        "budget_exhausted" => CliRunOutcome::BudgetExhausted,
+        "spend_limit_exceeded" => CliRunOutcome::SpendLimitExceeded,
+        _ => CliRunOutcome::Provider,
+    };
+    CliExitCode::for_run_outcome(outcome)
 }
 
 /// Build validated launch settings for a task submitted from the TUI. Uses the
@@ -730,8 +1142,10 @@ pub(crate) fn tui_launch(
     validate(&args, &caps, prompt)
 }
 
-/// Command entry point: resolve prompt, validate, then hand off to the host.
-pub(crate) fn execute(args: &RunArgs, caps: &CapabilityArgs) -> Result<String, CliError> {
+/// Command entry point: resolve prompt, validate, then hand off to the real
+/// host. Validation and pre-spawn failures keep the `CliError` path; terminal
+/// run statuses map onto the shared exit table via [`RunOutcome`].
+pub(crate) fn execute(args: &RunArgs, caps: &CapabilityArgs) -> Result<RunOutcome, CliError> {
     let prompt = resolve_prompt(
         args.prompt.clone(),
         io::stdin().is_terminal(),
@@ -741,15 +1155,27 @@ pub(crate) fn execute(args: &RunArgs, caps: &CapabilityArgs) -> Result<String, C
     let frames = host()
         .start(&launch)
         .map_err(|failure| host_failure(failure, &launch))?;
-    Ok(render_machine(&frames, launch.format))
+    let code = exit_code_for_frames(&frames);
+    let notice =
+        (code == CliExitCode::Cancelled && saw_gate(&frames)).then(|| NO_APPROVAL_HINT.to_string());
+    Ok(RunOutcome {
+        text: render_machine(&frames, launch.format),
+        code,
+        notice,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
+    use std::collections::VecDeque;
 
     use clap::Parser;
     use nexora_core::error::CliExitCode;
+    use nexora_core::storage::database::in_memory_database;
+    use nexora_core::storage::repository::agent_runs::AgentRunRepository;
+    use nexora_core::storage::repository::settings::SettingsRepository;
+    use nexora_runtime::application::execution::{AiResponse, ExecutorError, ToolCall};
 
     use super::*;
     use crate::{Cli, Commands};
@@ -1176,12 +1602,12 @@ mod tests {
     fn quiet_keeps_errors_and_approval_hints() {
         let settings = quiet_launch(true, false);
         assert!(settings.quiet);
-        let failure = UnavailableRunHost
+        let failure = ScriptedFailureHost
             .start(&settings)
-            .expect_err("honest failure");
+            .expect_err("scripted failure");
         let err = host_failure(failure, &settings);
         assert_eq!(err.exit_code(), CliExitCode::Usage);
-        assert!(err.message.contains("not available in this CLI build"));
+        assert!(err.message.contains("scripted host failure"));
         assert!(
             err.message.contains("no approval was granted"),
             "quiet must not suppress safety hints: {}",
@@ -1197,9 +1623,9 @@ mod tests {
             .start(&settings)
             .expect("scripted frames");
         let machine = render_machine(&frames, OutputFormat::Jsonl);
-        let failure = UnavailableRunHost
+        let failure = ScriptedFailureHost
             .start(&settings)
-            .expect_err("honest failure");
+            .expect_err("scripted failure");
         let diagnostic = host_failure(failure, &settings).message;
         let combined = format!("{machine}{diagnostic}");
         assert!(diagnostic.contains("diagnostic category: InvalidInput"));
@@ -1222,5 +1648,235 @@ mod tests {
             last.contains("\"status\":\"completed\""),
             "terminal frame must render last: {last}"
         );
+    }
+
+    // ---- real host over the shared runtime (scripted provider, no network) --
+
+    // The process-wide registry claims conversation ids; every in-memory test
+    // database starts at id 1, so real-host tests must not overlap.
+    static REAL_HOST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScriptedExecutor {
+        steps: Mutex<VecDeque<Result<AiResponse, ExecutorError>>>,
+    }
+
+    impl ScriptedExecutor {
+        fn new(steps: Vec<Result<AiResponse, ExecutorError>>) -> Self {
+            Self {
+                steps: Mutex::new(steps.into()),
+            }
+        }
+    }
+
+    impl ProviderExecutor for ScriptedExecutor {
+        fn execute(
+            &self,
+            _request: &nexora_runtime::application::execution::AiRequest,
+            _credential: &str,
+            _token: &nexora_runtime::application::agent::control::CancellationToken,
+        ) -> Result<AiResponse, ExecutorError> {
+            self.steps
+                .lock()
+                .expect("script lock")
+                .pop_front()
+                .unwrap_or(Err(ExecutorError::Failure))
+        }
+    }
+
+    fn text_response(content: &str) -> AiResponse {
+        AiResponse {
+            content: content.to_string(),
+            model: "test-model".to_string(),
+            tool_calls: Vec::new(),
+            usage: None,
+        }
+    }
+
+    fn tool_response(name: &str, tool: &str, arguments: &str) -> AiResponse {
+        AiResponse {
+            content: String::new(),
+            model: "test-model".to_string(),
+            tool_calls: vec![ToolCall {
+                id: format!("{name}-1"),
+                name: tool.to_string(),
+                arguments: arguments.to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        }
+    }
+
+    fn real_launch(
+        mode: &str,
+        prompt: &str,
+        workspace: Option<&std::path::Path>,
+    ) -> LaunchSettings {
+        let mut args = minimal_args();
+        args.provider = Some("openai".to_string());
+        args.model = Some("gpt-5.6-terra".to_string());
+        args.mode = Some(mode.to_string());
+        args.workspace = workspace.map(|path| path.to_string_lossy().into_owned());
+        validate(&args, &minimal_caps(), prompt.to_string()).expect("valid real launch")
+    }
+
+    fn synthetic_workspace(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("nexora-cli-real-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("synthetic workspace");
+        dir
+    }
+
+    #[test]
+    fn real_host_emits_verbatim_frames_and_terminal_last() {
+        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let db = in_memory_database();
+        let executor: Arc<dyn ProviderExecutor + Send + Sync> =
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response("all done"))]));
+        let launch = real_launch("semi_autonomous", "do work", None);
+        let frames = CliAgentHost::start_real(
+            &launch,
+            Some(db),
+            Some(executor),
+            Some("stub-credential-value".to_string()),
+        )
+        .expect("real run over scripted provider");
+
+        let rendered = render_machine(&frames, OutputFormat::Jsonl);
+        let objects: Vec<Value> = rendered
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one object per line"))
+            .collect();
+        assert!(!objects.is_empty(), "the real bridge must emit frames");
+        assert!(
+            objects
+                .iter()
+                .all(|object| object["schema_version"] == json!(MACHINE_SCHEMA_VERSION)),
+            "every real frame carries the version stamp"
+        );
+        assert!(
+            objects.iter().any(|object| object["type"] == "step"),
+            "the persisted step must reach stdout verbatim: {rendered}"
+        );
+        let last = objects.last().expect("terminal frame");
+        assert_eq!(last["type"], json!("finished"));
+        assert_eq!(last["event"]["status"], json!("completed"));
+        assert!(!rendered.contains('\u{1b}'), "no ANSI in machine output");
+        assert!(!rendered.contains("stub-credential-value"));
+        assert_eq!(exit_code_for_frames(&frames), CliExitCode::Ok);
+    }
+
+    #[test]
+    fn real_host_plain_text_is_no_ansi_and_carries_no_credential() {
+        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let db = in_memory_database();
+        let executor: Arc<dyn ProviderExecutor + Send + Sync> = Arc::new(ScriptedExecutor::new(
+            vec![Err(ExecutorError::Authentication)],
+        ));
+        let launch = real_launch("supervised", "plain text run", None);
+        let frames =
+            CliAgentHost::start_real(&launch, Some(db), Some(executor), Some(SECRET.to_string()))
+                .expect("classified provider failure still emits frames");
+        for format in [OutputFormat::Text, OutputFormat::Json, OutputFormat::Jsonl] {
+            let rendered = render_machine(&frames, format);
+            assert!(!rendered.contains('\u{1b}'), "{format:?} emitted ANSI");
+            assert!(
+                !rendered.contains(SECRET),
+                "{format:?} leaked the credential"
+            );
+        }
+        assert_eq!(exit_code_for_frames(&frames), CliExitCode::Provider);
+    }
+
+    #[test]
+    fn launch_settings_are_recorded_without_writing_overrides() {
+        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let db = in_memory_database();
+        let executor: Arc<dyn ProviderExecutor + Send + Sync> =
+            Arc::new(ScriptedExecutor::new(vec![Ok(text_response("done"))]));
+        let launch = real_launch("full_autonomous", "record the launch", None);
+        let _ = CliAgentHost::start_real(
+            &launch,
+            Some(db.clone()),
+            Some(executor),
+            Some("stub".to_string()),
+        )
+        .expect("run");
+
+        let runs = AgentRunRepository::new(&db)
+            .list_runs_by_started_at_desc()
+            .expect("read runs");
+        let run = runs.first().expect("one persisted run");
+        assert_eq!(run.model, "gpt-5.6-terra", "model recorded on the run row");
+        assert_eq!(run.mode, "full_autonomous", "mode recorded on the run row");
+        assert_eq!(run.status, "completed");
+        // A CLI override is never persisted into app_settings.
+        for key in [
+            nexora_core::config::AUTONOMY_KEY,
+            nexora_core::config::SELECTED_PROVIDER_KEY,
+            nexora_core::config::SELECTED_MODEL_KEY,
+            nexora_core::config::SPEND_LIMIT_KEY,
+        ] {
+            assert_eq!(
+                SettingsRepository::new(&db)
+                    .get(key)
+                    .expect("settings read"),
+                None,
+                "CLI must not write {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn approval_request_fails_closed_and_exits_distinct_from_provider_failure() {
+        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let workspace = synthetic_workspace("approval");
+        let db = in_memory_database();
+        let executor: Arc<dyn ProviderExecutor + Send + Sync> =
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(tool_response("gate", "write_file", r#"{"path":"a.txt"}"#)),
+                Ok(text_response("must never run")),
+            ]));
+        let launch = real_launch("supervised", "needs approval", Some(&workspace));
+        let frames =
+            CliAgentHost::start_real(&launch, Some(db), Some(executor), Some("stub".to_string()))
+                .expect("run is cancelled, not a pre-spawn failure");
+
+        assert!(saw_gate(&frames), "the gate frame must be emitted");
+        assert_eq!(exit_code_for_frames(&frames), CliExitCode::Cancelled);
+        let rendered = render_machine(&frames, OutputFormat::Jsonl);
+        assert!(
+            rendered.contains("approval_requested"),
+            "honest governance event: {rendered}"
+        );
+        assert!(
+            !rendered.contains("\"approved\":true"),
+            "no auto-approval may be fabricated: {rendered}"
+        );
+        assert!(
+            !workspace.join("a.txt").exists(),
+            "the gated tool must never dispatch"
+        );
+        let hint = NO_APPROVAL_HINT;
+        assert!(hint.contains("no approval was granted"));
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn terminal_status_exit_codes_are_pinned() {
+        let cases = [
+            ("completed", CliExitCode::Ok),
+            ("cancelled", CliExitCode::Cancelled),
+            ("budget_exhausted", CliExitCode::Budget),
+            ("spend_limit_exceeded", CliExitCode::Budget),
+            ("error", CliExitCode::Provider),
+        ];
+        for (status, expected) in cases {
+            let frames = vec![WireFrame::new("finished").with("event", json!({"status": status}))];
+            assert_eq!(exit_code_for_frames(&frames), expected, "status {status}");
+        }
+        assert_eq!(exit_code_for_frames(&[]), CliExitCode::Internal);
+        let non_terminal = vec![WireFrame::new("run_started")];
+        assert_eq!(exit_code_for_frames(&non_terminal), CliExitCode::Internal);
     }
 }

@@ -1,16 +1,13 @@
-//! `nexora` — the Nexora CLI adapter (phase 0 stub, phase 3 provider surface,
-//! phase 4a `run` foundation).
+//! `nexora` — the Nexora CLI adapter (shared-facts surface, real `run`, TUI).
 //!
-//! Offline and TUI-free by construction: argument parsing is pure [`clap`],
-//! `doctor` performs local read-only checks, and the phase-3 commands
-//! (`providers`, `models`, `config`) project shared facts from
-//! [`nexora_core`]. `run` (phase 4a) parses and validates a launch and renders
-//! versioned machine output; the shipped host honestly reports that agent
-//! execution is not available in this build yet — no step, tool call,
-//! approval, or success is fabricated. The phase-5 interactive TUI opens only
-//! for a bare `nexora` on three real terminals; redirected/piped invocations
-//! still exit with usage guidance and emit zero escape bytes. No branch here
-//! touches the network or prints a secret.
+//! Argument parsing is pure [`clap`]; `doctor` performs local read-only checks,
+//! and the provider/model/config commands project shared facts from
+//! [`nexora_core`]. `run` drives the real shared agent backend through the CLI
+//! host and renders versioned machine output — no step, tool call, approval or
+//! success is fabricated. The interactive TUI opens only for a bare `nexora`
+//! on three real terminals; redirected/piped invocations still exit with usage
+//! guidance and emit zero escape bytes. No branch here prints a secret, and
+//! Tokio is confined to the provider HTTP reactor.
 //!
 //! Process exit codes come from [`nexora_core::error::CliExitCode`] — the
 //! versioned 0–5 CLI contract (brief §9.4, plan §5) — so the CLI cannot invent
@@ -23,6 +20,7 @@ mod config;
 mod doctor;
 mod error;
 mod models;
+mod provider_reactor;
 mod providers;
 mod run;
 mod store;
@@ -49,7 +47,7 @@ use error::CliError;
         interactive TUI is not part of this build: a bare `nexora` exits with\n\
         usage guidance, including when output is redirected.",
     after_help = "Commands: run, doctor, providers list, models list, config get|set, auth set.\n\
-        `sessions`, `diff`, and the interactive TUI land in later phases."
+        `sessions` and `diff` are available inside the interactive TUI."
 )]
 struct Cli {
     /// Terminal capability overrides (global: valid before or after a command).
@@ -62,10 +60,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Parse and validate a task launch, then emit its machine output.
-    ///
-    /// This build ships the parsing/validation/machine-output foundation only:
-    /// the shipped host honestly reports that agent execution is unavailable.
+    /// Validate a task launch, run it over the shared agent backend, and emit
+    /// its machine output (non-interactive approval is always denied).
     Run(run::RunArgs),
     /// Print offline diagnostics: versions, app-data dir, database
     /// migrations state, and keyring availability (never secret values).
@@ -135,22 +131,27 @@ enum ConfigCommands {
 }
 
 /// Execute a parsed command, returning its stdout payload on success.
-fn run(cli: &Cli) -> Result<String, CliError> {
+fn run(cli: &Cli) -> Result<run::RunOutcome, CliError> {
+    let ok = |text: String| run::RunOutcome {
+        text,
+        code: CliExitCode::Ok,
+        notice: None,
+    };
     match &cli.command {
         Some(Commands::Run(args)) => run::execute(args, &cli.capability),
-        Some(Commands::Doctor) => Ok(doctor::render(&doctor::collect())),
+        Some(Commands::Doctor) => Ok(ok(doctor::render(&doctor::collect()))),
         Some(Commands::Providers {
             command: ProviderCommands::List,
-        }) => Ok(providers::list()),
+        }) => Ok(ok(providers::list())),
         Some(Commands::Models {
             command: ModelCommands::List { provider },
-        }) => models::list(provider.as_deref()),
+        }) => models::list(provider.as_deref()).map(ok),
         Some(Commands::Config { command }) => match command {
-            ConfigCommands::Get { key } => config::get(key),
-            ConfigCommands::Set { key, value } => config::set(key, value),
+            ConfigCommands::Get { key } => config::get(key).map(ok),
+            ConfigCommands::Set { key, value } => config::set(key, value).map(ok),
         },
         Some(Commands::Auth { command }) => match command {
-            AuthCommands::Set { provider } => auth::set(provider),
+            AuthCommands::Set { provider } => auth::set(provider).map(ok),
         },
         None => {
             // Non-TTY fallback: a piped/redirected invocation keeps the plain
@@ -190,9 +191,13 @@ fn main() {
     }
 
     match run(&cli) {
-        Ok(text) => {
-            print!("{text}");
-            std::process::exit(CliExitCode::Ok.code());
+        Ok(outcome) => {
+            print!("{}", outcome.text);
+            if let Some(notice) = outcome.notice {
+                // The fixed approval hint is stderr-only and survives --quiet.
+                eprintln!("nexora: {notice}");
+            }
+            std::process::exit(outcome.code.code());
         }
         Err(err) => {
             err.report();

@@ -125,9 +125,13 @@ fn color_always_with_json_format_never_emits_ansi() {
         &base,
         &[("NO_COLOR", "")],
     ));
-    assert_eq!(output.status.code(), Some(2), "unavailable host -> usage");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "no provider configured -> usage"
+    );
     assert!(
-        combined(&output).contains("not available in this CLI build"),
+        combined(&output).contains("no provider is selected"),
         "honest fixed failure"
     );
     assert_no_alternate_screen(&output);
@@ -151,10 +155,10 @@ fn no_color_env_does_not_change_usage_error_text() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
-/// Phase 6a (#165): the shipped binary contains no synthetic sessions,
-/// diffs, approvals or resumed agents. Scripted sources exist only under
-/// `#[cfg(test)]` and cannot be linked into `main`; a piped child still exits
-/// 2 through the unchanged usage/UnavailableRunHost path.
+/// Phase 6a/6b (#165): a piped child still exits 2 through the unchanged usage
+/// path, and no synthetic sessions, diffs, approvals or resumed agents appear
+/// on redirected output. Scripted sources exist only under `#[cfg(test)]` and
+/// cannot be linked into `main`.
 #[test]
 fn no_fabricated_backend_data_in_shipped_binary() {
     let base = sandbox("no-fabricated-data");
@@ -179,14 +183,18 @@ fn no_fabricated_backend_data_in_shipped_binary() {
         );
     }
 
-    // A real machine run still maps to the unavailable host: no fabricated
-    // tool frames, diff or approval is emitted.
+    // With no provider configured the real host fails before any agent starts:
+    // no fabricated tool frames, diff or approval is emitted.
     let run = run_bounded(command(
         &["run", "Fix auth", "--format", "json"],
         &base,
         &[],
     ));
-    assert_eq!(run.status.code(), Some(2), "unavailable host -> usage");
+    assert_eq!(
+        run.status.code(),
+        Some(2),
+        "no provider configured -> usage"
+    );
     let run_text = combined(&run);
     for fabricated in [
         "tool_call_started",
@@ -201,7 +209,7 @@ fn no_fabricated_backend_data_in_shipped_binary() {
         );
     }
     assert!(
-        run_text.contains("not available in this CLI build"),
+        run_text.contains("no provider is selected"),
         "honest fixed failure"
     );
 

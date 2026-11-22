@@ -48,6 +48,12 @@ keyring = "4"
 # not an option. `rpassword 7.5` is Apache-2.0, MSRV 1.85 (< our pinned 1.97.1),
 # and reads/writes via `/dev/tty` (`CONIN$`/`CONOUT$` on Windows), never argv.
 rpassword = "7.5"
+# OWNER-APPROVED SCOPED EXCEPTION (#163 4b): Tokio drives ONLY the provider
+# HTTP reactor through `nexora_runtime::AsyncSpawner` (see provider_reactor.rs).
+# It is NOT used by the agent loop, the run/forwarder threads, the CLI command
+# layer, or the TUI. MIT licensed and already in the workspace lockfile via the
+# provider transports: no copyleft dependency, no deny.toml change.
+tokio = { version = "1", features = ["rt", "net", "time"] }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -24,6 +24,22 @@ fn open_db(path: &Path) -> Result<Database, CliError> {
     Ok(Database::new(conn))
 }
 
+/// Open (creating and forward-migrating when needed) the single shared store
+/// for a real agent run. Unlike [`read`], a real run must be able to persist
+/// its conversation and `agent_runs` row through the shared repositories.
+pub(crate) fn open_run_db() -> Result<Database, CliError> {
+    let path = db_path().ok_or_else(|| {
+        CliError::validation("the application data directory is unavailable; no run was started")
+    })?;
+    // The desktop composition root creates the app-data directory before it
+    // opens the store; a standalone CLI invocation must do the same on a fresh
+    // install (no migration/schema change — the shared `open` owns those).
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| CliError::database())?;
+    }
+    open_db(&path)
+}
+
 /// Read one setting without creating a database file.
 ///
 /// A fresh install has no settings yet, so a missing database file is an
