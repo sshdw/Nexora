@@ -1146,6 +1146,25 @@ fn open_security_handle(
     Ok((file, false))
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+struct AclGrantDiag {
+    root: PathBuf,
+    build_entries: Vec<(PathBuf, bool, bool, bool)>,
+    label_refs_count: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static LAST_ACL_GRANT_DIAG: std::cell::RefCell<Option<AclGrantDiag>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn take_last_acl_grant_diag() -> Option<AclGrantDiag> {
+    LAST_ACL_GRANT_DIAG.with(|cell| cell.borrow_mut().take())
+}
+
 struct WorkspaceAclGuard {
     acl_state: Arc<Mutex<WorkspaceAclState>>,
     files: Vec<File>,
@@ -1185,6 +1204,8 @@ impl WorkspaceAclGuard {
         let mut transient_build_ops: Vec<PendingAclOp> = Vec::new();
         let mut build_hardlinks: HashMap<(u32, u32, u32), (u32, HashSet<PathBuf>)> = HashMap::new();
         let mut visited = 0usize;
+        #[cfg(test)]
+        let mut build_diag_entries: Vec<(PathBuf, bool, bool, bool)> = Vec::new();
 
         let mut state = self
             .acl_state
@@ -1322,10 +1343,19 @@ impl WorkspaceAclGuard {
             };
 
             let label_target = if in_build_tree && has_write_owner {
-                Some((canonical, is_dir))
+                Some((canonical.clone(), is_dir))
             } else {
                 None
             };
+            #[cfg(test)]
+            if in_build_tree {
+                build_diag_entries.push((
+                    canonical,
+                    is_build_root,
+                    has_write_owner,
+                    label_target.is_some(),
+                ));
+            }
             if is_transient_build_child {
                 transient_build_ops.push((file, ops, label_target));
             } else {
@@ -1408,6 +1438,14 @@ impl WorkspaceAclGuard {
                 }
             }
         }
+        #[cfg(test)]
+        LAST_ACL_GRANT_DIAG.with(|cell| {
+            *cell.borrow_mut() = Some(AclGrantDiag {
+                root: root.to_path_buf(),
+                build_entries: build_diag_entries,
+                label_refs_count: self.label_refs.len(),
+            });
+        });
         Ok(())
     }
 
@@ -2092,7 +2130,7 @@ mod tests {
     fn run_sandboxed_capture(
         command: &mut Command,
         config: &SandboxSpawnConfig,
-    ) -> Option<(std::process::ExitStatus, String)> {
+    ) -> Option<(std::process::ExitStatus, String, String)> {
         let mut child = match crate::spawn_sandboxed_in_process_tree(command, config) {
             Ok(child) => child,
             Err(error) => {
@@ -2120,11 +2158,20 @@ mod tests {
             }
             let _ = tx.send(());
         });
+        let captured_err = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let err_output = captured_err.clone();
         let err_pipe = child.take_stderr();
         let (err_tx, err_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             if let Some(mut err) = err_pipe {
-                let _ = std::io::copy(&mut err, &mut std::io::sink());
+                let mut buf = [0u8; 1024];
+                while let Ok(count) = std::io::Read::read(&mut err, &mut buf) {
+                    if count == 0 {
+                        break;
+                    }
+                    let mut guard = err_output.lock().unwrap();
+                    guard.extend_from_slice(&buf[..count]);
+                }
             }
             let _ = err_tx.send(());
         });
@@ -2146,7 +2193,78 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(2))
             .expect("stderr reader did not finish after child exit");
         let stdout = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
-        Some((status, stdout))
+        let stderr = String::from_utf8_lossy(&captured_err.lock().unwrap()).into_owned();
+        Some((status, stdout, stderr))
+    }
+
+    fn run_diag_cmd(program: &str, args: &[&str]) -> String {
+        Command::new(program).args(args).output().map_or_else(
+            |e| format!("<{program} err: {e}>"),
+            |o| {
+                format!(
+                    "exit={:?} out={} err={}",
+                    o.status.code(),
+                    String::from_utf8_lossy(&o.stdout).trim(),
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )
+            },
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn format_missing_artifact_diag(
+        label: &str,
+        ws: &Path,
+        target: &Path,
+        artifact: &Path,
+        err: &io::Error,
+        stdout: &str,
+        stderr: &str,
+        acl_diag: Option<&AclGrantDiag>,
+        extra_paths: &[(&str, PathBuf)],
+    ) -> String {
+        let mut exists_summary = String::new();
+        for (name, path) in extra_paths {
+            use std::fmt::Write;
+            let _ = write!(
+                exists_summary,
+                "{name}={} ",
+                if path.exists() { "YES" } else { "NO" }
+            );
+        }
+        let parent_icacls = ws.parent().map_or_else(
+            || "<none>".to_owned(),
+            |p| run_diag_cmd("icacls", &[&p.to_string_lossy()]),
+        );
+        let ws_icacls = run_diag_cmd("icacls", &[&ws.to_string_lossy()]);
+        let target_icacls = run_diag_cmd("icacls", &[&target.to_string_lossy()]);
+        let drive = ws.to_string_lossy().get(0..2).unwrap_or("C:").to_owned();
+        let vol_info = run_diag_cmd("fsutil", &["fsinfo", "volumeinfo", &drive]);
+        let groups = run_diag_cmd("whoami", &["/groups"]);
+        let acl_summary = acl_diag.map_or_else(
+            || "<none>".to_owned(),
+            |d| {
+                format!(
+                    "root={} label_refs_count={} build_entries={:?}",
+                    d.root.display(),
+                    d.label_refs_count,
+                    d.build_entries
+                )
+            },
+        );
+        format!(
+            "{label}: failed to read {} ({err})\n\
+             stdout={stdout:?}\n\
+             stderr={stderr:?}\n\
+             exists=[{exists_summary}]\n\
+             acl_diag={acl_summary}\n\
+             parent_icacls={parent_icacls}\n\
+             ws_icacls={ws_icacls}\n\
+             target_icacls={target_icacls}\n\
+             vol_info={vol_info}\n\
+             whoami_groups={groups}",
+            artifact.display()
+        )
     }
 
     #[test]
@@ -2166,7 +2284,7 @@ mod tests {
             .args(["/D", "/C", "set NX_SANDBOX 2>NUL & exit /b 0"])
             .env("SYSTEMROOT", r"C:\InvalidFakeWindowsRoot");
         let config = SandboxSpawnConfig::for_workspace(&ws);
-        let Some((status, normal_out)) = run_sandboxed_capture(&mut normal, &config) else {
+        let Some((status, normal_out, _)) = run_sandboxed_capture(&mut normal, &config) else {
             return;
         };
         assert!(status.success(), "normal sandbox probe failed: {status}");
@@ -2181,7 +2299,7 @@ mod tests {
             .current_dir(&ws)
             .args(["/D", "/C", "echo SYSROOT=%SystemRoot%"])
             .env("SYSTEMROOT", r"C:\InvalidFakeWindowsRoot");
-        let (_, sysroot_out) = run_sandboxed_capture(&mut check_root, &config).unwrap();
+        let (_, sysroot_out, _) = run_sandboxed_capture(&mut check_root, &config).unwrap();
         assert!(!sysroot_out.contains("InvalidFakeWindowsRoot"));
 
         let mut probe_storage = Command::new(windows_cmd_path());
@@ -2193,7 +2311,8 @@ mod tests {
                 "/C",
                 "(echo x>\"%NX_SANDBOX_STORAGE%\\ls.txt\") 2>NUL & if exist \"%NX_SANDBOX_STORAGE%\\ls.txt\" (echo LS_ALLOWED) else (echo LS_BLOCKED) & (echo x>\"%NX_SANDBOX_AC_STORAGE%\\ac.txt\") 2>NUL & if exist \"%NX_SANDBOX_AC_STORAGE%\\ac.txt\" (echo AC_ALLOWED) else (echo AC_BLOCKED) & exit /b 0",
             ]);
-        let (probe_status, probe_out) = run_sandboxed_capture(&mut probe_storage, &config).unwrap();
+        let (probe_status, probe_out, _) =
+            run_sandboxed_capture(&mut probe_storage, &config).unwrap();
         assert!(
             probe_status.success(),
             "storage sandbox probe failed: {probe_status}"
@@ -2248,7 +2367,7 @@ mod tests {
                 "/C",
                 "type \"%P1%\" 2>NUL & type \"%P2%\" 2>NUL & (echo escaped>\"%POUT%\") 2>NUL & echo DONE",
             ]);
-        let Some((_, stdout)) = run_sandboxed_capture(&mut cmd, &config) else {
+        let Some((_, stdout, _)) = run_sandboxed_capture(&mut cmd, &config) else {
             return;
         };
         assert!(stdout.contains("DONE"));
@@ -2341,7 +2460,7 @@ mod tests {
             "/C",
             "echo x>.env 2>NUL & mkdir .git 2>NUL & mkdir .nexora 2>NUL & echo x>src\\new.txt 2>NUL & ren src src2 2>NUL & rmdir /s /q src 2>NUL & ren src\\existing.txt moved.txt 2>NUL & del /q src\\existing.txt 2>NUL & echo after>src\\existing.txt & exit /b 0",
         ]);
-        let Some((status, _)) =
+        let Some((status, _, _)) =
             run_sandboxed_capture(&mut cmd, &SandboxSpawnConfig::for_workspace(&ws))
         else {
             return;
@@ -2462,7 +2581,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let mut cmd = Command::new(windows_cmd_path());
                 let script = format!(
-                    "mkdir target\\w{worker} & echo worker-{worker}>target\\w{worker}\\tmp.txt & move /Y target\\w{worker}\\tmp.txt target\\w{worker}\\done.txt >NUL & echo ok>\"%TEMP%\\t{worker}.txt\" & type \"%TEMP%\\t{worker}.txt\" & echo PARALLEL_OK_{worker}"
+                    "(mkdir target\\w{worker} && echo MKDIR_OK || echo MKDIR_FAIL) & (echo worker-{worker}>target\\w{worker}\\tmp.txt && echo WRITE_OK || echo WRITE_FAIL) & (move /Y target\\w{worker}\\tmp.txt target\\w{worker}\\done.txt >NUL && echo MOVE_OK || echo MOVE_FAIL) & echo ok>\"%TEMP%\\t{worker}.txt\" & type \"%TEMP%\\t{worker}.txt\" & echo PARALLEL_OK_{worker}"
                 );
                 cmd.current_dir(&ws_clone).args(["/D", "/C", &script]);
                 let config = SandboxSpawnConfig::for_workspace(&ws_clone);
@@ -2477,13 +2596,23 @@ mod tests {
                         return None;
                     }
                 };
+                let acl_diag = take_last_acl_grant_diag();
                 // Hold all 12 sandboxed children alive simultaneously before releasing any.
                 barrier.wait();
 
+                let err_pipe = child.take_stderr();
+                let stderr_handle = std::thread::spawn(move || {
+                    let mut stderr_bytes = Vec::new();
+                    if let Some(mut err) = err_pipe {
+                        let _ = std::io::Read::read_to_end(&mut err, &mut stderr_bytes);
+                    }
+                    stderr_bytes
+                });
                 let mut stdout_bytes = Vec::new();
                 if let Some(mut out) = child.take_stdout() {
                     let _ = std::io::Read::read_to_end(&mut out, &mut stdout_bytes);
                 }
+                let stderr_bytes = stderr_handle.join().unwrap_or_default();
                 let start = std::time::Instant::now();
                 let status = loop {
                     if let Some(status) = child.try_wait().unwrap() {
@@ -2499,27 +2628,52 @@ mod tests {
                 std::thread::spawn(move || drop(child))
                     .join()
                     .expect("cross-thread ProcessTreeChild drop must succeed");
-                Some((status, String::from_utf8_lossy(&stdout_bytes).into_owned()))
+                Some((
+                    status,
+                    String::from_utf8_lossy(&stdout_bytes).into_owned(),
+                    String::from_utf8_lossy(&stderr_bytes).into_owned(),
+                    acl_diag,
+                ))
             }));
         }
 
         let mut verified_count = 0usize;
         for (worker, handle) in handles.into_iter().enumerate() {
-            if let Some((status, stdout)) = handle.join().expect("parallel worker thread panicked")
+            if let Some((status, stdout, stderr, acl_diag)) =
+                handle.join().expect("parallel worker thread panicked")
             {
                 assert!(
                     status.success(),
-                    "parallel worker {worker} exited unsuccessfully: {status:?}, stdout={stdout}"
+                    "parallel worker {worker} exited unsuccessfully: {status:?}, stdout={stdout}, stderr={stderr}"
                 );
                 assert!(
                     stdout.contains(&format!("PARALLEL_OK_{worker}")),
-                    "missing output from worker {worker}: {stdout}"
+                    "missing output from worker {worker}: stdout={stdout}, stderr={stderr}"
                 );
-                let out_file = target.join(format!("w{worker}")).join("done.txt");
-                assert_eq!(
-                    std::fs::read_to_string(&out_file).unwrap().trim(),
-                    format!("worker-{worker}")
-                );
+                let worker_dir = target.join(format!("w{worker}"));
+                let out_file = worker_dir.join("done.txt");
+                let content = std::fs::read_to_string(&out_file).unwrap_or_else(|err| {
+                    panic!(
+                        "{}",
+                        format_missing_artifact_diag(
+                            &format!("parallel worker {worker}"),
+                            &ws,
+                            &target,
+                            &out_file,
+                            &err,
+                            &stdout,
+                            &stderr,
+                            acl_diag.as_ref(),
+                            &[
+                                ("target", target.clone()),
+                                ("worker_dir", worker_dir.clone()),
+                                ("tmp_txt", worker_dir.join("tmp.txt")),
+                                ("done_txt", out_file.clone()),
+                            ],
+                        )
+                    )
+                });
+                assert_eq!(content.trim(), format!("worker-{worker}"));
                 verified_count += 1;
             }
         }
@@ -2608,13 +2762,13 @@ mod tests {
 
         let script = format!(
             concat!(
-                "mkdir target\\debug\\deps & ",
-                "echo obj-tmp>target\\debug\\deps\\app.o.tmp & ",
-                "move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL & ",
-                "move /Y target\\stale.o target\\stale.moved.o >NUL & ",
-                "rmdir /S /Q target\\old_sub & ",
-                "mkdir dist\\assets & ",
-                "echo bundle>dist\\assets\\index.js & ",
+                "(mkdir target\\debug\\deps && echo MKDIR_OK || echo MKDIR_FAIL) & ",
+                "(echo obj-tmp>target\\debug\\deps\\app.o.tmp && echo WRITE_OK || echo WRITE_FAIL) & ",
+                "(move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL && echo MOVE_OK || echo MOVE_FAIL) & ",
+                "(move /Y target\\stale.o target\\stale.moved.o >NUL && echo STALE_MOVE_OK || echo STALE_MOVE_FAIL) & ",
+                "(rmdir /S /Q target\\old_sub && echo RMDIR_OK || echo RMDIR_FAIL) & ",
+                "(mkdir dist\\assets && echo DIST_MKDIR_OK || echo DIST_MKDIR_FAIL) & ",
+                "(echo bundle>dist\\assets\\index.js && echo DIST_WRITE_OK || echo DIST_WRITE_FAIL) & ",
                 "mkdir node_modules\\.cache\\vite & ",
                 "echo cached>node_modules\\.cache\\vite\\dep.js & ",
                 "echo tmp-ok>\"%TEMP%\\rustc-tmp.txt\" & ",
@@ -2638,23 +2792,59 @@ mod tests {
         );
         let mut cmd = Command::new(windows_cmd_path());
         cmd.current_dir(&ws).args(["/D", "/C", &script]);
-        let Some((status, stdout)) =
+        let Some((status, stdout, stderr)) =
             run_sandboxed_capture(&mut cmd, &SandboxSpawnConfig::for_workspace(&ws))
         else {
             return;
         };
-        assert!(status.success(), "build sandbox probe failed: {status:?}");
-        assert!(stdout.contains("tmp-ok"), "TEMP write failed: {stdout}");
-        assert!(stdout.contains("BUILD_SANDBOX_DONE"));
+        let acl_diag = take_last_acl_grant_diag();
+        assert!(
+            status.success(),
+            "build sandbox probe failed: {status:?}, stdout={stdout}, stderr={stderr}"
+        );
+        assert!(
+            stdout.contains("tmp-ok"),
+            "TEMP write failed: stdout={stdout}, stderr={stderr}"
+        );
+        assert!(
+            stdout.contains("BUILD_SANDBOX_DONE"),
+            "missing BUILD_SANDBOX_DONE: stdout={stdout}, stderr={stderr}"
+        );
 
         // New build artifacts & lifecycle inside build dirs must succeed.
         let built_obj = target.join("debug").join("deps").join("app.o");
         let built_dist = dist.join("assets").join("index.js");
         let built_cache = nm_cache.join("vite").join("dep.js");
-        assert_eq!(
-            std::fs::read_to_string(&built_obj).unwrap().trim(),
-            "obj-tmp"
-        );
+        let built_obj_text = std::fs::read_to_string(&built_obj).unwrap_or_else(|err| {
+            panic!(
+                "{}",
+                format_missing_artifact_diag(
+                    "build_directories",
+                    &ws,
+                    &target,
+                    &built_obj,
+                    &err,
+                    &stdout,
+                    &stderr,
+                    acl_diag.as_ref(),
+                    &[
+                        ("target", target.clone()),
+                        ("debug", target.join("debug")),
+                        ("deps", target.join("debug").join("deps")),
+                        (
+                            "app_o_tmp",
+                            target.join("debug").join("deps").join("app.o.tmp")
+                        ),
+                        ("stale_o", target.join("stale.o")),
+                        ("stale_moved", target.join("stale.moved.o")),
+                        ("old_sub", old_sub.clone()),
+                        ("built_dist", built_dist.clone()),
+                        ("built_cache", built_cache.clone()),
+                    ],
+                )
+            )
+        });
+        assert_eq!(built_obj_text.trim(), "obj-tmp");
         assert!(!target.join("stale.o").exists());
         assert_eq!(
             std::fs::read_to_string(target.join("stale.moved.o"))
@@ -2744,7 +2934,7 @@ mod tests {
 
         let mut ok_cmd = Command::new(windows_cmd_path());
         ok_cmd.current_dir(&ws).args(["/D", "/C", "echo INTRA_OK"]);
-        let Some((status, stdout)) =
+        let Some((status, stdout, _)) =
             run_sandboxed_capture(&mut ok_cmd, &SandboxSpawnConfig::for_workspace(&ws))
         else {
             return;
@@ -2949,13 +3139,13 @@ mod tests {
 
         let script = format!(
             concat!(
-                "mkdir target\\debug\\deps & ",
-                "echo obj-med>target\\debug\\deps\\app.o.tmp & ",
-                "move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL & ",
-                "move /Y target\\stale.o target\\stale.moved.o >NUL & ",
-                "rmdir /S /Q target\\old_sub & ",
-                "mkdir dist\\assets & ",
-                "echo dist-med>dist\\assets\\app.js & ",
+                "(mkdir target\\debug\\deps && echo MKDIR_OK || echo MKDIR_FAIL) & ",
+                "(echo obj-med>target\\debug\\deps\\app.o.tmp && echo WRITE_OK || echo WRITE_FAIL) & ",
+                "(move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL && echo MOVE_OK || echo MOVE_FAIL) & ",
+                "(move /Y target\\stale.o target\\stale.moved.o >NUL && echo STALE_MOVE_OK || echo STALE_MOVE_FAIL) & ",
+                "(rmdir /S /Q target\\old_sub && echo RMDIR_OK || echo RMDIR_FAIL) & ",
+                "(mkdir dist\\assets && echo DIST_MKDIR_OK || echo DIST_MKDIR_FAIL) & ",
+                "(echo dist-med>dist\\assets\\app.js && echo DIST_WRITE_OK || echo DIST_WRITE_FAIL) & ",
                 "(echo pwn>.env) 2>NUL & ",
                 "(echo pwn>target\\.env) 2>NUL & ",
                 "(echo pwn>.git\\HEAD) 2>NUL & ",
@@ -2967,20 +3157,51 @@ mod tests {
         );
         let mut cmd = Command::new(windows_cmd_path());
         cmd.current_dir(&ws).args(["/D", "/C", &script]);
-        let Some((status, stdout)) =
+        let Some((status, stdout, stderr)) =
             run_sandboxed_capture(&mut cmd, &SandboxSpawnConfig::for_workspace(&ws))
         else {
             return;
         };
-        assert!(status.success(), "Medium-IL sandbox run failed: {status:?}");
-        assert!(stdout.contains("MED_IL_OK"), "missing marker: {stdout}");
-
-        assert_eq!(
-            std::fs::read_to_string(target.join("debug").join("deps").join("app.o"))
-                .unwrap()
-                .trim(),
-            "obj-med"
+        let acl_diag = take_last_acl_grant_diag();
+        assert!(
+            status.success(),
+            "Medium-IL sandbox run failed: {status:?}, stdout={stdout}, stderr={stderr}"
         );
+        assert!(
+            stdout.contains("MED_IL_OK"),
+            "missing marker: stdout={stdout}, stderr={stderr}"
+        );
+
+        let med_app_o = target.join("debug").join("deps").join("app.o");
+        let med_app_o_text = std::fs::read_to_string(&med_app_o).unwrap_or_else(|err| {
+            panic!(
+                "{}",
+                format_missing_artifact_diag(
+                    "medium_il_workspace",
+                    &ws,
+                    &target,
+                    &med_app_o,
+                    &err,
+                    &stdout,
+                    &stderr,
+                    acl_diag.as_ref(),
+                    &[
+                        ("target", target.clone()),
+                        ("debug", target.join("debug")),
+                        ("deps", target.join("debug").join("deps")),
+                        (
+                            "app_o_tmp",
+                            target.join("debug").join("deps").join("app.o.tmp")
+                        ),
+                        ("stale_o", target.join("stale.o")),
+                        ("stale_moved", target.join("stale.moved.o")),
+                        ("old_sub", old_sub.clone()),
+                        ("dist_app", dist.join("assets").join("app.js")),
+                    ],
+                )
+            )
+        });
+        assert_eq!(med_app_o_text.trim(), "obj-med");
         assert!(!target.join("stale.o").exists());
         assert_eq!(
             std::fs::read_to_string(target.join("stale.moved.o"))
@@ -3026,16 +3247,35 @@ mod tests {
             "/C",
             "mkdir target\\out & echo ok>target\\out\\f.txt",
         ]);
-        let (st_empty, _) =
+        let (st_empty, empty_out, empty_err) =
             run_sandboxed_capture(&mut cmd_empty, &SandboxSpawnConfig::for_workspace(&build))
                 .unwrap();
-        assert!(st_empty.success());
-        assert_eq!(
-            std::fs::read_to_string(build_target.join("out").join("f.txt"))
-                .unwrap()
-                .trim(),
-            "ok"
+        let empty_acl_diag = take_last_acl_grant_diag();
+        assert!(
+            st_empty.success(),
+            "empty-IL run failed: {st_empty:?}, stdout={empty_out}, stderr={empty_err}"
         );
+        let empty_f = build_target.join("out").join("f.txt");
+        let empty_f_text = std::fs::read_to_string(&empty_f).unwrap_or_else(|err| {
+            panic!(
+                "{}",
+                format_missing_artifact_diag(
+                    "medium_il_empty_target",
+                    &build,
+                    &build_target,
+                    &empty_f,
+                    &err,
+                    &empty_out,
+                    &empty_err,
+                    empty_acl_diag.as_ref(),
+                    &[
+                        ("build_target", build_target.clone()),
+                        ("out_dir", build_target.join("out")),
+                    ],
+                )
+            )
+        });
+        assert_eq!(empty_f_text.trim(), "ok");
         let empty_after = (
             acl_snapshot(&build_target, false),
             acl_snapshot(&build_target, true),
