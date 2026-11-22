@@ -345,6 +345,17 @@ pub(crate) enum LoopCmd {
     Quit(CliExitCode),
     /// Query the sessions source; the loop applies `SessionsLoaded`.
     LoadSessions,
+    /// Query the runtime search service for the sessions filter.
+    SearchSessions(String),
+    /// Ask the core to resolve the parked approval (A/D). Never local-only.
+    RespondApproval {
+        id: String,
+        approved: bool,
+    },
+    /// Ask the core to pause the active run (only core frames change state).
+    RequestPause,
+    /// Ask the core to resume the active run (only core frames change state).
+    RequestResume,
     /// Query the diff source; the loop applies `DiffLoaded`.
     LoadDiff,
     /// Query the approval source; the loop applies `ApprovalLoaded`.
@@ -582,12 +593,19 @@ impl App {
         self.dirty = true;
     }
 
-    fn decide(&mut self, decision: ApprovalDecision) {
-        self.approval_decision = decision;
+    /// A/D only *request* a decision: the core owns the park and must confirm
+    /// before the local view changes. Esc never reaches this path.
+    fn decide(&mut self, decision: ApprovalDecision) -> LoopCmd {
+        let Some(request) = self.approval_request.as_ref() else {
+            return LoopCmd::Continue;
+        };
+        let id = request.id.clone();
         self.approval_inspect = false;
-        // A return marker only; never a claim that an agent continued.
-        self.approval_return = Some(self.timeline.len().saturating_sub(1));
         self.dirty = true;
+        LoopCmd::RespondApproval {
+            id,
+            approved: decision == ApprovalDecision::Approved,
+        }
     }
 
     pub(crate) fn filtered_sessions(&self) -> Vec<SessionSummary> {
@@ -666,6 +684,16 @@ impl App {
                     self.focus = Focus::Timeline;
                     LoopCmd::RunCommand(cmd.path)
                 }
+                // The real agent run is wired: the palette entry submits the
+                // current composer draft through the same path as Enter.
+                "run" if !self.composer.is_empty() && !self.submit_pending => {
+                    self.submit_pending = true;
+                    LoopCmd::Submit(self.composer.draft().to_string())
+                }
+                "run" => {
+                    self.set_transient("Write a task in the composer first");
+                    LoopCmd::RunCommand(cmd.path)
+                }
                 _ => LoopCmd::RunCommand(cmd.path),
             },
         }
@@ -680,11 +708,6 @@ impl App {
                 if count > 0 {
                     self.sessions_selection = (self.sessions_selection + 1).min(count - 1);
                 }
-            }
-            Key::Backspace => {
-                self.sessions_filter.pop();
-                self.sessions_selection = 0;
-                self.sessions_delete_armed = false;
             }
             Key::Char('D') => {
                 if self.sessions_delete_armed {
@@ -703,6 +726,13 @@ impl App {
                 self.sessions_filter.push(ch);
                 self.sessions_selection = 0;
                 self.sessions_delete_armed = false;
+                return LoopCmd::SearchSessions(self.sessions_filter.clone());
+            }
+            Key::Backspace => {
+                self.sessions_filter.pop();
+                self.sessions_selection = 0;
+                self.sessions_delete_armed = false;
+                return LoopCmd::SearchSessions(self.sessions_filter.clone());
             }
             Key::Enter => {
                 if let Some(session) = self
@@ -914,6 +944,28 @@ impl App {
                 self.approval_return = None;
                 self.dirty = true;
             }
+            UiEvent::ApprovalResponded { approved, .. } => {
+                // Only a core confirmation makes the decision real. The return marker
+                // is placed here, never on the key press.
+                self.approval_decision = if approved {
+                    ApprovalDecision::Approved
+                } else {
+                    ApprovalDecision::Denied
+                };
+                self.approval_return = Some(self.timeline.len().saturating_sub(1));
+                // Keep the confirmed card at its return point until the next real
+                // approval read replaces it; never clear it on a key press.
+                self.approval_inspect = false;
+                self.dirty = true;
+            }
+            UiEvent::ApprovalResponseFailed => {
+                // The park survives a failed response: still pending, no local claim.
+                self.approval_decision = ApprovalDecision::Pending;
+                self.set_transient(
+                    "Approval response was not accepted; the request is still pending",
+                );
+                self.dirty = true;
+            }
             UiEvent::CopyResult(ok) => {
                 self.copied_label = ok;
                 if ok {
@@ -937,14 +989,8 @@ impl App {
             && self.approval_decision == ApprovalDecision::Pending
         {
             match key {
-                Key::Char('A') => {
-                    self.decide(ApprovalDecision::Approved);
-                    return LoopCmd::Continue;
-                }
-                Key::Char('D') => {
-                    self.decide(ApprovalDecision::Denied);
-                    return LoopCmd::Continue;
-                }
+                Key::Char('A') => return self.decide(ApprovalDecision::Approved),
+                Key::Char('D') => return self.decide(ApprovalDecision::Denied),
                 Key::Char('I') => {
                     self.approval_inspect = !self.approval_inspect;
                     self.dirty = true;
@@ -1023,6 +1069,18 @@ impl App {
         }
 
         match key {
+            Key::CtrlP => {
+                if self.run_active {
+                    self.set_transient("Pause requested; waiting for the core to confirm");
+                    return LoopCmd::RequestPause;
+                }
+            }
+            Key::CtrlR => {
+                if self.run_active {
+                    self.set_transient("Resume requested; waiting for the core to confirm");
+                    return LoopCmd::RequestResume;
+                }
+            }
             Key::F1 => {
                 self.open_overlay(Overlay::Help);
             }

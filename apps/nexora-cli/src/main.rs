@@ -60,8 +60,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Validate a task launch, run it over the shared agent backend, and emit
-    /// its machine output (non-interactive approval is always denied).
+    /// Validate and run a task, emitting versioned machine output.
     Run(run::RunArgs),
     /// Print offline diagnostics: versions, app-data dir, database
     /// migrations state, and keyring availability (never secret values).

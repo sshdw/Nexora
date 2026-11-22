@@ -190,13 +190,13 @@ fn push_entry(app: &App, lines: &mut Vec<Line<'static>>, entry: &super::app::Tim
 }
 
 /// Inline approval block. The command, cwd, reason and risk class are shown
-/// BEFORE any decision; after A/D only local-decision text is shown (never a
-/// claim that an agent resumed).
+/// BEFORE any decision; the decision text appears only after the core confirms
+/// it (never on a key press, and never a claim that an agent resumed).
 fn approval_lines(app: &App, request: &ApprovalRequest) -> Vec<Line<'static>> {
     let header = match app.approval_decision {
         ApprovalDecision::Pending => "! Approval required",
-        ApprovalDecision::Approved => "Approved locally",
-        ApprovalDecision::Denied => "Denied locally",
+        ApprovalDecision::Approved => "Approved by core",
+        ApprovalDecision::Denied => "Denied by core",
     };
     let mut lines = vec![Line::from(Span::styled(header.to_string(), active(app)))];
     let expand = app.approval_inspect || app.approval_decision != ApprovalDecision::Pending;
@@ -227,7 +227,7 @@ fn approval_lines(app: &App, request: &ApprovalRequest) -> Vec<Line<'static>> {
             "  [A] Approve once   [D] Deny   [I] Inspect   [Esc] Decide later",
         ))),
         _ => lines.push(Line::from(Span::styled(
-            "  decision recorded locally; no agent backend in this build",
+            "  decision confirmed by the agent backend; no local resume",
             muted(app),
         ))),
     }
@@ -584,7 +584,7 @@ const HELP_LINES: &[&str] = &[
     "Ctrl+D exit when idle+empty   f freeze view   Enter/End return to live",
     "Sessions: type filter · Up/Down · Enter open (no agent) · D delete · Esc back",
     "Diff: Left/Right file · PgUp/PgDn hunk · Up/Down line · C copy · Esc back",
-    "Approval: A approve locally · D deny locally · I inspect · Esc defer",
+    "Approval: A approve · D deny · I inspect · Esc defer · Ctrl+C cancel run",
     "Overlays preserve draft, run and viewport; no agent is started here",
 ];
 

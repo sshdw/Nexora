@@ -54,6 +54,9 @@ rpassword = "7.5"
 # layer, or the TUI. MIT licensed and already in the workspace lockfile via the
 # provider transports: no copyleft dependency, no deny.toml change.
 tokio = { version = "1", features = ["rt", "net", "time"] }
+# Real, best-effort OS clipboard for the TUI's copy gesture. MIT/Apache-2.0;
+# every failure is reported as `false` to the caller, never surfaced as text.
+arboard = { version = "3", default-features = false }
 
 [lints.rust]
 unsafe_code = "forbid"

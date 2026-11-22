@@ -45,8 +45,8 @@ use events::{channel, map_event, EventSender, UiEvent, POLL_INTERVAL};
 use sources::Sources;
 use terminal::{StderrIo, TerminalGuard};
 
-/// The only source bundle linked into the shipped binary. Every backend-backed
-/// source reports `Unavailable`; the command catalog is the real Clap grammar.
+/// The only source bundle linked into the shipped binary: real read-only
+/// runtime projections, the Clap grammar, and a best-effort OS clipboard.
 #[must_use]
 fn sources() -> Sources {
     Sources::shipped()
@@ -94,6 +94,28 @@ impl CancelSignal {
 
 fn terminal_error() -> CliError {
     CliError::validation("the terminal could not be initialized for interactive mode")
+}
+
+/// Resolve one parked approval through the shared runtime service. Returns
+/// `false` on every failure (no active run, unreadable store, stale request):
+/// the park stays pending and the UI makes no decision claim.
+fn respond_approval(id: &str, approved: bool) -> bool {
+    let (Some(run_id), Some(db)) = (
+        crate::run::active_run_id(),
+        crate::store::open_existing_db(),
+    ) else {
+        return false;
+    };
+    let registry = crate::run::registry();
+    nexora_runtime::application::agent::permissions::resolve_approval(
+        registry.as_ref(),
+        &db,
+        run_id,
+        id,
+        approved,
+        None,
+    )
+    .is_ok()
 }
 
 /// Enter the TUI. Returns the exit code reflecting the last command outcome.
@@ -201,6 +223,29 @@ fn event_loop<B: ratatui::backend::Backend>(
                 app::LoopCmd::LoadSessions => {
                     let result = sources.load_sessions();
                     app.apply(UiEvent::SessionsLoaded(result));
+                }
+                app::LoopCmd::SearchSessions(query) => {
+                    let result = sources.search_sessions(&query);
+                    app.apply(UiEvent::SessionsLoaded(result));
+                }
+                app::LoopCmd::RespondApproval { id, approved } => {
+                    // A/D reach the real approval gate. The UI moves the
+                    // decision only after the core confirms the resolution.
+                    if respond_approval(&id, approved) {
+                        app.apply(UiEvent::ApprovalResponded { id, approved });
+                    } else {
+                        app.apply(UiEvent::ApprovalResponseFailed);
+                    }
+                }
+                app::LoopCmd::RequestPause => {
+                    if let Some(run_id) = crate::run::active_run_id() {
+                        let _ = crate::run::registry().pause(run_id);
+                    }
+                }
+                app::LoopCmd::RequestResume => {
+                    if let Some(run_id) = crate::run::active_run_id() {
+                        let _ = crate::run::registry().resume(run_id);
+                    }
                 }
                 app::LoopCmd::LoadDiff => {
                     let result = sources.load_diff();

@@ -812,6 +812,10 @@ fn drive(a: &mut App, cmd: LoopCmd, sources: &Sources) {
             let result = sources.load_sessions();
             a.apply(UiEvent::SessionsLoaded(result));
         }
+        LoopCmd::SearchSessions(query) => {
+            let result = sources.search_sessions(&query);
+            a.apply(UiEvent::SessionsLoaded(result));
+        }
         LoopCmd::LoadDiff => {
             let result = sources.load_diff();
             a.apply(UiEvent::DiffLoaded(result));
@@ -824,9 +828,15 @@ fn drive(a: &mut App, cmd: LoopCmd, sources: &Sources) {
             let ok = sources.copy(&text);
             a.apply(UiEvent::CopyResult(ok));
         }
+        // The scripted suite has no live core run: A/D responses and pause/
+        // resume requests are exercised against scripted sources only, so the
+        // loop-side backend calls are intentionally not made here.
+        LoopCmd::RespondApproval { .. }
+        | LoopCmd::RequestPause
+        | LoopCmd::RequestResume
         // Palette/local choices and session opening already applied their
-        // honest state in `App`; the loop has no backend to run here.
-        LoopCmd::Continue
+        // honest state in `App`.
+        | LoopCmd::Continue
         | LoopCmd::RunCommand(_)
         | LoopCmd::OpenSession(_)
         | LoopCmd::Submit(_)
@@ -1353,37 +1363,73 @@ fn approval_esc_is_defer_not_a_decision() {
 fn approval_approve_deny_and_run_cancel_are_distinct() {
     let sources = approval_sources();
 
+    // A/D only request a core resolution. The local decision stays Pending
+    // until the core confirms: requested != done.
     let mut approved = app_with_approval(&sources);
-    key(&mut approved, Key::Char('A'), &sources);
-    assert_eq!(approved.approval_decision, ApprovalDecision::Approved);
+    let cmd = approved.apply(UiEvent::Key(Key::Char('A')));
+    assert_eq!(
+        cmd,
+        LoopCmd::RespondApproval {
+            id: "req-1".to_string(),
+            approved: true
+        }
+    );
+    assert_eq!(approved.approval_decision, ApprovalDecision::Pending);
     assert!(!approved.cancel_pending);
+    assert!(approved.approval_return.is_none());
+    approved.apply(UiEvent::ApprovalResponded {
+        id: "req-1".to_string(),
+        approved: true,
+    });
+    assert_eq!(approved.approval_decision, ApprovalDecision::Approved);
 
     let mut denied = app_with_approval(&sources);
-    key(&mut denied, Key::Char('D'), &sources);
-    assert_eq!(denied.approval_decision, ApprovalDecision::Denied);
+    let cmd = denied.apply(UiEvent::Key(Key::Char('D')));
+    assert_eq!(
+        cmd,
+        LoopCmd::RespondApproval {
+            id: "req-1".to_string(),
+            approved: false
+        }
+    );
+    assert_eq!(denied.approval_decision, ApprovalDecision::Pending);
     assert!(!denied.cancel_pending);
+    denied.apply(UiEvent::ApprovalResponded {
+        id: "req-1".to_string(),
+        approved: false,
+    });
+    assert_eq!(denied.approval_decision, ApprovalDecision::Denied);
 
+    // Ctrl+C cancels the whole run; the approval decision is left Pending.
     let mut cancelled = app_with_approval(&sources);
     let cmd = cancelled.apply(UiEvent::Key(Key::CtrlC));
     assert_eq!(cmd, LoopCmd::RequestCancel);
     assert_eq!(cancelled.approval_decision, ApprovalDecision::Pending);
     assert!(cancelled.cancel_pending);
-    // A repeat is swallowed, just like a normal run cancel.
     assert_eq!(cancelled.apply(UiEvent::Key(Key::CtrlC)), LoopCmd::Continue);
 }
 
 #[test]
-fn approval_decision_is_local_only_and_never_fabricates_resume() {
+fn approval_decision_is_core_confirmed_and_never_fabricates_resume() {
     let sources = approval_sources();
     let mut a = app_with_approval(&sources);
     let state = a.state;
-    key(&mut a, Key::Char('A'), &sources);
+    let cmd = a.apply(UiEvent::Key(Key::Char('A')));
+    assert!(matches!(
+        cmd,
+        LoopCmd::RespondApproval { approved: true, .. }
+    ));
+    assert_eq!(a.approval_decision, ApprovalDecision::Pending);
+    a.apply(UiEvent::ApprovalResponded {
+        id: "req-1".to_string(),
+        approved: true,
+    });
     assert!(!a.run_active && !a.submit_pending);
     assert_eq!(a.state, state);
     let text = draw(&a, 100, 30);
-    assert!(text.contains("Approved locally"), "{text}");
+    assert!(text.contains("Approved by core"), "{text}");
     assert!(
-        text.contains("decision recorded locally; no agent backend in this build"),
+        text.contains("decision confirmed by the agent backend; no local resume"),
         "{text}"
     );
     for fabricated in ["resumed", "Resuming", "agent continued", "agent resumed"] {
@@ -1469,7 +1515,8 @@ fn palette_unavailable_actions_are_disabled_with_reason() {
             && matches!(&spec.availability, Availability::Unavailable(reason) if !reason.is_empty())
     }));
     key(&mut a, Key::CtrlK, &super::sources());
-    for ch in "run".chars() {
+    // `run` is genuinely wired to the composer; `doctor` is shell-only.
+    for ch in "doctor".chars() {
         key(&mut a, Key::Char(ch), &super::sources());
     }
     let text = draw(&a, 100, 30);
@@ -1481,6 +1528,21 @@ fn palette_unavailable_actions_are_disabled_with_reason() {
     assert_eq!(a.overlay, Overlay::None);
     let text = draw(&a, 100, 30);
     assert!(text.contains("not available"), "{text}");
+}
+
+#[test]
+fn palette_run_entry_submits_the_current_draft() {
+    let sources = super::sources();
+    let mut a = app();
+    a.composer.set_draft("real task".to_string());
+    key(&mut a, Key::CtrlK, &sources);
+    for ch in "run".chars() {
+        key(&mut a, Key::Char(ch), &sources);
+    }
+    let cmd = a.apply(UiEvent::Key(Key::Enter));
+    assert_eq!(cmd, LoopCmd::Submit("real task".to_string()));
+    assert!(a.submit_pending);
+    assert!(!a.composer.draft().is_empty(), "draft remains editable");
 }
 
 #[test]
@@ -1702,16 +1764,73 @@ fn focus_memory_restores_focus_and_selection_after_each_overlay() {
 }
 
 #[test]
-fn approval_return_point_reports_local_decision_without_fabricated_resume() {
+fn failed_approval_response_leaves_the_request_pending() {
     let sources = approval_sources();
     let mut a = app_with_approval(&sources);
-    key(&mut a, Key::Char('D'), &sources);
+    let cmd = a.apply(UiEvent::Key(Key::Char('D')));
+    assert!(matches!(
+        cmd,
+        LoopCmd::RespondApproval {
+            approved: false,
+            ..
+        }
+    ));
+    assert_eq!(a.approval_decision, ApprovalDecision::Pending);
+    a.apply(UiEvent::ApprovalResponseFailed);
+    assert_eq!(a.approval_decision, ApprovalDecision::Pending);
+    assert!(a.approval_return.is_none());
+    assert!(
+        a.approval_request.is_some(),
+        "the park must survive a failed response"
+    );
+    let text = draw(&a, 100, 30);
+    assert!(text.contains("still pending"), "{text}");
+}
+
+#[test]
+fn pause_and_resume_are_requests_not_local_state_claims() {
+    let sources = approval_sources();
+    let mut a = app_with_approval(&sources);
+    a.run_active = true;
+    let state = a.state;
+    assert_eq!(a.apply(UiEvent::Key(Key::CtrlP)), LoopCmd::RequestPause);
+    assert_eq!(a.state, state, "only a core frame may change the run state");
+    assert_eq!(a.apply(UiEvent::Key(Key::CtrlR)), LoopCmd::RequestResume);
+    assert_eq!(a.state, state);
+
+    // With no active run, the same keys must not request anything.
+    a.run_active = false;
+    assert_eq!(a.apply(UiEvent::Key(Key::CtrlP)), LoopCmd::Continue);
+    assert_eq!(a.apply(UiEvent::Key(Key::CtrlR)), LoopCmd::Continue);
+}
+
+#[test]
+fn approval_return_point_is_set_only_after_core_confirmation() {
+    let sources = approval_sources();
+    let mut a = app_with_approval(&sources);
+    let cmd = a.apply(UiEvent::Key(Key::Char('D')));
+    assert!(matches!(
+        cmd,
+        LoopCmd::RespondApproval {
+            approved: false,
+            ..
+        }
+    ));
+    assert_eq!(a.approval_decision, ApprovalDecision::Pending);
+    assert!(
+        a.approval_return.is_none(),
+        "no return point before confirmation"
+    );
+    a.apply(UiEvent::ApprovalResponded {
+        id: "req-1".to_string(),
+        approved: false,
+    });
     assert_eq!(a.approval_decision, ApprovalDecision::Denied);
     assert!(a.approval_return.is_some());
     let text = draw(&a, 100, 30);
-    assert!(text.contains("Denied locally"), "{text}");
+    assert!(text.contains("Denied by core"), "{text}");
     assert!(
-        text.contains("decision recorded locally; no agent backend in this build"),
+        text.contains("decision confirmed by the agent backend; no local resume"),
         "{text}"
     );
     assert!(!text.contains("resumed"), "no fabricated continuation");

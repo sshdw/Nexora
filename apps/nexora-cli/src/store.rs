@@ -24,6 +24,18 @@ fn open_db(path: &Path) -> Result<Database, CliError> {
     Ok(Database::new(conn))
 }
 
+/// Open the shared store for a read-only view without creating it. A fresh
+/// install has no sessions/diffs/approvals yet: the honest answer is
+/// `Unavailable`, never an empty file created by a view.
+#[must_use]
+pub(crate) fn open_existing_db() -> Option<Database> {
+    let path = db_path()?;
+    if !path.is_file() {
+        return None;
+    }
+    open_db(&path).ok()
+}
+
 /// Open (creating and forward-migrating when needed) the single shared store
 /// for a real agent run. Unlike [`read`], a real run must be able to persist
 /// its conversation and `agent_runs` row through the shared repositories.

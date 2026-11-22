@@ -693,6 +693,20 @@ pub(crate) fn registry() -> Arc<AgentRunRegistry> {
 /// `request_cancel` may be called from the TUI input loop on another thread.
 static ACTIVE_RUN_ID: AtomicI64 = AtomicI64::new(0);
 
+/// Conversation created for the most recent run. The TUI's approval view reads
+/// the live run state of this conversation through the runtime inspector.
+static ACTIVE_CONVERSATION_ID: AtomicI64 = AtomicI64::new(0);
+
+pub(crate) fn active_run_id() -> Option<i64> {
+    let id = ACTIVE_RUN_ID.load(Ordering::Acquire);
+    (id > 0).then_some(id)
+}
+
+pub(crate) fn active_conversation_id() -> Option<i64> {
+    let id = ACTIVE_CONVERSATION_ID.load(Ordering::Acquire);
+    (id > 0).then_some(id)
+}
+
 fn install_provider_sources() {
     // The composition root installs the HTTP reactor + keyring credential
     // source exactly once per process. A repeated call (several `run`
@@ -935,6 +949,7 @@ impl CliAgentHost {
         let conversation_id = ConversationService::new(&db)
             .create("CLI run")
             .map_err(|_| RunFailure::database())?;
+        ACTIVE_CONVERSATION_ID.store(conversation_id, Ordering::Release);
 
         let request = AgentRunRequest {
             conversation_id,

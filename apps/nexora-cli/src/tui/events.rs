@@ -44,6 +44,10 @@ pub(crate) enum Key {
     CtrlC,
     CtrlD,
     CtrlK,
+    /// Request a real run pause through the registry.
+    CtrlP,
+    /// Request a real run resume through the registry.
+    CtrlR,
     F1,
     /// An ordinary printable character.
     Char(char),
@@ -74,6 +78,14 @@ pub(crate) enum UiEvent {
     ApprovalLoaded(Readiness<Option<ApprovalRequest>>),
     /// The main loop's clipboard attempt: `true` only after a real copy.
     CopyResult(bool),
+    /// The core confirmed an approval response. Only this event moves the
+    /// local decision from `Pending` to a terminal decision.
+    ApprovalResponded {
+        id: String,
+        approved: bool,
+    },
+    /// The core rejected an approval response; the park stays pending.
+    ApprovalResponseFailed,
 }
 
 /// Translate one crossterm event into zero or one logical UI event. Ignores key
@@ -107,6 +119,12 @@ fn map_key(key: KeyEvent) -> Option<Key> {
     }
     if ctrl && !alt && key.code == KeyCode::Char('k') {
         return Some(Key::CtrlK);
+    }
+    if ctrl && !alt && key.code == KeyCode::Char('p') {
+        return Some(Key::CtrlP);
+    }
+    if ctrl && !alt && key.code == KeyCode::Char('r') {
+        return Some(Key::CtrlR);
     }
     if ctrl && !alt && key.code == KeyCode::Char('j') {
         return Some(Key::CtrlJ);

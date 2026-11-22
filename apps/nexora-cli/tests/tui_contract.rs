@@ -232,14 +232,19 @@ fn no_fabricated_backend_data_in_shipped_binary() {
         sources.contains("#[cfg(test)]"),
         "scripted sources must be cfg(test)-gated"
     );
+    // The shipped bundle is wired to real runtime read paths; a missing store
+    // still degrades to Readiness::Unavailable rather than fabricated data.
     let shipped_markers = [
         "Readiness::Unavailable",
-        "fn copy(&self, _text: &str) -> bool {\n        false",
+        "RuntimeSessionSource",
+        "git_prepare_review_diff",
+        "live_run_state",
+        "OsClipboardSink",
     ];
     for marker in shipped_markers {
         assert!(
             sources.contains(marker),
-            "shipped source must be honestly unavailable: {marker}"
+            "shipped source must use the real backend: {marker}"
         );
     }
 
