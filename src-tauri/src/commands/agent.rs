@@ -39,13 +39,11 @@ use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::checkpoints::{self, CheckpointStore};
 use crate::application::agent::inspect::RunInspection;
 use crate::application::agent::permissions::{self, PermissionRule, RuleEffect, RunPreset};
-use crate::application::agent::plan::{
-    self, DecidePlanResult, PlanDecision, PlanDecisionError, PlanLaunchTarget,
-};
+use crate::application::agent::plan::{self, DecidePlanResult, PlanDecision, PlanLaunchTarget};
 use crate::application::agent::question::{self, QuestionResolveError};
 use crate::application::agent::service::{
-    self, AgentRunError, AgentRunHost, AgentRunRegistry, AgentRunRequest, AgentRunSummary,
-    ClarifyRunError, RunFrame, RunLaunchOptions,
+    self, AgentRunHost, AgentRunRegistry, AgentRunRequest, AgentRunSummary, ClarifyRunError,
+    RunFrame, RunLaunchOptions,
 };
 use crate::application::agent::spend::SpendDashboard;
 use crate::application::agent::work_queue::{self, WorkQueueError};
@@ -1333,74 +1331,9 @@ pub(crate) async fn run_next_work_item(
     }
 }
 
-impl From<AgentRunError> for CommandError {
-    fn from(err: AgentRunError) -> Self {
-        match err {
-            AgentRunError::WorkspaceProtected => Self::new(
-                ErrorKind::InvalidInput,
-                "the selected workspace is a protected private store",
-            ),
-            AgentRunError::ConversationNotFound { id } => Self::new(
-                ErrorKind::NotFound,
-                format!("conversation {id} does not exist"),
-            ),
-            AgentRunError::RunAlreadyActive { conversation_id } => Self::new(
-                ErrorKind::InvalidInput,
-                format!("an agent run is already active for conversation {conversation_id}"),
-            ),
-            AgentRunError::RunNotFound { run_id } => Self::new(
-                ErrorKind::NotFound,
-                format!("agent run {run_id} does not exist"),
-            ),
-            AgentRunError::RunNotInterrupted { status } => Self::new(
-                ErrorKind::InvalidInput,
-                format!("only interrupted agent runs can be continued (status: {status})"),
-            ),
-            AgentRunError::Request(inner) => Self::from(inner),
-            AgentRunError::Attachment(inner) => Self::from(inner),
-            AgentRunError::RunNotPersisted => {
-                Self::new(ErrorKind::Database, "the agent run could not be persisted")
-            }
-            AgentRunError::ThreadSpawn(_) => {
-                Self::new(ErrorKind::Request, "the agent run could not be started")
-            }
-            AgentRunError::Database(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
-impl From<PlanDecisionError> for CommandError {
-    fn from(err: PlanDecisionError) -> Self {
-        match err {
-            PlanDecisionError::PlanNotFound => Self::new(
-                ErrorKind::NotFound,
-                "the requested plan record does not exist",
-            ),
-            PlanDecisionError::PlanIncomplete => Self::new(
-                ErrorKind::InvalidInput,
-                "the plan run has not produced a completed plan yet",
-            ),
-            PlanDecisionError::AlreadyDecided(status) => Self::new(
-                ErrorKind::InvalidInput,
-                format!("the plan decision has already been recorded ({status})"),
-            ),
-            PlanDecisionError::InvalidDecision => Self::new(
-                ErrorKind::InvalidInput,
-                "invalid plan decision; expected accepted, rejected, or custom_reply",
-            ),
-            PlanDecisionError::EmptyCustomReply => Self::new(
-                ErrorKind::InvalidInput,
-                "a non-empty custom reply is required",
-            ),
-            PlanDecisionError::MissingLaunchTarget => Self::new(
-                ErrorKind::InvalidInput,
-                "a provider and model are required to start implementation",
-            ),
-            PlanDecisionError::StartRun(inner) => Self::from(inner),
-            PlanDecisionError::Database(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {
@@ -1435,6 +1368,26 @@ mod tests {
             let mapped: CommandError = case.into();
             assert!(safe_message(&mapped), "secret leaked into: {mapped:?}");
         }
+    }
+
+    /// The setup-lock failure from the agent service crosses the IPC boundary
+    /// as the same fixed, secret-free database text asserted by the service
+    /// test (which cannot name `CommandError` after the runtime extraction).
+    #[test]
+    fn agent_run_database_failure_maps_to_fixed_secret_free_message() {
+        let raw = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(1),
+            Some("SELECT secret FROM users WHERE api_key='sk-live-sentinel-1'".to_string()),
+        );
+        let err: CommandError =
+            ServiceError::Database(crate::infrastructure::database::DatabaseError::Sqlite(raw))
+                .into();
+        assert_eq!(err.kind, ErrorKind::Database);
+        assert_eq!(
+            err.message,
+            "a database operation failed; no data was changed"
+        );
+        assert!(safe_message(&err));
     }
 
     #[test]
@@ -1946,7 +1899,8 @@ mod tests {
     #[test]
     fn resolve_agent_approval_scope_routes_through_registry() {
         const SOURCE: &str = include_str!("agent.rs");
-        const SERVICE: &str = include_str!("../application/agent/permissions.rs");
+        const SERVICE: &str =
+            include_str!("../../../crates/nexora-runtime/src/application/agent/permissions.rs");
         // AC-202: the command delegates the scope decision and persistence to
         // the application service; it must not grow its own copy. Needles are
         // built with `concat!` so this test's own source never matches them
@@ -2037,8 +1991,10 @@ mod tests {
 
     #[test]
     fn provider_cancellation_routes_to_cancelled_outcome() {
-        const RUNNER: &str = include_str!("../application/agent/runner.rs");
-        const PERSISTENCE: &str = include_str!("../application/agent/persistence.rs");
+        const RUNNER: &str =
+            include_str!("../../../crates/nexora-runtime/src/application/agent/runner.rs");
+        const PERSISTENCE: &str =
+            include_str!("../../../crates/nexora-runtime/src/application/agent/persistence.rs");
         assert!(
             RUNNER.contains("ExecutorError::Cancelled"),
             "runner.rs must route provider cancellation explicitly"

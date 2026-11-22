@@ -43,7 +43,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::application::agent::tools::CommandStreamUpdate;
 use crate::application::confirmations::ManagedConfirmations;
-use crate::application::pty_terminal::{PtyError, PtySessionInfo, PtyTerminalManager};
+use crate::application::pty_terminal::{
+    PtyEventSink, PtyExitEvent, PtyOutputEvent, PtySessionInfo, PtyTerminalManager,
+    TERMINAL_PTY_EXIT_EVENT, TERMINAL_PTY_OUTPUT_EVENT,
+};
 use crate::application::terminal::{ErrorExplanation, TerminalRegistry};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -58,6 +61,26 @@ pub(crate) type ManagedTerminal = Arc<TerminalRegistry>;
 /// Managed interactive PTY terminal state shared across IPC commands and
 /// orderly window shutdown.
 pub(crate) type ManagedPtyTerminal = Arc<PtyTerminalManager>;
+
+/// Tauri-specific event sink for PTY output/exit events.
+///
+/// The PTY manager itself lives in the Tauri-free `nexora-runtime` crate and
+/// accepts any [`PtyEventSink`]. The desktop shell supplies this adapter so
+/// all Tauri-only code stays in the command layer; event names and payloads
+/// are the shared ones from the runtime module, preserving the wire shape.
+struct TauriPtySink {
+    app: AppHandle,
+}
+
+impl PtyEventSink for TauriPtySink {
+    fn emit_output(&self, event: PtyOutputEvent) {
+        let _ = self.app.emit(TERMINAL_PTY_OUTPUT_EVENT, event);
+    }
+
+    fn emit_exit(&self, event: PtyExitEvent) {
+        let _ = self.app.emit(TERMINAL_PTY_EXIT_EVENT, event);
+    }
+}
 
 /// Live event channel emitted while a workspace terminal command executes.
 pub(crate) const TERMINAL_OUTPUT_EVENT: &str = "terminal-output";
@@ -346,8 +369,9 @@ pub(crate) async fn terminal_pty_spawn(
     let manager = Arc::clone(pty.inner());
     let app_for_spawn = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let sink: Arc<dyn PtyEventSink> = Arc::new(TauriPtySink { app: app_for_spawn });
         manager
-            .spawn_session(app_for_spawn, &root, cols, rows)
+            .spawn_session_with_sink(sink, &root, cols, rows)
             .map_err(CommandError::from)
     })
     .await;
@@ -408,77 +432,15 @@ pub(crate) fn terminal_pty_kill(
     pty.kill_session(&session_id).map_err(CommandError::from)
 }
 
-impl From<PtyError> for CommandError {
-    fn from(err: PtyError) -> Self {
-        match err {
-            PtyError::InvalidWorkingDirectory => Self::new(
-                ErrorKind::InvalidInput,
-                "the workspace directory is not available for the terminal",
-            ),
-            PtyError::SpawnFailed => Self::new(
-                ErrorKind::Io,
-                "the interactive terminal session could not be started",
-            ),
-            PtyError::SessionNotFound => Self::new(
-                ErrorKind::NotFound,
-                "the terminal session is no longer active",
-            ),
-            PtyError::WriteFailed => Self::new(
-                ErrorKind::Io,
-                "could not write input to the terminal session",
-            ),
-            PtyError::ResizeFailed => {
-                Self::new(ErrorKind::Io, "could not resize the terminal session")
-            }
-            PtyError::InternalLock => {
-                Self::new(ErrorKind::Io, "the terminal session state is unavailable")
-            }
-        }
-    }
-}
+// [error mappings (PtyError, TerminalError, ExplainError) moved to
+// nexora_runtime::command_error_mapping]
 
-impl From<crate::application::terminal::TerminalError> for CommandError {
-    fn from(err: crate::application::terminal::TerminalError) -> Self {
-        use crate::application::terminal::TerminalError as Source;
-        match err {
-            Source::Unconfirmed => Self::new(
-                ErrorKind::ConfirmationRequired,
-                "explicit confirmation is required before a terminal command can run",
-            ),
-            Source::InvalidInput(message) => Self::new(ErrorKind::InvalidInput, message),
-            // The service message is already fixed vocabulary (the tool
-            // path's detail is classified away, never echoed).
-            Source::Execution(message) => Self::new(ErrorKind::Io, message),
-            Source::Timeout => Self::new(
-                ErrorKind::Io,
-                "the terminal command timed out before it completed",
-            ),
-            Source::Cancelled => Self::new(ErrorKind::Io, "the terminal command was stopped"),
-            Source::AlreadyRunning => Self::new(
-                ErrorKind::InvalidInput,
-                "a terminal command is already running — stop it first",
-            ),
-        }
-    }
-}
-
-impl From<crate::application::terminal::ExplainError> for CommandError {
-    fn from(err: crate::application::terminal::ExplainError) -> Self {
-        use crate::application::terminal::ExplainError as Source;
-        match err {
-            // Both sides stay secret-free: the failed output is never echoed.
-            Source::InvalidInput => Self::new(
-                ErrorKind::InvalidInput,
-                "the failed output to explain is invalid",
-            ),
-            Source::Request(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::pty_terminal::PtyError;
 
     fn safe_message(err: &CommandError) -> bool {
         const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];
@@ -540,7 +502,8 @@ mod tests {
     #[test]
     fn terminal_run_routes_through_the_tool_path_without_its_own_executor() {
         const SOURCE: &str = include_str!("terminal.rs");
-        const SERVICE: &str = include_str!("../application/terminal.rs");
+        const SERVICE: &str =
+            include_str!("../../../crates/nexora-runtime/src/application/terminal.rs");
         assert!(
             SOURCE.contains("execute_terminal("),
             "terminal_run must delegate to the application-layer terminal service"
@@ -578,7 +541,8 @@ mod tests {
     #[test]
     fn terminal_run_no_longer_accepts_a_caller_supplied_boolean() {
         const SOURCE: &str = include_str!("terminal.rs");
-        const SERVICE: &str = include_str!("../application/terminal.rs");
+        const SERVICE: &str =
+            include_str!("../../../crates/nexora-runtime/src/application/terminal.rs");
         let needle = concat!("confirmed", ": bool");
         assert!(
             !SOURCE.contains(needle),
@@ -617,7 +581,8 @@ mod tests {
     #[test]
     fn terminal_explain_reuses_the_shared_ai_boundary_without_auto_run() {
         const SOURCE: &str = include_str!("terminal.rs");
-        const SERVICE: &str = include_str!("../application/terminal.rs");
+        const SERVICE: &str =
+            include_str!("../../../crates/nexora-runtime/src/application/terminal.rs");
         assert!(
             SERVICE.contains("RequestExecutionService::new("),
             "the explain service must execute through the shared boundary"

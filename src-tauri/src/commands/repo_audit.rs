@@ -75,7 +75,8 @@ mod tests {
     use super::*;
 
     const SOURCE: &str = include_str!("repo_audit.rs");
-    const SERVICE: &str = include_str!("../application/repo_audit.rs");
+    const SERVICE: &str =
+        include_str!("../../../crates/nexora-runtime/src/application/repo_audit.rs");
 
     fn safe_message(err: &CommandError) -> bool {
         const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];

@@ -1,0 +1,2483 @@
+//! Read-only GitHub issues / pull-requests lists for the workspace repo.
+//!
+//! The panel ("issues/PRs") renders the `origin` repository's issues and pull
+//! requests through the public GitHub REST API (`https://api.github.com`,
+//! `github.com` only — no Enterprise host). This module owns the whole
+//! read-only path:
+//!
+//! - remote detection: the enclosing repository's `origin` URL is parsed into
+//!   `(owner, repo)` ([`parse_github_remote`]); anything that is not a
+//!   `github.com` remote refuses with [`GitHubError::NoGitHubRemote`];
+//! - auth: the token resolves from the OS keyring entry `github` through the
+//!   existing [`CredentialStore`](crate::infrastructure::providers::credentials::CredentialStore)
+//!   — the same keyring story as the AI providers, no new auth mechanism. A
+//!   missing or unreadable entry is NOT an error: the request goes out
+//!   unauthenticated (60 requests/hour shared quota) and the response reports
+//!   `authenticated: false` so the panel can show its clean connect-hint;
+//! - HTTP: the existing `reqwest` blocking client (already a dependency with
+//!   the `blocking` + `rustls` features — no new crate). GET only: the module
+//!   performs exactly two request shapes, `GET /repos/{owner}/{repo}/issues`
+//!   and `GET /repos/{owner}/{repo}/pulls`, one page of at most
+//!   [`MAX_ITEMS`] items each. There is no POST/PATCH/PUT/DELETE anywhere on
+//!   this path (pinned by the `read_path_uses_get_only` test);
+//! - rate-limit honesty: `x-ratelimit-limit/remaining/reset` surface on every
+//!   response, and an exhausted quota (403 with `remaining == 0`, or 429)
+//!   resolves to an empty list with `rate_limited: true` — never a silent
+//!   empty, never an error dump;
+//! - secrecy: the token is borrowed for the header only and never stored,
+//!   logged, or echoed; every [`GitHubError`] message is fixed vocabulary.
+//!
+//! Command-shape decision (one feature area, TWO commands): `gh_issues` and
+//! `gh_pulls` stay separate because the panel's kind tabs invoke them
+//! independently with their own state filter, exactly like the VCS panel's
+//! separate lazy diff commands.
+//!
+//! Actions fail-loop extension (read-only CI surface for the same panel):
+//! [`list_actions`] reports the recent workflow runs through two GET-only
+//! endpoints — the runs envelope (`GET .../actions/runs`) and the per-run
+//! jobs envelope (`GET .../actions/runs/{run_id}/jobs`, fetched only for
+//! failing runs). Jobs stay metadata-only (failed step names, no log bodies)
+//! so one `gh_actions` call costs at most 1 runs + [`MAX_FAILED_RUNS_EXPANDED`]
+//! jobs requests and never fans out into log downloads: log bodies are lazy
+//! via [`fetch_action_log`] (one `GET .../actions/jobs/{job_id}/logs`
+//! TEXT download per user-expanded job — deliberately not the per-run ZIP,
+//! which would need a zip dependency for a 200-line tail). Each fetched log
+//! keeps its failed step names plus a capped tail (last [`LOG_TAIL_LINES`]
+//! lines under [`LOG_MAX_CHARS`] chars) scrubbed by [`redact_secrets`], since
+//! CI logs may echo secrets. The fix loop creates a task-manager task
+//! prefilled with the failure context (existing task path — approval/budget
+//! inherited); there is no auto-fix and no re-run (no POST anywhere on this
+//! path).
+
+use std::cmp::Ordering;
+use std::path::Path;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+use crate::application::agent::injection::redact_secrets;
+use crate::infrastructure::providers::credentials::CredentialStore;
+
+/// Keyring entry holding the optional GitHub personal-access token, inside
+/// the shared `nexora` service namespace. Reuses the provider credential
+/// story: `CredentialStore::read` returns `None` when the user never stored
+/// one, which the panel treats as the clean connect-hint state.
+pub(crate) const GITHUB_KEYRING_ENTRY: &str = "github";
+
+/// GitHub REST base. `github.com` only — Enterprise hosts are out of scope
+/// and refused by [`parse_github_remote`].
+const GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// One page of at most this many items (`per_page` + a defensive cut).
+pub(crate) const MAX_ITEMS: usize = 50;
+
+/// Workflow runs listed per `gh_actions` call (`per_page` + defensive cut).
+pub(crate) const MAX_RUNS: usize = 20;
+
+/// Failing runs expanded with jobs/logs per `gh_actions` call (the rest
+/// render as metadata rows pointing at GitHub).
+pub(crate) const MAX_FAILED_RUNS_EXPANDED: usize = 5;
+
+/// Jobs fetched per expanded run (`per_page` + defensive cut), of which at
+/// most [`MAX_FAILED_JOBS_KEPT`] failed jobs are kept.
+const MAX_JOBS_FETCHED: usize = 30;
+pub(crate) const MAX_FAILED_JOBS_KEPT: usize = 5;
+
+/// Log tail: the last this many lines of a failed job's text log.
+pub(crate) const LOG_TAIL_LINES: usize = 200;
+
+/// Log tail: at most this many chars (cut from the front when longer).
+pub(crate) const LOG_MAX_CHARS: usize = 24_000;
+
+/// Oversized text-log downloads keep only their last this many bytes (the
+/// failure is at the tail) before decoding.
+const LOG_DOWNLOAD_BYTES: usize = 512_000;
+
+/// Item bodies longer than this (chars) are cut server-side with
+/// `body_truncated: true`.
+pub(crate) const MAX_BODY_CHARS: usize = 8_000;
+
+/// Per-request wall-clock bound so a stalled API call cannot hang the panel.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Fixed-vocabulary state filter accepted by [`list_issues`] / [`list_pulls`].
+/// Anything else refuses with [`GitHubError::InvalidState`].
+pub(crate) const LIST_STATES: [&str; 3] = ["open", "closed", "all"];
+
+/// Classified, secret-free failures of the GitHub read path. Messages are
+/// fixed vocabulary: no token, no URL, no body text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitHubError {
+    /// The workspace is not inside a usable git repository.
+    NotARepository,
+    /// The `origin` remote is absent or is not a `github.com` repository.
+    NoGitHubRemote,
+    /// The state filter is not one of `open` / `closed` / `all`.
+    InvalidState,
+    /// Transport, timeout, or response-parse failure (including unexpected
+    /// API statuses).
+    RequestFailed,
+    /// A stored token was sent and the API rejected it (401).
+    Unauthorized,
+    /// The `owner/repo` was not found on `github.com` (404).
+    NotFound,
+    /// The API refused the request for a non-quota reason (non-quota 403).
+    Forbidden,
+}
+
+impl std::fmt::Display for GitHubError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotARepository => write!(f, "the workspace is not inside a git repository"),
+            Self::NoGitHubRemote => {
+                write!(f, "the workspace origin is not a github.com repository")
+            }
+            Self::InvalidState => write!(f, "the state filter is invalid"),
+            Self::RequestFailed => write!(f, "the GitHub request could not be completed"),
+            Self::Unauthorized => write!(f, "the stored GitHub token was rejected"),
+            Self::NotFound => write!(f, "the GitHub repository was not found"),
+            Self::Forbidden => write!(f, "the GitHub request was refused"),
+        }
+    }
+}
+
+impl std::error::Error for GitHubError {}
+
+/// Rate-limit snapshot echoed from the response headers (`None` when the
+/// header was absent — rendered as "unknown", never as zero).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct GhRateLimit {
+    pub limit: Option<u64>,
+    pub remaining: Option<u64>,
+    pub reset: Option<u64>,
+}
+
+/// One issue row: fixed-vocabulary metadata plus the capped body. Pull-request
+/// rows served by the `/issues` endpoint are filtered out before this shape
+/// is built, so `gh_issues` never mixes kinds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhIssue {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub author: String,
+    pub labels: Vec<String>,
+    pub comments: u64,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub html_url: Option<String>,
+    pub body: String,
+    pub body_truncated: bool,
+}
+
+/// One pull-request row: fixed-vocabulary metadata plus the capped body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhPull {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    pub author: String,
+    pub draft: bool,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
+    pub comments: u64,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub html_url: Option<String>,
+    pub body: String,
+    pub body_truncated: bool,
+}
+
+/// One `gh_issues` response: the resolved repo, the echo of the state filter,
+/// the capped items, whether a token was sent, and the rate-limit snapshot.
+/// A quota-exhausted API answers with empty `items` and `rate_limited: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhIssuesResponse {
+    pub owner: String,
+    pub repo: String,
+    pub state: String,
+    pub items: Vec<GhIssue>,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// One `gh_pulls` response: same envelope as [`GhIssuesResponse`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhPullsResponse {
+    pub owner: String,
+    pub repo: String,
+    pub state: String,
+    pub items: Vec<GhPull>,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// One failed CI job inside a failing workflow run: fixed-vocabulary
+/// metadata plus the failed step names (at most 10). Log bodies are lazy
+/// (see [`fetch_action_log`]): `gh_actions` ships jobs with an empty
+/// `log_excerpt` and all three log flags false, and the panel fetches each
+/// log on job-expand. `log_unavailable` means the log was expired or never
+/// uploaded (empty download) or its fetch failed — the panel points at GitHub
+/// instead. `log_needs_auth` means the endpoint refused for auth reasons
+/// (401/403, e.g. an anonymous read of private-repo logs) — the panel shows
+/// its sign-in hint instead of the expired-log text. `log_redacted` flags a
+/// scrubbed excerpt so the panel can warn.
+///
+/// The four log flags stay individual bools (not an enum) so the IPC payload
+/// keeps its established `snake_case` shape; the struct is pure data.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhActionJob {
+    pub id: u64,
+    pub run_id: u64,
+    pub name: String,
+    pub status: String,
+    pub conclusion: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub html_url: Option<String>,
+    pub failed_steps: Vec<String>,
+    pub log_excerpt: String,
+    pub log_truncated: bool,
+    pub log_unavailable: bool,
+    pub log_needs_auth: bool,
+    pub log_redacted: bool,
+}
+
+/// One workflow run: fixed-vocabulary metadata plus the failed jobs (only
+/// failing runs expand — at most [`MAX_FAILED_JOBS_KEPT`], with
+/// `jobs_truncated` marking the remainder). Non-failing runs carry an empty
+/// `failed_jobs` list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhActionRun {
+    pub id: u64,
+    pub name: String,
+    pub head_branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub event: String,
+    pub status: String,
+    pub conclusion: String,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub html_url: Option<String>,
+    pub failed_jobs: Vec<GhActionJob>,
+    pub jobs_truncated: bool,
+}
+
+/// One `gh_actions` response: the resolved repo, the recent runs (at most
+/// [`MAX_RUNS`], newest first per the API), the API's `total_count`, whether
+/// a token was sent, and the rate-limit snapshot. A quota-exhausted API
+/// answers with empty `runs` and `rate_limited: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhActionsResponse {
+    pub owner: String,
+    pub repo: String,
+    pub runs: Vec<GhActionRun>,
+    pub total_runs: u64,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// One lazily fetched job log: the capped, secret-scrubbed tail of one
+/// failed job (`gh_action_log`). `log_unavailable` means the log was expired
+/// or never uploaded (empty download) or its fetch failed — the panel points
+/// at GitHub instead. `log_needs_auth` means the endpoint refused for auth
+/// reasons (401/403) — the panel shows its sign-in hint, not the
+/// expired-log text. `log_redacted` flags a scrubbed excerpt.
+///
+/// The four log flags stay individual bools (not an enum) to mirror
+/// [`GhActionJob`] so the panel can merge a fetched log straight into the
+/// job row; the struct is pure data.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhActionLog {
+    pub job_id: u64,
+    pub run_id: u64,
+    pub log_excerpt: String,
+    pub log_truncated: bool,
+    pub log_unavailable: bool,
+    pub log_needs_auth: bool,
+    pub log_redacted: bool,
+}
+
+/// Minimal GitHub item shape: only the fields the panel renders. Unknown or
+/// missing fields fall back to fixed vocabulary — the panel never invents
+/// content.
+#[derive(Debug, Deserialize)]
+struct RawItem {
+    number: u64,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    user: Option<RawUser>,
+    #[serde(default)]
+    labels: Vec<RawLabel>,
+    #[serde(default)]
+    comments: Option<u64>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    /// Present (any shape) on `/issues` rows that are pull requests.
+    #[serde(default)]
+    pull_request: Option<serde_json::Value>,
+    #[serde(default)]
+    draft: Option<bool>,
+    #[serde(default)]
+    head: Option<RawRef>,
+    #[serde(default)]
+    base: Option<RawRef>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawUser {
+    #[serde(default)]
+    login: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLabel {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRef {
+    #[serde(default, rename = "ref")]
+    ref_name: Option<String>,
+}
+
+/// Minimal workflow-runs envelope: only the fields the panel renders.
+#[derive(Debug, Deserialize)]
+struct RawRuns {
+    #[serde(default)]
+    total_count: u64,
+    #[serde(default)]
+    workflow_runs: Vec<RawRun>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRun {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    head_branch: Option<String>,
+    #[serde(default)]
+    head_sha: Option<String>,
+    #[serde(default)]
+    event: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+/// Minimal jobs envelope for one expanded run.
+#[derive(Debug, Deserialize)]
+struct RawJobs {
+    #[serde(default)]
+    jobs: Vec<RawJob>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawJob {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    completed_at: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    steps: Vec<RawStep>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawStep {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    conclusion: Option<String>,
+}
+
+/// Parse an `origin` remote URL into `(owner, repo)`.
+///
+/// Accepted (all `github.com` only):
+/// - `https://github.com/owner/repo` (optional `.git`, optional trailing `/`)
+/// - `http://github.com/owner/repo` (same options)
+/// - `git@github.com:owner/repo` (scp-like, optional `.git`)
+/// - `ssh://git@github.com/owner/repo` (optional `.git`)
+///
+/// Anything else — Enterprise hosts, non-GitHub URLs, missing parts, deeper
+/// paths, illegal characters — yields `None`.
+pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    let mut path: Option<&str> = None;
+    for prefix in [
+        "https://github.com/",
+        "http://github.com/",
+        "git@github.com:",
+        "ssh://git@github.com/",
+    ] {
+        if let Some(rest) = url.strip_prefix(prefix) {
+            path = Some(rest);
+            break;
+        }
+    }
+    let path = path?;
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    if !is_repo_part(owner) || !is_repo_part(repo) {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+/// Owner/repo charset (`A–Z a–z 0–9 . _ -`): strict so the parts can be
+/// interpolated into the request path without quoting surprises.
+fn is_repo_part(part: &str) -> bool {
+    !part.is_empty()
+        && part
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-')
+}
+
+/// Resolve the `origin` remote of the enclosing repository into
+/// `(owner, repo)`.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] when no enclosing repository
+/// exists (or it is bare), [`GitHubError::NoGitHubRemote`] when `origin` is
+/// absent or is not a `github.com` remote.
+fn resolve_origin(workspace_root: &Path) -> Result<(String, String), GitHubError> {
+    let canon = std::fs::canonicalize(workspace_root).map_err(|_| GitHubError::NotARepository)?;
+    let repo = git2::Repository::discover(&canon).map_err(|_| GitHubError::NotARepository)?;
+    if repo.workdir().is_none() {
+        return Err(GitHubError::NotARepository);
+    }
+    let remote = repo
+        .find_remote("origin")
+        .map_err(|_| GitHubError::NoGitHubRemote)?;
+    let url = remote.url().map_err(|_| GitHubError::NoGitHubRemote)?;
+    parse_github_remote(url).ok_or(GitHubError::NoGitHubRemote)
+}
+
+/// Read the optional GitHub token from the OS keyring. A missing entry,
+/// an empty value, or an unreachable keyring all resolve to `None` — the
+/// caller then sends the request unauthenticated instead of failing.
+fn read_token() -> Option<String> {
+    let token = CredentialStore::read(GITHUB_KEYRING_ENTRY).ok()??;
+    if token.trim().is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+/// Validate the state filter against [`LIST_STATES`].
+///
+/// # Errors
+///
+/// Returns [`GitHubError::InvalidState`] for anything outside the vocabulary.
+fn check_state(state: &str) -> Result<&str, GitHubError> {
+    if LIST_STATES.contains(&state) {
+        Ok(state)
+    } else {
+        Err(GitHubError::InvalidState)
+    }
+}
+
+/// Cut an item body to [`MAX_BODY_CHARS`] chars, reporting the cut.
+fn cap_body(body: Option<String>) -> (String, bool) {
+    let text = body.unwrap_or_default();
+    if text.chars().count() > MAX_BODY_CHARS {
+        (text.chars().take(MAX_BODY_CHARS).collect(), true)
+    } else {
+        (text, false)
+    }
+}
+
+/// Keep only allowlisted states; the API only ever sends `open`/`closed`,
+/// and anything else renders as `unknown` rather than echoing raw text.
+fn clean_state(state: Option<String>) -> String {
+    match state.as_deref() {
+        Some("open" | "closed") => state.unwrap_or_default(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn clean_title(title: Option<String>) -> String {
+    let title = title.unwrap_or_default();
+    if title.trim().is_empty() {
+        "(no title)".to_string()
+    } else {
+        title
+    }
+}
+
+fn clean_author(user: Option<RawUser>) -> String {
+    user.and_then(|user| user.login).map_or_else(
+        || "unknown".to_string(),
+        |login| {
+            if login.trim().is_empty() {
+                "unknown".to_string()
+            } else {
+                login
+            }
+        },
+    )
+}
+
+/// Label names only (at most 20 — the API bounds the rest by shape, and the
+/// panel renders tokens, not prose).
+fn clean_labels(labels: Vec<RawLabel>) -> Vec<String> {
+    labels
+        .into_iter()
+        .filter_map(|label| label.name)
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .take(20)
+        .collect()
+}
+
+fn to_issue(raw: RawItem) -> GhIssue {
+    let (body, body_truncated) = cap_body(raw.body);
+    GhIssue {
+        number: raw.number,
+        title: clean_title(raw.title),
+        state: clean_state(raw.state),
+        author: clean_author(raw.user),
+        labels: clean_labels(raw.labels),
+        comments: raw.comments.unwrap_or(0),
+        created_at: raw.created_at,
+        updated_at: raw.updated_at,
+        html_url: raw.html_url,
+        body,
+        body_truncated,
+    }
+}
+
+fn to_pull(raw: RawItem) -> GhPull {
+    let (body, body_truncated) = cap_body(raw.body);
+    GhPull {
+        number: raw.number,
+        title: clean_title(raw.title),
+        state: clean_state(raw.state),
+        author: clean_author(raw.user),
+        draft: raw.draft.unwrap_or(false),
+        head_ref: raw.head.and_then(|head| head.ref_name),
+        base_ref: raw.base.and_then(|base| base.ref_name),
+        comments: raw.comments.unwrap_or(0),
+        created_at: raw.created_at,
+        updated_at: raw.updated_at,
+        html_url: raw.html_url,
+        body,
+        body_truncated,
+    }
+}
+
+/// Read one `x-ratelimit-*` header as `u64` (`None` when absent/unparsable).
+fn rate_header(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.trim().parse::<u64>().ok())
+}
+
+fn rate_snapshot(headers: &reqwest::header::HeaderMap) -> GhRateLimit {
+    GhRateLimit {
+        limit: rate_header(headers, "x-ratelimit-limit"),
+        remaining: rate_header(headers, "x-ratelimit-remaining"),
+        reset: rate_header(headers, "x-ratelimit-reset"),
+    }
+}
+
+/// Outcome of one list fetch against `base_url` (production: [`GITHUB_API_BASE`):
+/// the raw items plus the rate snapshot. A quota-exhausted API (403 with
+/// `remaining == 0`, or 429) resolves to empty items with `rate_limited`.
+fn fetch_from(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    endpoint: &str,
+    state: &str,
+    token: Option<&str>,
+) -> Result<(Vec<RawItem>, GhRateLimit, bool), GitHubError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent("Nexora")
+        .build()
+        .map_err(|_| GitHubError::RequestFailed)?;
+    let url =
+        format!("{base_url}/repos/{owner}/{repo}/{endpoint}?state={state}&per_page={MAX_ITEMS}");
+    let mut request = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json");
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+    let rate_limit = rate_snapshot(response.headers());
+    let rate_limited = rate_limit.remaining == Some(0);
+    match response.status().as_u16() {
+        200 => {
+            let items: Vec<RawItem> = response.json().map_err(|_| GitHubError::RequestFailed)?;
+            Ok((
+                items.into_iter().take(MAX_ITEMS).collect(),
+                rate_limit,
+                false,
+            ))
+        }
+        401 => Err(GitHubError::Unauthorized),
+        403 if rate_limited => Ok((Vec::new(), rate_limit, true)),
+        403 => Err(GitHubError::Forbidden),
+        404 => Err(GitHubError::NotFound),
+        429 => Ok((Vec::new(), rate_limit, true)),
+        _ => Err(GitHubError::RequestFailed),
+    }
+}
+
+/// List the workspace `origin` repo's issues (pull-request rows excluded).
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin,
+/// [`GitHubError::InvalidState`] for a bad filter, and the classified
+/// transport/auth failures otherwise. A missing keyring token is NOT an
+/// error — the request goes out unauthenticated with `authenticated: false`.
+pub fn list_issues(workspace_root: &Path, state: &str) -> Result<GhIssuesResponse, GitHubError> {
+    let state = check_state(state)?.to_string();
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let (raw, rate_limit, rate_limited) = fetch_from(
+        GITHUB_API_BASE,
+        &owner,
+        &repo,
+        "issues",
+        &state,
+        token.as_deref(),
+    )?;
+    let items = raw
+        .into_iter()
+        .filter(|item| item.pull_request.is_none())
+        .map(to_issue)
+        .collect();
+    Ok(GhIssuesResponse {
+        owner,
+        repo,
+        state,
+        items,
+        authenticated: token.is_some(),
+        rate_limited,
+        rate_limit,
+    })
+}
+
+/// List the workspace `origin` repo's pull requests.
+///
+/// # Errors
+///
+/// Same contract as [`list_issues`].
+pub fn list_pulls(workspace_root: &Path, state: &str) -> Result<GhPullsResponse, GitHubError> {
+    let state = check_state(state)?.to_string();
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let (raw, rate_limit, rate_limited) = fetch_from(
+        GITHUB_API_BASE,
+        &owner,
+        &repo,
+        "pulls",
+        &state,
+        token.as_deref(),
+    )?;
+    let items = raw.into_iter().map(to_pull).collect();
+    Ok(GhPullsResponse {
+        owner,
+        repo,
+        state,
+        items,
+        authenticated: token.is_some(),
+        rate_limited,
+        rate_limit,
+    })
+}
+
+/// Failed-run vocabulary: conclusions that make a run a fix-loop candidate.
+/// `success` / `neutral` / `skipped` need no fix; `stale` is a scheduling
+/// artefact, not a failure; `unknown` (unparseable API text) never expands —
+/// the panel points at GitHub instead.
+fn is_failed_conclusion(conclusion: &str) -> bool {
+    matches!(
+        conclusion,
+        "failure" | "timed_out" | "cancelled" | "action_required"
+    )
+}
+
+/// A run expands (jobs + log tails) only when it completed with a failed
+/// conclusion. In-flight runs render as metadata rows.
+fn run_is_failed(run: &GhActionRun) -> bool {
+    run.status == "completed" && is_failed_conclusion(&run.conclusion)
+}
+
+/// Keep only allowlisted run conclusions; anything else renders as `unknown`
+/// rather than echoing raw text.
+fn clean_conclusion(conclusion: Option<String>) -> String {
+    match conclusion.as_deref() {
+        Some(
+            "success" | "failure" | "neutral" | "cancelled" | "skipped" | "timed_out"
+            | "action_required" | "stale",
+        ) => conclusion.unwrap_or_default(),
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Keep only allowlisted run/job statuses; anything else renders as `unknown`.
+fn clean_run_status(status: Option<String>) -> String {
+    match status.as_deref() {
+        Some("queued" | "in_progress" | "completed" | "requested" | "waiting" | "pending") => {
+            status.unwrap_or_default()
+        }
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Workflow trigger events are open vocabulary (`push`, `pull_request`,
+/// ...): echo the trimmed value capped at 64 chars, `unknown` when empty.
+fn clean_event(event: Option<String>) -> String {
+    let event = event.unwrap_or_default();
+    let trimmed = event.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+    trimmed.chars().take(64).collect()
+}
+
+fn to_action_run(raw: RawRun) -> GhActionRun {
+    GhActionRun {
+        id: raw.id,
+        name: clean_title(raw.name),
+        head_branch: raw.head_branch,
+        head_sha: raw.head_sha,
+        event: clean_event(raw.event),
+        status: clean_run_status(raw.status),
+        conclusion: clean_conclusion(raw.conclusion),
+        created_at: raw.created_at,
+        updated_at: raw.updated_at,
+        html_url: raw.html_url,
+        failed_jobs: Vec::new(),
+        jobs_truncated: false,
+    }
+}
+
+/// Failed step names of one job (at most 10, each capped at 120 chars).
+fn failed_step_names(steps: Vec<RawStep>) -> Vec<String> {
+    steps
+        .into_iter()
+        .filter(|step| step.conclusion.as_deref().is_some_and(is_failed_conclusion))
+        .filter_map(|step| step.name)
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().take(120).collect::<String>())
+        .take(10)
+        .collect()
+}
+
+/// Keep the last [`LOG_TAIL_LINES`] lines under [`LOG_MAX_CHARS`] chars,
+/// reporting any cut. The failure is at the tail, so cuts drop the head.
+fn tail_log(text: &str) -> (String, bool) {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(LOG_TAIL_LINES);
+    let joined = lines[start..].join("\n");
+    let count = joined.chars().count();
+    if count > LOG_MAX_CHARS {
+        let skip = count - LOG_MAX_CHARS;
+        (joined.chars().skip(skip).collect(), true)
+    } else {
+        (joined, start > 0)
+    }
+}
+
+/// Outcome of one per-job text-log download.
+#[derive(Debug)]
+struct LogDownload {
+    /// Decoded tail bytes (empty when the log is missing).
+    text: String,
+    /// The download was cut (oversized) — the excerpt flags truncation.
+    cut: bool,
+}
+
+/// GET one JSON envelope (`{...}`) for the Actions path: runs and jobs both
+/// answer envelopes, unlike the issues/pulls lists. Same auth, timeout, and
+/// status contract as [`fetch_from`]: quota exhaustion (403 with
+/// `remaining == 0`, or 429) resolves to `Ok((None, rate, true))`.
+fn fetch_json_value(
+    base_url: &str,
+    path: &str,
+    token: Option<&str>,
+) -> Result<(Option<serde_json::Value>, GhRateLimit, bool), GitHubError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent("Nexora")
+        .build()
+        .map_err(|_| GitHubError::RequestFailed)?;
+    let mut request = client
+        .get(format!("{base_url}{path}"))
+        .header("Accept", "application/vnd.github+json");
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+    let rate_limit = rate_snapshot(response.headers());
+    let rate_limited = rate_limit.remaining == Some(0);
+    match response.status().as_u16() {
+        200 => {
+            let value: serde_json::Value =
+                response.json().map_err(|_| GitHubError::RequestFailed)?;
+            Ok((Some(value), rate_limit, false))
+        }
+        401 => Err(GitHubError::Unauthorized),
+        403 if rate_limited => Ok((None, rate_limit, true)),
+        403 => Err(GitHubError::Forbidden),
+        404 => Err(GitHubError::NotFound),
+        429 => Ok((None, rate_limit, true)),
+        _ => Err(GitHubError::RequestFailed),
+    }
+}
+
+/// What one per-job text-log GET resolved to, before tailing/redaction:
+/// auth refusals stay distinct from genuinely missing logs so the panel can
+/// render "sign in" versus "expired or never uploaded" as two states.
+#[derive(Debug)]
+enum LogFetch {
+    /// 200 with the decoded tail bytes (possibly empty).
+    Body(LogDownload),
+    /// 404/410: expired or never uploaded.
+    Missing,
+    /// 401/403: the endpoint refused for auth reasons (e.g. an anonymous
+    /// read of private-repo logs) — the caller needs a (better) token.
+    NeedsAuth,
+}
+
+/// GET one failed job's text log (`.../actions/jobs/{job_id}/logs`).
+///
+/// Deliberately the per-job TEXT endpoint, not the per-run ZIP
+/// (`.../runs/{run_id}/logs` returns a ZIP archive: extracting a 200-line
+/// tail from it would need a zip dependency, out of scope). No `Accept:
+/// vnd.github+json` header here — the endpoint serves `text/plain`
+/// (possibly via redirect, which the client follows). Oversized downloads
+/// keep only their last [`LOG_DOWNLOAD_BYTES`] bytes before decoding;
+/// 404 / 410 (expired or never uploaded) resolve to [`LogFetch::Missing`],
+/// 401 / 403 resolve to [`LogFetch::NeedsAuth`], and any other failure is
+/// the caller's to degrade.
+fn fetch_log_text(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    job_id: u64,
+    token: Option<&str>,
+) -> Result<LogFetch, GitHubError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent("Nexora")
+        .build()
+        .map_err(|_| GitHubError::RequestFailed)?;
+    let mut request = client.get(format!(
+        "{base_url}/repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
+    ));
+    if let Some(token) = token {
+        request = request.bearer_auth(token);
+    }
+    let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+    match response.status().as_u16() {
+        200 => {
+            let bytes = response.bytes().map_err(|_| GitHubError::RequestFailed)?;
+            let all: &[u8] = bytes.as_ref();
+            let (cut, tail) = if all.len() > LOG_DOWNLOAD_BYTES {
+                (true, &all[all.len() - LOG_DOWNLOAD_BYTES..])
+            } else {
+                (false, all)
+            };
+            Ok(LogFetch::Body(LogDownload {
+                text: String::from_utf8_lossy(tail).into_owned(),
+                cut,
+            }))
+        }
+        401 | 403 => Ok(LogFetch::NeedsAuth),
+        404 | 410 => Ok(LogFetch::Missing),
+        _ => Err(GitHubError::RequestFailed),
+    }
+}
+
+/// Build one failed job row: fixed-vocabulary metadata plus the failed step
+/// names. Log bodies stay lazy — the row ships with an empty excerpt and all
+/// log flags false, and the panel fetches each log on job-expand through
+/// [`fetch_action_log`].
+fn to_action_job(run_id: u64, raw: RawJob) -> GhActionJob {
+    GhActionJob {
+        id: raw.id,
+        run_id,
+        name: clean_title(raw.name),
+        status: clean_run_status(raw.status),
+        conclusion: clean_conclusion(raw.conclusion),
+        started_at: raw.started_at,
+        completed_at: raw.completed_at,
+        html_url: raw.html_url,
+        failed_steps: failed_step_names(raw.steps),
+        log_excerpt: String::new(),
+        log_truncated: false,
+        log_unavailable: false,
+        log_needs_auth: false,
+        log_redacted: false,
+    }
+}
+
+/// Fetch one failed job's log tail on job-expand (the panel's lazy `gh_action_log`).
+///
+/// Read-only: a single GET for the per-job TEXT log. Any download failure
+/// degrades to `log_unavailable` — one expired log never fails the call —
+/// while an auth refusal (401/403) resolves to `log_needs_auth` so the panel
+/// can show its sign-in hint instead of the expired-log text.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin. A missing keyring
+/// token is NOT an error — the request goes out unauthenticated with
+/// private-repo logs resolving to `log_needs_auth`.
+pub fn fetch_action_log(
+    workspace_root: &Path,
+    run_id: u64,
+    job_id: u64,
+) -> Result<GhActionLog, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let fetched = fetch_log_text(GITHUB_API_BASE, &owner, &repo, job_id, token.as_deref());
+    let (log_excerpt, log_truncated, log_unavailable, log_needs_auth, log_redacted) = match fetched
+    {
+        Ok(LogFetch::Body(download)) if download.text.is_empty() => {
+            (String::new(), false, true, false, false)
+        }
+        Ok(LogFetch::Body(download)) => {
+            let (tail, tail_cut) = tail_log(&download.text);
+            let (scrubbed, redacted) = redact_secrets(&tail);
+            (scrubbed, tail_cut || download.cut, false, false, redacted)
+        }
+        Ok(LogFetch::Missing) | Err(_) => (String::new(), false, true, false, false),
+        Ok(LogFetch::NeedsAuth) => (String::new(), false, false, true, false),
+    };
+    Ok(GhActionLog {
+        job_id,
+        run_id,
+        log_excerpt,
+        log_truncated,
+        log_unavailable,
+        log_needs_auth,
+        log_redacted,
+    })
+}
+
+/// Expand one failing run with its failed jobs (at most
+/// [`MAX_FAILED_JOBS_KEPT`], metadata only — log bodies stay lazy via
+/// [`fetch_action_log`]). Any jobs-fetch failure leaves the run with an
+/// empty job list — the panel still points at GitHub.
+fn expand_failed_run(
+    base_url: &str,
+    owner: &str,
+    repo: &str,
+    token: Option<&str>,
+    run: &mut GhActionRun,
+) {
+    let fetched = fetch_json_value(
+        base_url,
+        &format!(
+            "/repos/{owner}/{repo}/actions/runs/{}/jobs?per_page={MAX_JOBS_FETCHED}",
+            run.id
+        ),
+        token,
+    );
+    let Ok((Some(value), _, _)) = fetched else {
+        return;
+    };
+    let envelope: RawJobs = match serde_json::from_value(value) {
+        Ok(envelope) => envelope,
+        Err(_) => return,
+    };
+    let mut failed: Vec<RawJob> = envelope
+        .jobs
+        .into_iter()
+        .filter(|job| job.conclusion.as_deref().is_some_and(is_failed_conclusion))
+        .collect();
+    let total_failed = failed.len();
+    failed.truncate(MAX_FAILED_JOBS_KEPT);
+    run.jobs_truncated = total_failed > failed.len();
+    for raw in failed {
+        run.failed_jobs.push(to_action_job(run.id, raw));
+    }
+}
+
+/// List the workspace `origin` repo's recent workflow runs with failing runs
+/// expanded (failed jobs metadata only — log bodies stay lazy).
+///
+/// Read-only: two GET shapes only (runs envelope, per-failure jobs
+/// envelopes) plus one lazy per-job text log on job-expand
+/// ([`fetch_action_log`]). Bounding the batch to 1 runs + at most
+/// [`MAX_FAILED_RUNS_EXPANDED`] jobs requests keeps one `gh_actions` call
+/// from hanging on a failure storm: logs download only when the user expands
+/// a job. Sub-call failures degrade to empty jobs — only the top-level runs
+/// fetch can fail the call.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin, and the classified
+/// transport/auth failures otherwise. A missing keyring token is NOT an
+/// error — the requests go out unauthenticated with `authenticated: false`.
+pub fn list_actions(workspace_root: &Path) -> Result<GhActionsResponse, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let (value, rate_limit, rate_limited) = fetch_json_value(
+        GITHUB_API_BASE,
+        &format!("/repos/{owner}/{repo}/actions/runs?per_page={MAX_RUNS}"),
+        token.as_deref(),
+    )?;
+    let Some(value) = value else {
+        return Ok(GhActionsResponse {
+            owner,
+            repo,
+            runs: Vec::new(),
+            total_runs: 0,
+            authenticated: token.is_some(),
+            rate_limited: true,
+            rate_limit,
+        });
+    };
+    let envelope: RawRuns =
+        serde_json::from_value(value).map_err(|_| GitHubError::RequestFailed)?;
+    let mut runs: Vec<GhActionRun> = Vec::new();
+    let mut expanded = 0_usize;
+    for raw in envelope.workflow_runs.into_iter().take(MAX_RUNS) {
+        let mut run = to_action_run(raw);
+        if expanded < MAX_FAILED_RUNS_EXPANDED && run_is_failed(&run) {
+            expanded += 1;
+            expand_failed_run(GITHUB_API_BASE, &owner, &repo, token.as_deref(), &mut run);
+        }
+        runs.push(run);
+    }
+    Ok(GhActionsResponse {
+        owner,
+        repo,
+        runs,
+        total_runs: envelope.total_count,
+        authenticated: token.is_some(),
+        rate_limited,
+        rate_limit,
+    })
+}
+
+/// Read-only update check against the workspace `origin` repo's latest
+/// GitHub release: one GET (`/repos/{owner}/{repo}/releases/latest`) reusing
+/// this module's client story (timeout, `User-Agent`, optional keyring
+/// token). Check and download-prompt ONLY — there is no download, no
+/// install, and no silent write anywhere on this path; the panel renders the
+/// release URL as text for the user to open themselves.
+///
+/// A repository with no releases (404 on the endpoint) resolves to
+/// `latest_tag: None` with `update_available: false` — never an error dump.
+/// The version comparison is a semver compare on the normalized tags (a
+/// leading `v` is ignored): `update_available` is true only when the latest
+/// release is a strictly higher version than the running build, so a
+/// downgrade or a re-run of the same version is never announced as an
+/// update (SEC-04).
+///
+/// One update check: the resolved repo, the running build, the latest
+/// release (when the repo publishes any), the newer-version verdict, and
+/// the rate-limit snapshot. The token is borrowed for the header only and
+/// never stored or echoed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UpdateCheck {
+    pub owner: String,
+    pub repo: String,
+    pub current_version: String,
+    pub latest_tag: Option<String>,
+    pub latest_name: String,
+    pub latest_url: Option<String>,
+    pub published_at: Option<String>,
+    pub update_available: bool,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// Raw `releases/latest` envelope: tag, name, URL, and publish time only —
+/// bodies (release notes) are deliberately not fetched, so arbitrary
+/// markdown never crosses IPC.
+#[derive(Debug, Deserialize)]
+struct RawRelease {
+    #[serde(default)]
+    tag_name: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+}
+
+/// Release-tag character budget: tags echo into the panel, so overlong API
+/// text is cut rather than rendered raw.
+const MAX_TAG_CHARS: usize = 64;
+
+/// Normalize a version tag for the exact compare: trim whitespace and drop
+/// one leading `v`/`V` (`v1.5.0` and `1.5.0` are the same build).
+fn normalize_tag(tag: &str) -> String {
+    let trimmed = tag.trim();
+    trimmed
+        .strip_prefix('v')
+        .or_else(|| trimmed.strip_prefix('V'))
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
+/// One parsed release version: `major.minor.patch` plus the optional
+/// pre-release suffix. Build metadata (after `+`) is accepted on input and
+/// dropped — it never affects precedence (semver §10).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReleaseVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    prerelease: Option<String>,
+}
+
+/// Parse the version forms release tags actually produce here
+/// (`2.0.0`; `v2.0.0` once [`normalize_tag`] has stripped the leading
+/// `v`/`V`), with optional `-rc.1`-style pre-releases and ignored
+/// `+build` metadata. Returns `None` for anything else — the caller then
+/// refuses to announce an update rather than guessing an ordering for a
+/// tag it cannot read.
+fn parse_release_version(version: &str) -> Option<ReleaseVersion> {
+    let version = match version.split_once('+') {
+        Some((core, _)) => core,
+        None => version,
+    };
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
+    };
+    let mut numbers = core.split('.');
+    let major = numbers.next()?.parse::<u64>().ok()?;
+    let minor = numbers.next()?.parse::<u64>().ok()?;
+    let patch = numbers.next()?.parse::<u64>().ok()?;
+    if numbers.next().is_some() {
+        return None;
+    }
+    let prerelease = match prerelease {
+        Some(pre) if pre.is_empty() || !valid_prerelease(pre) => return None,
+        Some(pre) => Some(pre.to_string()),
+        None => None,
+    };
+    Some(ReleaseVersion {
+        major,
+        minor,
+        patch,
+        prerelease,
+    })
+}
+
+/// A pre-release is dot-separated identifiers of `[0-9A-Za-z-]`, numeric
+/// identifiers without leading zeros (semver §9). A malformed pre-release
+/// poisons the whole version: parse fails, nothing is announced.
+fn valid_prerelease(pre: &str) -> bool {
+    pre.split('.').all(|id| {
+        let numeric_leading_zero =
+            id.len() > 1 && id.starts_with('0') && id.bytes().all(|b| b.is_ascii_digit());
+        !id.is_empty()
+            && !numeric_leading_zero
+            && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
+}
+
+/// Semver §11 precedence: numeric major/minor/patch compare first, then a
+/// version WITHOUT a pre-release outranks one WITH it, and two
+/// pre-releases compare identifier by identifier (numeric identifiers rank
+/// below alphanumeric ones and compare numerically, alphanumerics compare
+/// in ASCII order; a longer identifier list wins once the shared prefix is
+/// equal).
+fn compare_release_versions(a: &ReleaseVersion, b: &ReleaseVersion) -> Ordering {
+    a.major
+        .cmp(&b.major)
+        .then(a.minor.cmp(&b.minor))
+        .then(a.patch.cmp(&b.patch))
+        .then_with(|| match (&a.prerelease, &b.prerelease) {
+            (None, None) => Ordering::Equal,
+            (None, Some(_)) => Ordering::Greater,
+            (Some(_), None) => Ordering::Less,
+            (Some(left), Some(right)) => compare_prereleases(left, right),
+        })
+}
+
+/// Compare two pre-release strings (`rc.1` vs `rc.2`, `1` vs `alpha`).
+fn compare_prereleases(left: &str, right: &str) -> Ordering {
+    let mut left_ids = left.split('.');
+    let mut right_ids = right.split('.');
+    loop {
+        let ordering = match (left_ids.next(), right_ids.next()) {
+            (Some(l), Some(r)) => match (l.parse::<u64>(), r.parse::<u64>()) {
+                (Ok(l), Ok(r)) => l.cmp(&r),
+                (Ok(_), Err(_)) => Ordering::Less,
+                (Err(_), Ok(_)) => Ordering::Greater,
+                (Err(_), Err(_)) => l.cmp(r),
+            },
+            (None, None) => return Ordering::Equal,
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+        };
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+}
+
+/// Whether `latest` is a strictly higher semver release than `current`.
+/// SEC-04: the previous exact normalized-tag compare flagged ANY tag
+/// difference as an update, so a downgrade was announced as one — an equal
+/// or lower version must never be. Both sides go through [`normalize_tag`]
+/// then [`parse_release_version`]; a side that does not parse (this repo's
+/// tags are `vMAJOR.MINOR.PATCH`, per `.git/refs/tags`) refuses to
+/// announce rather than guess an ordering.
+fn tag_is_newer(current: &str, latest: &str) -> bool {
+    let (Some(current), Some(latest)) = (
+        parse_release_version(&normalize_tag(current)),
+        parse_release_version(&normalize_tag(latest)),
+    ) else {
+        return false;
+    };
+    compare_release_versions(&latest, &current) == Ordering::Greater
+}
+
+/// Keep only `https://github.com/` release URLs; anything else (an API
+/// surprise, a redirect artefact) resolves to `None` rather than echoing an
+/// unexpected URL into the panel.
+fn clean_release_url(url: Option<String>) -> Option<String> {
+    let url = url.unwrap_or_default();
+    let trimmed = url.trim();
+    if trimmed.starts_with("https://github.com/") && trimmed.chars().count() <= 512 {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+fn clean_tag(tag: Option<String>) -> Option<String> {
+    let tag = tag.unwrap_or_default();
+    let trimmed = tag.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.chars().take(MAX_TAG_CHARS).collect())
+    }
+}
+
+/// Check the workspace `origin` repo's latest release against the running
+/// build (read-only: one GET, never a download or install).
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin, and the classified
+/// transport/auth failures otherwise. A missing keyring token is NOT an
+/// error — the request goes out unauthenticated with `authenticated: false`.
+/// A repo with no releases resolves to `latest_tag: None` (never an error).
+pub fn check_update(workspace_root: &Path) -> Result<UpdateCheck, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let fetched = (|| {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(REQUEST_TIMEOUT)
+            .user_agent("Nexora")
+            .build()
+            .map_err(|_| GitHubError::RequestFailed)?;
+        let mut request = client
+            .get(format!(
+                "{GITHUB_API_BASE}/repos/{owner}/{repo}/releases/latest"
+            ))
+            .header("Accept", "application/vnd.github+json");
+        if let Some(token) = token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().map_err(|_| GitHubError::RequestFailed)?;
+        let rate_limit = rate_snapshot(response.headers());
+        let rate_limited = rate_limit.remaining == Some(0);
+        match response.status().as_u16() {
+            200 => {
+                let raw: RawRelease = response.json().map_err(|_| GitHubError::RequestFailed)?;
+                Ok((Some(raw), rate_limit, false))
+            }
+            401 => Err(GitHubError::Unauthorized),
+            403 if rate_limited => Ok((None, rate_limit, true)),
+            403 => Err(GitHubError::Forbidden),
+            // No releases published (or repo without the feature): a quiet
+            // "no release" state, not an error dump.
+            404 => Err(GitHubError::NotFound),
+            429 => Ok((None, rate_limit, true)),
+            _ => Err(GitHubError::RequestFailed),
+        }
+    })();
+    let (raw, rate_limit, rate_limited) = match fetched {
+        Ok(triple) => triple,
+        Err(GitHubError::NotFound) => (
+            None,
+            GhRateLimit {
+                limit: None,
+                remaining: None,
+                reset: None,
+            },
+            false,
+        ),
+        Err(other) => return Err(other),
+    };
+    let Some(raw) = raw else {
+        return Ok(UpdateCheck {
+            owner,
+            repo,
+            current_version,
+            latest_tag: None,
+            latest_name: String::new(),
+            latest_url: None,
+            published_at: None,
+            update_available: false,
+            authenticated: token.is_some(),
+            rate_limited,
+            rate_limit,
+        });
+    };
+    let latest_tag = clean_tag(raw.tag_name);
+    let update_available = latest_tag
+        .as_deref()
+        .is_some_and(|tag| tag_is_newer(&current_version, tag));
+    Ok(UpdateCheck {
+        owner,
+        repo,
+        current_version,
+        latest_tag,
+        latest_name: clean_title(raw.name).chars().take(200).collect(),
+        latest_url: clean_release_url(raw.html_url),
+        published_at: raw.published_at.and_then(|at| {
+            let trimmed = at.trim();
+            (!trimmed.is_empty()).then(|| trimmed.chars().take(64).collect())
+        }),
+        update_available,
+        authenticated: token.is_some(),
+        rate_limited,
+        rate_limit,
+    })
+}
+
+/// Self-hosted runners detect extension (read-only detect surface, same
+/// panel): [`list_runners`] reports the workspace `origin` repo's
+/// self-hosted runners through one GET-only endpoint
+/// (`GET .../actions/runners`, at most [`MAX_RUNNERS`] runners with their
+/// label names) plus the local readiness probe ([`probe_local_tools`]).
+///
+/// Command-shape decision (ONE new command `gh_runners`, batched): runners
+/// ride their own call instead of folding into `gh_actions` because the
+/// runners endpoint degrades independently — listing self-hosted runners
+/// needs an admin-scoped token, so anonymous or under-scoped reads refuse
+/// (401/403/404) while the runs list on the same repo may still succeed.
+/// Folding would couple two different degradation states into one payload.
+/// The local probe (PATH lookup only — no process spawn, no `--version`
+/// execution) always ships, even when the remote side degrades, so the
+/// checklist renders real results in every state.
+///
+/// Degradation contract: an auth refusal (401/403) or a missing repo/runners
+/// feature (404 — the API also answers 404 for under-scoped tokens instead
+/// of leaking existence) resolves to empty `runners` with
+/// `runners_needs_auth: true` — the panel shows its "needs admin token"
+/// state, never an error dump. Quota exhaustion resolves to empty runners
+/// with `rate_limited: true`. Only transport/parse failures and unusable
+/// workspaces (`NotARepository` / `NoGitHubRemote`) fail the call.
+///
+/// There is no registration, removal, or dispatch anywhere on this path
+/// (no POST/DELETE — pinned by the existing `read_path_uses_get_only`
+/// test): detection only.
+///
+/// Runners listed per `gh_runners` call (`per_page` + defensive cut).
+pub(crate) const MAX_RUNNERS: usize = 30;
+
+/// Local runner-readiness probe: the minimal documented tool set. `git`
+/// checks out and runs workflows locally, `gh` talks to Actions from the
+/// CLI, and `docker` covers container jobs — the three executables a machine
+/// needs to act as (or mimic) a runner host. Presence only: each entry
+/// reports whether the name resolves on `PATH`, never a version.
+pub(crate) const LOCAL_TOOLS: [&str; 3] = ["git", "gh", "docker"];
+
+/// One self-hosted runner: fixed-vocabulary metadata plus the label names
+/// the panel matches workflows against. `os` is open vocabulary echoed
+/// trimmed and capped (`unknown` when empty); `status` is allowlisted
+/// (`online` / `offline`, else `unknown`) rather than echoed raw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhRunner {
+    pub id: u64,
+    pub name: String,
+    pub os: String,
+    pub status: String,
+    pub busy: bool,
+    pub labels: Vec<String>,
+}
+
+/// One local readiness entry: whether the tool name resolves on `PATH`
+/// (lookup only — never executed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhToolReadiness {
+    pub name: String,
+    pub found: bool,
+}
+
+/// One `gh_runners` response: the resolved repo, the self-hosted runners
+/// (at most [`MAX_RUNNERS`]), the API's `total_count`, the local readiness
+/// checklist (always real `PATH` results), whether a token was sent, and
+/// the rate-limit snapshot. `runners_needs_auth` means the endpoint refused
+/// for auth reasons (anonymous or under-scoped token — self-hosted listing
+/// needs admin scope): the panel shows its needs-token state. A
+/// quota-exhausted API answers with empty `runners` and `rate_limited:
+/// true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GhRunnersResponse {
+    pub owner: String,
+    pub repo: String,
+    pub runners: Vec<GhRunner>,
+    pub runners_total: u64,
+    pub runners_needs_auth: bool,
+    pub local: Vec<GhToolReadiness>,
+    pub authenticated: bool,
+    pub rate_limited: bool,
+    pub rate_limit: GhRateLimit,
+}
+
+/// Minimal runners envelope: only the fields the panel renders.
+#[derive(Debug, Deserialize)]
+struct RawRunners {
+    #[serde(default)]
+    total_count: u64,
+    #[serde(default)]
+    runners: Vec<RawRunner>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRunner {
+    id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    os: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    busy: Option<bool>,
+    #[serde(default)]
+    labels: Vec<RawRunnerLabel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRunnerLabel {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Keep only allowlisted runner statuses; anything else renders as
+/// `unknown` rather than echoing raw text.
+fn clean_runner_status(status: Option<String>) -> String {
+    match status.as_deref() {
+        Some("online" | "offline") => status.unwrap_or_default(),
+        _ => "unknown".to_string(),
+    }
+}
+
+/// Runner operating systems are open vocabulary (`Linux`, `Windows`,
+/// `macOS`, ...): echo the trimmed value capped at 32 chars, `unknown`
+/// when empty.
+fn clean_runner_os(os: Option<String>) -> String {
+    let os = os.unwrap_or_default();
+    let trimmed = os.trim();
+    if trimmed.is_empty() {
+        return "unknown".to_string();
+    }
+    trimmed.chars().take(32).collect()
+}
+
+/// Runner label names only (at most 20, each capped at 64 chars — the panel
+/// matches workflows against tokens, not prose).
+fn clean_runner_labels(labels: Vec<RawRunnerLabel>) -> Vec<String> {
+    labels
+        .into_iter()
+        .filter_map(|label| label.name)
+        .map(|name| name.trim().chars().take(64).collect::<String>())
+        .filter(|name| !name.is_empty())
+        .take(20)
+        .collect()
+}
+
+fn to_runner(raw: RawRunner) -> GhRunner {
+    GhRunner {
+        id: raw.id,
+        name: clean_title(raw.name),
+        os: clean_runner_os(raw.os),
+        status: clean_runner_status(raw.status),
+        busy: raw.busy.unwrap_or(false),
+        labels: clean_runner_labels(raw.labels),
+    }
+}
+
+/// Whether the tool `name` resolves in one of the `dirs` (a split `PATH`):
+/// file presence only, never executed. On Windows the executable extensions
+/// (`.exe` / `.cmd` / `.bat`) count, since `PATH` entries rarely carry them.
+fn tool_on_path(dirs: &[std::path::PathBuf], name: &str) -> bool {
+    dirs.iter().any(|dir| {
+        if dir.join(name).is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            ["exe", "cmd", "bat"]
+                .iter()
+                .any(|ext| dir.join(format!("{name}.{ext}")).is_file())
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    })
+}
+
+/// Probe the local machine's runner readiness: one [`GhToolReadiness`] per
+/// [`LOCAL_TOOLS`] entry, each a `PATH` lookup only (no process is ever
+/// spawned — versions are deliberately not checked, so `--version`
+/// execution differences between tools cannot skew the checklist).
+pub(crate) fn probe_local_tools() -> Vec<GhToolReadiness> {
+    let dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map_or_else(Vec::new, |paths| std::env::split_paths(&paths).collect());
+    LOCAL_TOOLS
+        .iter()
+        .map(|tool| GhToolReadiness {
+            name: (*tool).to_string(),
+            found: tool_on_path(&dirs, tool),
+        })
+        .collect()
+}
+
+/// List the workspace `origin` repo's self-hosted runners plus the local
+/// readiness probe (detection only — no registration, removal, or
+/// dispatch anywhere on this path).
+///
+/// Read-only: one GET (`.../actions/runners`) reusing this module's client
+/// story (timeout, `User-Agent`, optional keyring token) plus the
+/// spawn-free `PATH` probe.
+///
+/// # Errors
+///
+/// Returns [`GitHubError::NotARepository`] / [`GitHubError::NoGitHubRemote`]
+/// when the workspace has no usable `github.com` origin, and the classified
+/// transport failures otherwise. Auth refusals (401/403) and missing
+/// runners (404) are NOT errors — they resolve to empty `runners` with
+/// `runners_needs_auth: true`. A missing keyring token is NOT an error —
+/// the request goes out unauthenticated with `authenticated: false`
+/// (anonymous listing degrades to the same needs-token state on repos that
+/// require admin scope).
+pub fn list_runners(workspace_root: &Path) -> Result<GhRunnersResponse, GitHubError> {
+    let (owner, repo) = resolve_origin(workspace_root)?;
+    let token = read_token();
+    let local = probe_local_tools();
+    let base = GhRunnersResponse {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        runners: Vec::new(),
+        runners_total: 0,
+        runners_needs_auth: false,
+        local,
+        authenticated: token.is_some(),
+        rate_limited: false,
+        rate_limit: GhRateLimit {
+            limit: None,
+            remaining: None,
+            reset: None,
+        },
+    };
+    let fetched = fetch_json_value(
+        GITHUB_API_BASE,
+        &format!("/repos/{owner}/{repo}/actions/runners?per_page={MAX_RUNNERS}"),
+        token.as_deref(),
+    );
+    match fetched {
+        Ok((Some(value), rate_limit, _)) => {
+            let envelope: RawRunners =
+                serde_json::from_value(value).map_err(|_| GitHubError::RequestFailed)?;
+            let runners = envelope
+                .runners
+                .into_iter()
+                .take(MAX_RUNNERS)
+                .map(to_runner)
+                .collect();
+            Ok(GhRunnersResponse {
+                runners,
+                runners_total: envelope.total_count,
+                rate_limit,
+                ..base
+            })
+        }
+        Ok((None, rate_limit, _)) => Ok(GhRunnersResponse {
+            rate_limited: true,
+            rate_limit,
+            ..base
+        }),
+        Err(GitHubError::Unauthorized | GitHubError::Forbidden | GitHubError::NotFound) => {
+            Ok(GhRunnersResponse {
+                runners_needs_auth: true,
+                ..base
+            })
+        }
+        Err(other) => Err(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    const SECRET_SENTINELS: [&str; 4] = ["sk-", "secret", "credential", "api_key"];
+
+    fn safe_message(message: &str) -> bool {
+        !SECRET_SENTINELS
+            .iter()
+            .any(|needle| message.to_lowercase().contains(needle))
+    }
+
+    #[test]
+    fn error_messages_are_fixed_vocabulary_and_secret_free() {
+        // The token must never be echoed: formatting an error next to a
+        // planted secret keeps the secret out of the text.
+        const PLANTED: &str = "ghp_plantedsecret00";
+        let errors = [
+            GitHubError::NotARepository,
+            GitHubError::NoGitHubRemote,
+            GitHubError::InvalidState,
+            GitHubError::RequestFailed,
+            GitHubError::Unauthorized,
+            GitHubError::NotFound,
+            GitHubError::Forbidden,
+        ];
+        for error in errors {
+            let message = error.to_string();
+            assert!(!message.is_empty());
+            assert!(safe_message(&message), "must stay secret-free: {message:?}");
+        }
+        for error in errors {
+            let message = format!("{error} {PLANTED}");
+            assert!(message.contains(PLANTED));
+            assert!(
+                !error.to_string().contains(PLANTED),
+                "error text itself must not carry the token"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_parsing_accepts_github_shapes_only() {
+        for (url, owner, repo) in [
+            ("https://github.com/sshdw/Nexora", "sshdw", "Nexora"),
+            ("https://github.com/sshdw/Nexora.git", "sshdw", "Nexora"),
+            ("https://github.com/sshdw/Nexora/", "sshdw", "Nexora"),
+            ("http://github.com/o/r.git", "o", "r"),
+            ("git@github.com:sshdw/Nexora.git", "sshdw", "Nexora"),
+            ("git@github.com:sshdw/Nexora", "sshdw", "Nexora"),
+            ("ssh://git@github.com/sshdw/Nexora.git", "sshdw", "Nexora"),
+            ("  https://github.com/o/my.repo-1_2  ", "o", "my.repo-1_2"),
+        ] {
+            assert_eq!(
+                parse_github_remote(url),
+                Some((owner.to_string(), repo.to_string())),
+                "must parse {url:?}"
+            );
+        }
+        for url in [
+            "https://enterprise.example.com/o/r.git",
+            "https://github.com/only-owner",
+            "https://github.com//repo",
+            "https://github.com/o/r/extra",
+            "https://gitlab.com/o/r.git",
+            "git@gitlab.com:o/r.git",
+            "https://github.com/o/re po",
+            "https://github.com/o/r?tab=x",
+            "",
+            "not a url",
+        ] {
+            assert_eq!(parse_github_remote(url), None, "must refuse {url:?}");
+        }
+    }
+
+    #[test]
+    fn state_filter_accepts_the_fixed_vocabulary_only() {
+        for state in ["open", "closed", "all"] {
+            assert_eq!(check_state(state), Ok(state));
+        }
+        for state in ["", "OPEN", "merged", "open,closed", "all "] {
+            assert_eq!(check_state(state), Err(GitHubError::InvalidState));
+        }
+    }
+
+    #[test]
+    fn issue_mapping_caps_bodies_and_fixes_vocabulary() {
+        let raw: RawItem = serde_json::from_str(
+            r#"{
+                "number": 106,
+                "title": " ",
+                "state": "bogus",
+                "body": "hello",
+                "user": {},
+                "labels": [{"name": " bug "}, {}, {"name": ""}],
+                "comments": 3,
+                "created_at": "2026-09-01T00:00:00Z",
+                "html_url": "https://github.com/o/r/issues/106",
+                "pull_request": {"url": "https://api.github.com/x"}
+            }"#,
+        )
+        .expect("fixture parses");
+        assert!(raw.pull_request.is_some());
+        let issue = to_issue(raw);
+        assert_eq!(issue.title, "(no title)");
+        assert_eq!(issue.state, "unknown");
+        assert_eq!(issue.author, "unknown");
+        assert_eq!(issue.labels, vec!["bug".to_string()]);
+        assert!(!issue.body_truncated);
+
+        let long = "x".repeat(MAX_BODY_CHARS + 1);
+        let raw: RawItem = serde_json::from_str(&format!(
+            r#"{{"number": 1, "title": "t", "state": "open", "body": "{long}"}}"#
+        ))
+        .expect("long fixture parses");
+        let issue = to_issue(raw);
+        assert!(issue.body_truncated);
+        assert_eq!(issue.body.chars().count(), MAX_BODY_CHARS);
+    }
+
+    #[test]
+    fn pull_mapping_reads_refs_and_draft() {
+        let raw: RawItem = serde_json::from_str(
+            r#"{
+                "number": 7,
+                "title": "Add panel",
+                "state": "open",
+                "user": {"login": "octo"},
+                "draft": true,
+                "head": {"ref": "task/gh-issues"},
+                "base": {"ref": "main"},
+                "comments": 1,
+                "body": null
+            }"#,
+        )
+        .expect("fixture parses");
+        let pull = to_pull(raw);
+        assert_eq!(pull.author, "octo");
+        assert!(pull.draft);
+        assert_eq!(pull.head_ref.as_deref(), Some("task/gh-issues"));
+        assert_eq!(pull.base_ref.as_deref(), Some("main"));
+        assert_eq!(pull.body, "");
+        assert!(!pull.body_truncated);
+    }
+
+    /// Serve one scripted response (status + JSON body + rate headers) over
+    /// plain HTTP on localhost. Hermetic: loopback only, no live network.
+    fn serve_once(
+        status: u16,
+        body: Vec<u8>,
+        rate: Option<(String, String, String)>,
+        seen_auth: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("loopback address");
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 1024];
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        raw.extend_from_slice(&buf[..n]);
+                        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                }
+            }
+            let head = String::from_utf8_lossy(&raw);
+            seen_auth.store(
+                head.contains("Bearer test-token"),
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let rate_headers = rate.map_or_else(String::new, |(limit, remaining, reset)| {
+                format!(
+                    "X-Ratelimit-Limit: {limit}\r\nX-Ratelimit-Remaining: {remaining}\r\nX-Ratelimit-Reset: {reset}\r\n"
+                )
+            });
+            let reason = match status {
+                200 => "OK",
+                401 => "Unauthorized",
+                403 => "Forbidden",
+                404 => "Not Found",
+                _ => "Error",
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n\
+                 {rate_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn fetch_parses_items_and_rate_headers_over_get() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let base = serve_once(
+            200,
+            br#"[{"number":106,"title":"Ship panel","state":"open","user":{"login":"octo"},"labels":[],"comments":2,"body":"hi"}]"#.to_vec(),
+            Some(("60".to_string(), "59".to_string(), "1234567890".to_string())),
+            std::sync::Arc::clone(&seen),
+        );
+        let (items, rate, limited) =
+            fetch_from(&base, "o", "r", "issues", "open", None).expect("200 parses");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].number, 106);
+        assert_eq!(
+            rate,
+            GhRateLimit {
+                limit: Some(60),
+                remaining: Some(59),
+                reset: Some(1_234_567_890),
+            }
+        );
+        assert!(!limited);
+        assert!(!seen.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn fetch_sends_the_token_and_reports_quota_exhaustion_as_state() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let base = serve_once(
+            200,
+            b"[]".to_vec(),
+            Some(("5000".to_string(), "4999".to_string(), "123".to_string())),
+            std::sync::Arc::clone(&seen),
+        );
+        let (_, rate, limited) =
+            fetch_from(&base, "o", "r", "pulls", "open", Some("test-token")).expect("200 parses");
+        assert!(!limited);
+        assert_eq!(rate.remaining, Some(4999));
+        // The server thread may still be accepting; poll briefly without a
+        // timing assert (timing asserts are forbidden).
+        for _ in 0..100 {
+            if seen.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
+
+        // A 403 with remaining == 0 is quota exhaustion: empty items with
+        // `rate_limited`, not an error.
+        let base = serve_once(
+            403,
+            br#"{"message":"API rate limit exceeded"}"#.to_vec(),
+            Some(("60".to_string(), "0".to_string(), "999".to_string())),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let (items, rate, limited) = fetch_from(&base, "o", "r", "issues", "open", None)
+            .expect("quota exhaustion is state, not error");
+        assert!(items.is_empty());
+        assert!(limited);
+        assert_eq!(rate.remaining, Some(0));
+    }
+
+    #[test]
+    fn fetch_classifies_auth_and_missing_repos() {
+        let base = serve_once(
+            401,
+            b"{}".to_vec(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        assert_eq!(
+            fetch_from(&base, "o", "r", "issues", "open", Some("bad")).map(|_| ()),
+            Err(GitHubError::Unauthorized)
+        );
+        let base = serve_once(
+            404,
+            b"{}".to_vec(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        assert_eq!(
+            fetch_from(&base, "o", "r", "issues", "open", None).map(|_| ()),
+            Err(GitHubError::NotFound)
+        );
+        let base = serve_once(
+            403,
+            b"{}".to_vec(),
+            Some(("60".to_string(), "12".to_string(), "999".to_string())),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        assert_eq!(
+            fetch_from(&base, "o", "r", "issues", "open", None).map(|_| ()),
+            Err(GitHubError::Forbidden)
+        );
+    }
+
+    #[test]
+    fn action_conclusions_classify_failures_only() {
+        for conclusion in ["failure", "timed_out", "cancelled", "action_required"] {
+            assert!(
+                is_failed_conclusion(conclusion),
+                "{conclusion:?} must expand"
+            );
+        }
+        for conclusion in [
+            "success", "neutral", "skipped", "stale", "unknown", "", "bogus",
+        ] {
+            assert!(
+                !is_failed_conclusion(conclusion),
+                "{conclusion:?} must never expand"
+            );
+        }
+        // Only completed runs with a failed conclusion expand; in-flight or
+        // successful runs render as metadata rows.
+        let failed = GhActionRun {
+            id: 1,
+            name: "ci".to_string(),
+            head_branch: None,
+            head_sha: None,
+            event: "push".to_string(),
+            status: "completed".to_string(),
+            conclusion: "failure".to_string(),
+            created_at: None,
+            updated_at: None,
+            html_url: None,
+            failed_jobs: Vec::new(),
+            jobs_truncated: false,
+        };
+        assert!(run_is_failed(&failed));
+        let running = GhActionRun {
+            status: "in_progress".to_string(),
+            ..failed.clone()
+        };
+        assert!(!run_is_failed(&running));
+        let green = GhActionRun {
+            status: "completed".to_string(),
+            conclusion: "success".to_string(),
+            ..failed.clone()
+        };
+        assert!(!run_is_failed(&green));
+    }
+
+    #[test]
+    fn action_mapping_fixes_vocabulary_and_failed_steps() {
+        let raw: RawRun = serde_json::from_str(
+            r#"{
+                "id": 42,
+                "name": " ",
+                "head_branch": "main",
+                "head_sha": "abc123",
+                "event": "push",
+                "status": "bogus",
+                "conclusion": "bogus",
+                "html_url": "https://github.com/o/r/actions/runs/42"
+            }"#,
+        )
+        .expect("fixture parses");
+        let run = to_action_run(raw);
+        assert_eq!(run.name, "(no title)");
+        assert_eq!(run.status, "unknown");
+        assert_eq!(run.conclusion, "unknown");
+        assert!(run.failed_jobs.is_empty());
+        assert!(!run.jobs_truncated);
+
+        let steps = vec![
+            RawStep {
+                name: Some(" build ".to_string()),
+                conclusion: Some("failure".to_string()),
+            },
+            RawStep {
+                name: Some("ok".to_string()),
+                conclusion: Some("success".to_string()),
+            },
+            RawStep {
+                name: Some(String::new()),
+                conclusion: Some("timed_out".to_string()),
+            },
+            RawStep {
+                name: None,
+                conclusion: Some("failure".to_string()),
+            },
+        ];
+        assert_eq!(failed_step_names(steps), vec!["build".to_string()]);
+    }
+
+    #[test]
+    fn log_tail_keeps_the_last_lines_under_both_caps() {
+        let lines: Vec<String> = (1..=500).map(|n| format!("line {n}")).collect();
+        let (tail, truncated) = tail_log(&lines.join("\n"));
+        assert!(truncated);
+        let kept: Vec<&str> = tail.lines().collect();
+        assert_eq!(kept.len(), LOG_TAIL_LINES);
+        assert_eq!(kept[0], "line 301");
+        assert_eq!(kept[LOG_TAIL_LINES - 1], "line 500");
+
+        let (tail, truncated) = tail_log("a\nb");
+        assert!(!truncated);
+        assert_eq!(tail, "a\nb");
+
+        let wide = "y".repeat(LOG_MAX_CHARS + 10);
+        let (tail, truncated) = tail_log(&wide);
+        assert!(truncated);
+        assert_eq!(tail.chars().count(), LOG_MAX_CHARS);
+    }
+
+    #[test]
+    fn log_redaction_scrubs_token_values_and_reports() {
+        const PLANTED_GH: &str = "ghp_plantedvalue0123456789";
+        const PLANTED_BEARER: &str = "supersecretbearer01";
+        const PLANTED_SK: &str = "sk-ant-plantedvalue99";
+        let text = format!(
+            "token {PLANTED_GH} failed\nAuthorization: Bearer {PLANTED_BEARER}\nkey {PLANTED_SK} here\nplain prose stays"
+        );
+        let (scrubbed, hit) = redact_secrets(&text);
+        assert!(hit);
+        assert!(!scrubbed.contains(PLANTED_GH));
+        assert!(!scrubbed.contains(PLANTED_BEARER));
+        assert!(!scrubbed.contains(PLANTED_SK));
+        assert!(scrubbed.contains("[redacted]"));
+        assert!(scrubbed.contains("plain prose stays"));
+
+        let (scrubbed, hit) = redact_secrets("nothing secret here\njust lines");
+        assert!(!hit);
+        assert_eq!(scrubbed, "nothing secret here\njust lines");
+    }
+
+    #[test]
+    fn log_redaction_leaves_prose_alone_but_scrubs_real_keys() {
+        // Ordinary prose colliding with the short generic prefixes must
+        // survive verbatim with no redaction flag (previously `risk-free`
+        // became `risk-[redacted]` and `the bearer of good news` flagged
+        // `log_redacted`).
+        for prose in [
+            "deploy risk-free task-setup done",
+            "the bearer of good news arrived",
+            "Bearer of good news",
+            "sk-",
+            "sk-abc",
+        ] {
+            let (scrubbed, hit) = redact_secrets(prose);
+            assert!(!hit, "{prose:?} must not redact");
+            assert_eq!(scrubbed, prose, "{prose:?} must survive verbatim");
+        }
+        // Real-looking values still redact: a long `sk-` run and a long
+        // Bearer token.
+        let (scrubbed, hit) = redact_secrets("key sk-abcdefghijklmnop1234 failed");
+        assert!(hit);
+        assert!(!scrubbed.contains("sk-abcdefghijklmnop1234"));
+        assert!(scrubbed.contains("sk-[redacted]"));
+        let (scrubbed, hit) = redact_secrets("Authorization: Bearer supersecretbearer01");
+        assert!(hit);
+        assert!(!scrubbed.contains("supersecretbearer01"));
+        assert!(scrubbed.contains("Bearer [redacted]"));
+        // Distinctive provider prefixes keep the short minimum.
+        let (scrubbed, hit) = redact_secrets("token ghp_plantedvalue0123456789 leaked");
+        assert!(hit);
+        assert!(!scrubbed.contains("ghp_plantedvalue0123456789"));
+    }
+
+    #[test]
+    fn log_fetch_keeps_auth_refusals_distinct_from_missing_logs() {
+        // A 403 (e.g. an anonymous read of private-repo logs) resolves to
+        // `NeedsAuth` — the panel shows its sign-in hint, not the
+        // expired-log text.
+        let base = serve_once(
+            403,
+            b"{}".to_vec(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        assert!(matches!(
+            fetch_log_text(&base, "o", "r", 7, None),
+            Ok(LogFetch::NeedsAuth)
+        ));
+        // A 404/410 (expired or never uploaded) resolves to `Missing`.
+        for status in [404, 410] {
+            let base = serve_once(
+                status,
+                b"{}".to_vec(),
+                None,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            assert!(
+                matches!(
+                    fetch_log_text(&base, "o", "r", 7, None),
+                    Ok(LogFetch::Missing)
+                ),
+                "status {status} must resolve to Missing"
+            );
+        }
+        // A 200 serves the decoded tail bytes.
+        let base = serve_once(
+            200,
+            b"line one\nline two".to_vec(),
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        match fetch_log_text(&base, "o", "r", 7, None) {
+            Ok(LogFetch::Body(download)) => {
+                assert!(!download.cut);
+                assert_eq!(download.text, "line one\nline two");
+            }
+            other => panic!("200 must resolve to Body, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expanded_jobs_ship_metadata_only_with_lazy_logs() {
+        // `gh_actions` never fans out into log downloads: expanded jobs carry
+        // an empty excerpt with all log flags false, and the panel fetches
+        // each log on job-expand through `fetch_action_log`.
+        let raw = RawJob {
+            id: 9,
+            name: Some("build".to_string()),
+            status: Some("completed".to_string()),
+            conclusion: Some("failure".to_string()),
+            started_at: None,
+            completed_at: None,
+            html_url: None,
+            steps: Vec::new(),
+        };
+        let job = to_action_job(42, raw);
+        assert_eq!(job.id, 9);
+        assert_eq!(job.run_id, 42);
+        assert_eq!(job.name, "build");
+        assert!(job.log_excerpt.is_empty());
+        assert!(!job.log_truncated);
+        assert!(!job.log_unavailable);
+        assert!(!job.log_needs_auth);
+        assert!(!job.log_redacted);
+    }
+
+    #[test]
+    fn actions_envelope_parses_runs_jobs_and_rate_state() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let base = serve_once(
+            200,
+            br#"{"total_count":1,"workflow_runs":[{"id":42,"name":"CI","head_branch":"main","status":"completed","conclusion":"success"}]}"#.to_vec(),
+            Some(("60".to_string(), "59".to_string(), "1234567890".to_string())),
+            std::sync::Arc::clone(&seen),
+        );
+        let (value, rate, limited) =
+            fetch_json_value(&base, "/repos/o/r/actions/runs?per_page=20", None)
+                .expect("200 parses");
+        assert!(!limited);
+        assert_eq!(rate.remaining, Some(59));
+        let envelope: RawRuns =
+            serde_json::from_value(value.expect("envelope present")).expect("envelope parses");
+        assert_eq!(envelope.total_count, 1);
+        assert_eq!(envelope.workflow_runs.len(), 1);
+        let run = to_action_run(envelope.workflow_runs.into_iter().next().expect("one run"));
+        assert_eq!(run.id, 42);
+        assert_eq!(run.conclusion, "success");
+        assert!(!run_is_failed(&run));
+    }
+
+    /// Static proof of the read-only contract: the service performs GET
+    /// requests only — no POST/PATCH/PUT/DELETE anywhere. Needles are built
+    /// with `concat!` so this test's own source never matches them.
+    #[test]
+    fn read_path_uses_get_only() {
+        const SOURCE: &str = include_str!("github.rs");
+        assert!(
+            SOURCE.contains(".get("),
+            "the GitHub read path must issue GET requests"
+        );
+        for needle in [
+            concat!(".", "post("),
+            concat!(".", "put("),
+            concat!(".", "patch("),
+            concat!(".", "delete("),
+        ] {
+            assert!(
+                !SOURCE.contains(needle),
+                "the GitHub path must stay read-only, found {needle:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn update_tag_compare_orders_semver_not_exact_tags() {
+        // Tag forms this repo's release flow produces (refs/tags:
+        // v0.1.0 .. v1.5.0): `vMAJOR.MINOR.PATCH`; normalize_tag strips one
+        // leading `v`/`V` before the semver parse.
+        assert_eq!(normalize_tag("v1.5.0"), "1.5.0");
+        assert_eq!(normalize_tag("V1.5.0"), "1.5.0");
+        assert_eq!(normalize_tag("  v1.5.0  "), "1.5.0");
+        assert_eq!(normalize_tag("1.5.0"), "1.5.0");
+        // Equal version (tagged or not) is never an update.
+        assert!(!tag_is_newer("1.5.0", "v1.5.0"));
+        assert!(!tag_is_newer("1.5.0", "1.5.0"));
+        // A strictly higher semver is an update, on every component.
+        assert!(tag_is_newer("1.5.0", "v1.6.0"));
+        assert!(tag_is_newer("1.5.0", "v2.0.0"));
+        assert!(tag_is_newer("2.0.0", "v2.0.1"));
+    }
+
+    #[test]
+    fn update_tag_compare_rejects_downgrades_and_unparseable_tags() {
+        // SEC-04: the exact-tag compare announced any difference as an
+        // update, so moving the user to an older build was labelled
+        // "update available". Downgrades and equal versions are refused.
+        assert!(
+            !tag_is_newer("2.0.0", "v1.5.0"),
+            "a downgrade is not an update"
+        );
+        assert!(!tag_is_newer("2.0.0", "1.9.9"));
+        assert!(!tag_is_newer("2.0.0", "v2.0.0"));
+        // Pre-releases of the current version are OLDER (semver §11: a
+        // release outranks its own pre-release); a pre-release of a future
+        // version is a real update, and pre-release identifiers order
+        // numerically (rc.2 > rc.1) and below alphanumerics (1 < alpha).
+        assert!(!tag_is_newer("2.0.0", "v2.0.0-rc.1"));
+        assert!(!tag_is_newer("2.0.0", "v2.0.0-rc.2"));
+        assert!(tag_is_newer("2.0.0", "v2.1.0-rc.1"));
+        assert!(tag_is_newer("2.0.0-rc.1", "v2.0.0"));
+        assert!(tag_is_newer("2.0.0-rc.1", "v2.0.0-rc.2"));
+        assert!(tag_is_newer("2.0.0-1", "v2.0.0-alpha"));
+        // Non-semver tags (never produced by this repo's release flow) are
+        // refused instead of guessed into an ordering.
+        assert!(!tag_is_newer("2.0.0", "nightly"));
+        assert!(!tag_is_newer("2.0.0", "v2"));
+        assert!(!tag_is_newer("2.0.0", "v2.0.0-"));
+        assert!(!tag_is_newer("2.0.0", "2.0.0.1"));
+    }
+
+    #[test]
+    fn update_release_cleaning_fixes_vocabulary_and_urls() {
+        assert_eq!(clean_tag(None), None);
+        assert_eq!(clean_tag(Some("   ".to_string())), None);
+        assert_eq!(
+            clean_tag(Some("v1.6.0".to_string())),
+            Some("v1.6.0".to_string())
+        );
+        assert_eq!(
+            clean_release_url(Some(
+                "https://github.com/o/r/releases/tag/v1.6.0".to_string()
+            )),
+            Some("https://github.com/o/r/releases/tag/v1.6.0".to_string())
+        );
+        assert_eq!(
+            clean_release_url(Some("https://example.com/evil".to_string())),
+            None,
+            "non-github release URLs never echo into the panel"
+        );
+        assert_eq!(clean_release_url(None), None);
+    }
+
+    #[test]
+    fn update_check_serializes_without_token_material() {
+        let check = UpdateCheck {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            latest_tag: Some("v9.9.9".to_string()),
+            latest_name: "planted name".to_string(),
+            latest_url: Some("https://github.com/o/r/releases/tag/v9.9.9".to_string()),
+            published_at: Some("2026-01-01".to_string()),
+            update_available: true,
+            authenticated: true,
+            rate_limited: false,
+            rate_limit: GhRateLimit {
+                limit: Some(60),
+                remaining: Some(59),
+                reset: None,
+            },
+        };
+        let json = serde_json::to_string(&check).expect("update check serializes");
+        let lowered = json.to_lowercase();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !lowered.contains(sentinel),
+                "update check must stay secret-free, found {sentinel:?}"
+            );
+        }
+        assert!(
+            json.contains("update_available"),
+            "the snake_case verdict shape must survive: {json}"
+        );
+    }
+
+    #[test]
+    fn runner_mapping_fixes_vocabulary_and_label_names() {
+        let raw: RawRunner = serde_json::from_str(
+            r#"{
+                "id": 3,
+                "name": " ",
+                "os": "  ",
+                "status": "bogus",
+                "busy": true,
+                "labels": [{"name": " self-hosted "}, {}, {"name": ""}]
+            }"#,
+        )
+        .expect("fixture parses");
+        let runner = to_runner(raw);
+        assert_eq!(runner.id, 3);
+        assert_eq!(runner.name, "(no title)");
+        assert_eq!(runner.os, "unknown");
+        assert_eq!(runner.status, "unknown");
+        assert!(runner.busy);
+        assert_eq!(runner.labels, vec!["self-hosted".to_string()]);
+
+        for (status, expected) in [
+            (Some("online".to_string()), "online"),
+            (Some("offline".to_string()), "offline"),
+            (Some("bogus".to_string()), "unknown"),
+            (None, "unknown"),
+        ] {
+            assert_eq!(clean_runner_status(status), expected);
+        }
+        assert_eq!(clean_runner_os(Some("Linux".to_string())), "Linux");
+        assert_eq!(clean_runner_os(Some("   ".to_string())), "unknown");
+        assert_eq!(clean_runner_os(None), "unknown");
+    }
+
+    #[test]
+    fn runners_envelope_parses_runners_and_total() {
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let base = serve_once(
+            200,
+            br#"{"total_count":1,"runners":[{"id":3,"name":"pi-runner","os":"Linux","status":"online","busy":false,"labels":[{"name":"self-hosted"}]}]}"#.to_vec(),
+            Some(("60".to_string(), "59".to_string(), "1234567890".to_string())),
+            std::sync::Arc::clone(&seen),
+        );
+        let (value, rate, limited) =
+            fetch_json_value(&base, "/repos/o/r/actions/runners?per_page=30", None)
+                .expect("200 parses");
+        assert!(!limited);
+        assert_eq!(rate.remaining, Some(59));
+        let envelope: RawRunners =
+            serde_json::from_value(value.expect("envelope present")).expect("envelope parses");
+        assert_eq!(envelope.total_count, 1);
+        let runner = to_runner(envelope.runners.into_iter().next().expect("one runner"));
+        assert_eq!(runner.id, 3);
+        assert_eq!(runner.name, "pi-runner");
+        assert_eq!(runner.os, "Linux");
+        assert_eq!(runner.status, "online");
+        assert!(!runner.busy);
+        assert_eq!(runner.labels, vec!["self-hosted".to_string()]);
+    }
+
+    #[test]
+    fn local_probe_reports_the_documented_tool_set_from_path_only() {
+        // Hermetic: a scratch directory with planted executables stands in
+        // for PATH — the probe never spawns anything.
+        let scratch =
+            std::env::temp_dir().join(format!("nexora-runners-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        #[cfg(windows)]
+        let planted = "git.exe";
+        #[cfg(not(windows))]
+        let planted = "git";
+        std::fs::write(scratch.join(planted), "planted").expect("plant fixture");
+        let dirs = vec![scratch.clone()];
+        assert!(tool_on_path(&dirs, "git"));
+        assert!(!tool_on_path(&dirs, "gh"));
+        assert!(!tool_on_path(&dirs, "docker"));
+        assert!(!tool_on_path(&dirs, ""));
+        std::fs::remove_dir_all(&scratch).expect("scratch cleanup");
+
+        // The real probe always reports exactly the documented set (values
+        // depend on the machine's PATH — only the shape is asserted).
+        let local = probe_local_tools();
+        assert_eq!(local.len(), LOCAL_TOOLS.len());
+        for (entry, tool) in local.iter().zip(LOCAL_TOOLS.iter()) {
+            assert_eq!(entry.name, *tool);
+        }
+        let json = serde_json::to_string(&local).expect("probe serializes");
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !json.to_lowercase().contains(sentinel),
+                "probe must stay secret-free, found {sentinel:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn runners_response_serializes_without_token_material() {
+        let response = GhRunnersResponse {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            runners: Vec::new(),
+            runners_total: 0,
+            runners_needs_auth: true,
+            local: vec![GhToolReadiness {
+                name: "git".to_string(),
+                found: true,
+            }],
+            authenticated: false,
+            rate_limited: false,
+            rate_limit: GhRateLimit {
+                limit: Some(60),
+                remaining: Some(59),
+                reset: None,
+            },
+        };
+        let json = serde_json::to_string(&response).expect("runners response serializes");
+        let lowered = json.to_lowercase();
+        for sentinel in SECRET_SENTINELS {
+            assert!(
+                !lowered.contains(sentinel),
+                "runners response must stay secret-free, found {sentinel:?}"
+            );
+        }
+        assert!(
+            json.contains("runners_needs_auth"),
+            "the snake_case needs-token shape must survive: {json}"
+        );
+    }
+}

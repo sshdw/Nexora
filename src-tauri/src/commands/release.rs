@@ -31,7 +31,9 @@
 use tauri::{AppHandle, Manager, State};
 
 use crate::application::confirmations::ManagedConfirmations;
-use crate::application::release::{CreatedIssue, ReleaseError, ReleaseStatus};
+#[cfg(test)]
+use crate::application::release::ReleaseError;
+use crate::application::release::{CreatedIssue, ReleaseStatus};
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
 
@@ -127,50 +129,7 @@ pub(crate) async fn create_issue_for_finding(
     }
 }
 
-impl From<ReleaseError> for CommandError {
-    fn from(err: ReleaseError) -> Self {
-        match err {
-            // The workspace path may contain a user name, so even the
-            // fixed text names no path (same mapping as `repo_audit`).
-            ReleaseError::InvalidRoot => Self::new(
-                ErrorKind::InvalidInput,
-                "the workspace folder is not available for release",
-            ),
-            ReleaseError::Io => Self::new(
-                ErrorKind::Io,
-                "the release status could not read the workspace",
-            ),
-            // The curated database text names no SQL and no stored value;
-            // the raw detail stays in the server log only.
-            ReleaseError::Database(inner) => Self::from(inner),
-            // Fixed validation vocabulary that never echoes the rejected
-            // value; the destructive-action confirmation pattern for the
-            // unconfirmed call (like the terminal and the refactor apply).
-            ReleaseError::InvalidInput { message } => Self::new(ErrorKind::InvalidInput, message),
-            ReleaseError::Unconfirmed => Self::new(
-                ErrorKind::ConfirmationRequired,
-                "explicit confirmation is required before filing a GitHub issue",
-            ),
-            // The `gh` CLI surface: honest, actionable, fixed vocabulary —
-            // no credential material, no path, no CLI stderr text.
-            ReleaseError::GhMissing => Self::new(
-                ErrorKind::Io,
-                "the GitHub CLI (gh) is not installed or not on PATH",
-            ),
-            ReleaseError::GhNotSignedIn => Self::new(
-                ErrorKind::Request,
-                "the GitHub CLI is not signed in — run `gh auth login` in a terminal",
-            ),
-            ReleaseError::NoGitHubRepo => Self::new(
-                ErrorKind::InvalidInput,
-                "the workspace is not filed under a github.com repository",
-            ),
-            ReleaseError::GhFailed => {
-                Self::new(ErrorKind::Request, "the GitHub issue could not be created")
-            }
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {

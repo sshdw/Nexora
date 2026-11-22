@@ -1,6 +1,11 @@
-mod application;
+// The application and infrastructure trees now live in the Tauri-free
+// `nexora-runtime` crate. Re-exporting them at the crate root keeps every
+// command's `crate::application::...` / `crate::infrastructure::...` path —
+// and the desktop's composition root — byte-identical.
+pub use nexora_runtime::{application, infrastructure};
+
+mod async_spawner;
 mod commands;
-mod infrastructure;
 
 use tauri::Manager;
 
@@ -19,6 +24,8 @@ use tauri::Manager;
 // the line-count lint by construction; the body is declarative registration.
 #[allow(clippy::too_many_lines)]
 pub fn run() {
+    use std::sync::Arc;
+
     // Initialize logging first so database and migration events are captured
     // (ARCHITECTURE.md §11).
     infrastructure::logging::init();
@@ -319,8 +326,9 @@ pub fn run() {
             // resolves them only through the `nexora_core::provider` seam —
             // `application::execution` never names a concrete provider, and
             // the provider executors never import application types.
-            let (executors, credentials) =
-                infrastructure::providers::registry::execution_sources();
+            let (executors, credentials) = infrastructure::providers::registry::execution_sources(
+                Arc::new(async_spawner::TauriSpawner),
+            );
             application::execution::install_execution_sources(executors, credentials)
                 .map_err(std::io::Error::other)?;
             // Confirm the shared connection is reachable through managed state
