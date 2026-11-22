@@ -140,6 +140,15 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      - name: Create a canonical macOS test fixture directory
+        if: steps.changes.outputs.affected == 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          # macOS TMPDIR can traverse /var, which no-follow fixture readers reject.
+          test_dir="$(mktemp -d "$RUNNER_TEMP/nexora-tests.XXXXXX")"
+          canonical_test_dir="$(cd -- "$test_dir" && pwd -P)"
+          printf 'TMPDIR=%s\n' "$canonical_test_dir" >> "$GITHUB_ENV"
+
       - name: cargo test
         if: steps.changes.outputs.affected == 'true'
         working-directory: src-tauri

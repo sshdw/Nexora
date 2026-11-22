@@ -91,6 +91,8 @@ pub(crate) fn render_seatbelt_profile(policy: &SandboxPolicy) -> io::Result<Stri
          (allow file-read* (subpath \"/System\") (subpath \"/usr/lib\") (subpath \"/usr/bin\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library/Apple\") (literal \"/dev/null\") (literal \"/dev/urandom\"))\n\
          (allow file-write-data (require-all (path \"/dev/null\") (vnode-type CHARACTER-DEVICE)))\n",
     );
+    // System child startup needs the root directory itself when resolving its cwd.
+    sbpl.push_str("(allow file-read* file-test-existence (literal \"/\"))\n");
 
     // Exact existing paths only: future private names never inherit read/write access.
     for entry in crate::sandbox::workspace_entries(policy)? {

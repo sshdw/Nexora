@@ -514,6 +514,22 @@ fn collect_probe_result(
         String::from_utf8_lossy(&stderr_buf.lock().map_err(|_| "probe capture unavailable")?)
             .into_owned();
     if !exit_status.success() {
+        #[cfg(all(test, target_os = "macos"))]
+        if std::env::var_os("NEXORA_REQUIRE_NATIVE_SANDBOX").is_some() {
+            // Report the phase and status without emitting child output or paths.
+            let phase = if stderr.contains("sandbox-exec: sandbox_apply: Operation not permitted") {
+                "kernel refused to apply Seatbelt"
+            } else if stderr.lines().any(|line| line.starts_with("sandbox-exec:")) {
+                "sandbox-exec reported an error"
+            } else if stderr.lines().any(|line| line.starts_with("dyld")) {
+                "dynamic loader reported an error"
+            } else if stderr.is_empty() {
+                "no stderr"
+            } else {
+                "unclassified stderr"
+            };
+            eprintln!("Seatbelt boundary probe exited {exit_status} ({phase})");
+        }
         return Err("sandbox boundary probe exited unsuccessfully".into());
     }
 
