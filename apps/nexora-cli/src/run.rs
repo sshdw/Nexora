@@ -1098,8 +1098,10 @@ pub(crate) fn render_machine(frames: &[WireFrame], format: OutputFormat) -> Stri
     }
 }
 
-/// Host for `nexora run`: no user is present, so a governance gate cancels
-/// immediately and exits 4 with the fixed hint.
+/// Host for non-interactive `nexora run` (`HostMode::NonInteractive`): no user
+/// is present, so the first approval/question gate fails closed — the run is
+/// cancelled, the fixed hint goes to stderr and the process exits 4. It never
+/// auto-approves.
 pub(crate) fn host() -> &'static dyn RunHost {
     static HOST: OnceLock<(CliAgentHost, Mutex<mpsc::Receiver<WireFrame>>)> = OnceLock::new();
     &HOST
@@ -1110,8 +1112,11 @@ pub(crate) fn host() -> &'static dyn RunHost {
         .0
 }
 
-/// Host for the interactive TUI: the same seam and registry, but a governance
-/// gate stays parked until the user answers it.
+/// Host for the interactive TUI (`HostMode::Interactive`): the same seam and
+/// registry, but a governance gate stays parked for `A`/`D`/`Ctrl+C` through
+/// the real registry/`resolve_approval` path — no auto-cancel, no
+/// auto-approve. Only core-emitted frames set the local decision and the
+/// approval return point.
 pub(crate) fn interactive_host() -> &'static dyn RunHost {
     static HOST: OnceLock<(CliAgentHost, Mutex<mpsc::Receiver<WireFrame>>)> = OnceLock::new();
     &HOST

@@ -45,8 +45,13 @@ use events::{channel, map_event, EventSender, UiEvent, POLL_INTERVAL};
 use sources::Sources;
 use terminal::{StderrIo, TerminalGuard};
 
-/// The only source bundle linked into the shipped binary: real read-only
-/// runtime projections, the Clap grammar, and a best-effort OS clipboard.
+/// The only source bundle linked into the shipped binary. `Sources::shipped()`
+/// uses runtime-backed projections: `RuntimeSessionSource` (persisted
+/// conversation/run reads plus local search), `RuntimeDiffSource` (read-only
+/// git diff), `RuntimeApprovalView` (live run state) and `OsClipboardSink`
+/// (best effort), alongside the Clap-derived command catalog. Only
+/// `test_sources()` (`cfg(test)`) supplies scripted data; no fabricated backend
+/// data reaches the shipped TUI.
 #[must_use]
 fn sources() -> Sources {
     Sources::shipped()
