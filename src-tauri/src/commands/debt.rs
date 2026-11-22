@@ -25,7 +25,10 @@
 
 use tauri::{AppHandle, Manager, State};
 
-use crate::application::debt::{DebtError, DebtService, ImportSummary};
+#[cfg(test)]
+use crate::application::debt::DebtError;
+use crate::application::debt::{DebtService, ImportSummary};
+#[cfg(test)]
 use crate::application::repo_audit::RepoAuditError;
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -118,27 +121,7 @@ pub(crate) async fn import_debt_from_audit(app: AppHandle) -> Result<ImportSumma
     }
 }
 
-impl From<DebtError> for CommandError {
-    fn from(err: DebtError) -> Self {
-        match err {
-            DebtError::ItemNotFound { id } => {
-                Self::new(ErrorKind::NotFound, format!("no debt item with id {id}"))
-            }
-            DebtError::InvalidInput { message } => Self::new(ErrorKind::InvalidInput, message),
-            // The workspace path may contain a user name, so even the
-            // fixed text names no path (same mapping as `repo_audit`).
-            DebtError::Audit(RepoAuditError::InvalidRoot) => Self::new(
-                ErrorKind::InvalidInput,
-                "the workspace folder is not available for audit",
-            ),
-            DebtError::Audit(RepoAuditError::Io) => Self::new(
-                ErrorKind::Io,
-                "the repository audit could not read the workspace",
-            ),
-            DebtError::Database(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {

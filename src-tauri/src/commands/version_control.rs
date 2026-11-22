@@ -47,10 +47,12 @@
 use tauri::{AppHandle, Manager};
 
 use crate::application::confirmations::ManagedConfirmations;
+#[cfg(test)]
+use crate::application::version_control::CommitExplainError;
 use crate::application::version_control::{
-    CommitExplainError, CommitExplanation, GeneratedCommitMessage, GitBranch, GitCommitDiff,
-    GitConflictDiff, GitFetchResult, GitFileDiff, GitInfo, GitPullResult, GitReviewDiff,
-    GitStashEntry, GitStashPopResult,
+    CommitExplanation, GeneratedCommitMessage, GitBranch, GitCommitDiff, GitConflictDiff,
+    GitFetchResult, GitFileDiff, GitInfo, GitPullResult, GitReviewDiff, GitStashEntry,
+    GitStashPopResult,
 };
 use crate::application::workspace::resolve_workspace_root;
 use crate::infrastructure::database::Database;
@@ -776,18 +778,7 @@ pub(crate) async fn git_prepare_review_diff(
     }
 }
 
-impl From<CommitExplainError> for CommandError {
-    fn from(err: CommitExplainError) -> Self {
-        match err {
-            // Both sides stay secret-free: the commit diff is never echoed.
-            CommitExplainError::InvalidInput => Self::new(
-                ErrorKind::InvalidInput,
-                "the commit diff to explain is invalid",
-            ),
-            CommitExplainError::Request(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {
@@ -845,7 +836,9 @@ mod tests {
     #[test]
     fn commit_explain_reuses_the_shared_ai_boundary_without_auto_execution() {
         const SOURCE: &str = include_str!("version_control.rs");
-        const SERVICE: &str = include_str!("../application/version_control/commit_message.rs");
+        const SERVICE: &str = include_str!(
+            "../../../crates/nexora-runtime/src/application/version_control/commit_message.rs"
+        );
         assert!(
             SERVICE.contains("RequestExecutionService::new("),
             "the explain service must execute through the shared boundary"

@@ -70,17 +70,7 @@ pub(crate) fn flags_status(
         .map_err(CommandError::from)
 }
 
-impl From<crate::application::flags::FlagError> for CommandError {
-    fn from(err: crate::application::flags::FlagError) -> Self {
-        match err {
-            crate::application::flags::FlagError::InvalidDocument { .. } => Self::new(
-                ErrorKind::InvalidData,
-                "the workspace flags file is invalid",
-            ),
-            crate::application::flags::FlagError::Database(inner) => Self::from(inner),
-        }
-    }
-}
+// [error mapping moved to nexora_runtime::command_error_mapping]
 
 #[cfg(test)]
 mod tests {
