@@ -1959,14 +1959,11 @@ describe("composer sheet — theme linkage (src/styles/composer.css)", () => {
     // …and the cap has to cover the longest id the catalogs can hand the
     // composer. Read out of the Rust lists rather than restated here, so a
     // longer id added there fails THIS test instead of truncating on screen.
-    // AC-302 moved the OpenAI and Gemini lists into `catalog.rs` (the
-    // executor modules keep only re-exports); Anthropic still holds its
-    // list inline, so the pin reads those two files.
-    const catalogs = ["catalog", "anthropic"]
-      .map((file) =>
-        readRepoFile(`src-tauri/src/infrastructure/providers/${file}.rs`)
-      )
-      .join("\n");
+    // The provider/model lists now live once in the shared core catalog
+    // (CLI PR-1): OpenAI, Gemini, Anthropic and every compatible preset are
+    // consolidated in `crates/nexora-core/src/catalog.rs`, so this pin reads
+    // that single file instead of the removed desktop copies.
+    const catalogs = readRepoFile("crates/nexora-core/src/catalog.rs");
     const ids = [
       ...catalogs.matchAll(/const \w*MODELS\w*: &\[&str\] = &\[([\s\S]*?)\];/g),
     ].flatMap((block) =>
