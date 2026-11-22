@@ -799,6 +799,50 @@ function emitTerminalOutput(frame: {
   }
 }
 
+interface MockPtySession {
+  sessionId: string;
+  shellName: string;
+  cwd: string;
+  cols: number;
+  rows: number;
+  lineBuffer: string;
+}
+
+let nextMockPtyId = 1;
+const mockPtySessions = new Map<string, MockPtySession>();
+
+function emitTerminalPtyOutput(sessionId: string, data: string) {
+  const listeners = eventListeners.get("terminal-pty-output");
+  if (!listeners) return;
+  for (const [, cb] of listeners) {
+    try {
+      (cb as (v: unknown) => void)({
+        event: "terminal-pty-output",
+        id: 0,
+        payload: { session_id: sessionId, data },
+      });
+    } catch {
+      // ignore handler errors
+    }
+  }
+}
+
+function emitTerminalPtyExit(sessionId: string, exitCode: number | null) {
+  const listeners = eventListeners.get("terminal-pty-exit");
+  if (!listeners) return;
+  for (const [, cb] of listeners) {
+    try {
+      (cb as (v: unknown) => void)({
+        event: "terminal-pty-exit",
+        id: 0,
+        payload: { session_id: sessionId, exit_code: exitCode },
+      });
+    } catch {
+      // ignore handler errors
+    }
+  }
+}
+
 /** Strict camelCase-only argument reader for the agent commands. Mirrors the
  * Tauri v2 IPC contract (arguments are deserialized by camelCase name) so the
  * mock enforces the same contract instead of forgiving snake_case fallbacks. */
@@ -3287,6 +3331,108 @@ async function invoke(
         suggested_fix: 'echo "fixed" && npm test',
         truncated_input: false,
       };
+    }
+    case "terminal_pty_spawn": {
+      const sessionId = `mock-pty-${nextMockPtyId++}`;
+      const cols = typeof args.cols === "number" ? args.cols : 80;
+      const rows = typeof args.rows === "number" ? args.rows : 24;
+      const cwd = mockWorkspaceRoot || "C:\\mock\\workspace";
+      const shellName = "pwsh";
+      mockPtySessions.set(sessionId, {
+        sessionId,
+        shellName,
+        cwd,
+        cols,
+        rows,
+        lineBuffer: "",
+      });
+      window.setTimeout(() => {
+        if (!mockPtySessions.has(sessionId)) return;
+        emitTerminalPtyOutput(sessionId, `PS ${cwd}> `);
+      }, 0);
+      return {
+        session_id: sessionId,
+        shell_name: shellName,
+        cwd,
+      };
+    }
+    case "terminal_pty_write": {
+      const sessionId = String(args.sessionId ?? "");
+      const data = String(args.data ?? "");
+      const session = mockPtySessions.get(sessionId);
+      if (!session) {
+        throw {
+          kind: "notFound",
+          message: "the terminal session is no longer active",
+        };
+      }
+      for (const ch of data) {
+        if (ch === "\x03") {
+          session.lineBuffer = "";
+          emitTerminalPtyOutput(sessionId, `^C\r\nPS ${session.cwd}> `);
+        } else if (ch === "\r" || ch === "\n") {
+          const cmd = session.lineBuffer.trim();
+          session.lineBuffer = "";
+          if (cmd === "exit") {
+            emitTerminalPtyOutput(sessionId, "\r\n");
+            mockPtySessions.delete(sessionId);
+            emitTerminalPtyExit(sessionId, 0);
+            break;
+          } else if (cmd === "clear" || cmd === "cls") {
+            emitTerminalPtyOutput(
+              sessionId,
+              `\x1b[2J\x1b[HPS ${session.cwd}> `
+            );
+          } else if (cmd === "pwd") {
+            emitTerminalPtyOutput(
+              sessionId,
+              `\r\n${session.cwd}\r\nPS ${session.cwd}> `
+            );
+          } else if (cmd.startsWith("echo ")) {
+            emitTerminalPtyOutput(
+              sessionId,
+              `\r\n${cmd.slice(5)}\r\nPS ${session.cwd}> `
+            );
+          } else if (cmd.length > 0) {
+            emitTerminalPtyOutput(
+              sessionId,
+              `\r\n[mock-pty] ${cmd}\r\nPS ${session.cwd}> `
+            );
+          } else {
+            emitTerminalPtyOutput(sessionId, `\r\nPS ${session.cwd}> `);
+          }
+        } else if (ch === "\x7f" || ch === "\b") {
+          if (session.lineBuffer.length > 0) {
+            session.lineBuffer = session.lineBuffer.slice(0, -1);
+            emitTerminalPtyOutput(sessionId, "\b \b");
+          }
+        } else {
+          session.lineBuffer += ch;
+          emitTerminalPtyOutput(sessionId, ch);
+        }
+      }
+      return null;
+    }
+    case "terminal_pty_resize": {
+      const sessionId = String(args.sessionId ?? "");
+      const session = mockPtySessions.get(sessionId);
+      if (!session) {
+        throw {
+          kind: "notFound",
+          message: "the terminal session is no longer active",
+        };
+      }
+      if (typeof args.cols === "number") session.cols = args.cols;
+      if (typeof args.rows === "number") session.rows = args.rows;
+      return null;
+    }
+    case "terminal_pty_kill": {
+      const sessionId = String(args.sessionId ?? "");
+      const existed = mockPtySessions.delete(sessionId);
+      if (existed) {
+        emitTerminalPtyExit(sessionId, 0);
+      }
+      return existed;
     }
     case "mcp_list_servers": {
       const raw = settings.get("mcp.servers");

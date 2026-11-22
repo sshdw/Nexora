@@ -44,6 +44,7 @@ pub mod project_dir;
 pub mod prompt_context;
 pub mod prompts;
 pub mod providers;
+pub mod pty_terminal;
 pub mod refactor_apply;
 pub mod release;
 pub mod repo_audit;
