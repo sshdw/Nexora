@@ -2581,7 +2581,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let mut cmd = Command::new(windows_cmd_path());
                 let script = format!(
-                    "(mkdir target\\w{worker} && echo MKDIR_OK || echo MKDIR_FAIL) & (echo worker-{worker}>target\\w{worker}\\tmp.txt && echo WRITE_OK || echo WRITE_FAIL) & (move /Y target\\w{worker}\\tmp.txt target\\w{worker}\\done.txt >NUL && echo MOVE_OK || echo MOVE_FAIL) & echo ok>\"%TEMP%\\t{worker}.txt\" & type \"%TEMP%\\t{worker}.txt\" & echo PARALLEL_OK_{worker}"
+                    "(mkdir target\\w{worker} && echo MKDIR_OK || echo MKDIR_FAIL) & (echo worker-{worker}>target\\w{worker}\\tmp.txt && echo WRITE_OK || echo WRITE_FAIL) & (ren target\\w{worker}\\tmp.txt done.txt && echo MOVE_OK || echo MOVE_FAIL) & echo ok>\"%TEMP%\\t{worker}.txt\" & type \"%TEMP%\\t{worker}.txt\" & echo PARALLEL_OK_{worker}"
                 );
                 cmd.current_dir(&ws_clone).args(["/D", "/C", &script]);
                 let config = SandboxSpawnConfig::for_workspace(&ws_clone);
@@ -2764,8 +2764,8 @@ mod tests {
             concat!(
                 "(mkdir target\\debug\\deps && echo MKDIR_OK || echo MKDIR_FAIL) & ",
                 "(echo obj-tmp>target\\debug\\deps\\app.o.tmp && echo WRITE_OK || echo WRITE_FAIL) & ",
-                "(move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL && echo MOVE_OK || echo MOVE_FAIL) & ",
-                "(move /Y target\\stale.o target\\stale.moved.o >NUL && echo STALE_MOVE_OK || echo STALE_MOVE_FAIL) & ",
+                "(ren target\\debug\\deps\\app.o.tmp app.o && echo MOVE_OK || echo MOVE_FAIL) & ",
+                "(ren target\\stale.o stale.moved.o && echo STALE_MOVE_OK || echo STALE_MOVE_FAIL) & ",
                 "(rmdir /S /Q target\\old_sub && echo RMDIR_OK || echo RMDIR_FAIL) & ",
                 "(mkdir dist\\assets && echo DIST_MKDIR_OK || echo DIST_MKDIR_FAIL) & ",
                 "(echo bundle>dist\\assets\\index.js && echo DIST_WRITE_OK || echo DIST_WRITE_FAIL) & ",
@@ -3141,8 +3141,8 @@ mod tests {
             concat!(
                 "(mkdir target\\debug\\deps && echo MKDIR_OK || echo MKDIR_FAIL) & ",
                 "(echo obj-med>target\\debug\\deps\\app.o.tmp && echo WRITE_OK || echo WRITE_FAIL) & ",
-                "(move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL && echo MOVE_OK || echo MOVE_FAIL) & ",
-                "(move /Y target\\stale.o target\\stale.moved.o >NUL && echo STALE_MOVE_OK || echo STALE_MOVE_FAIL) & ",
+                "(ren target\\debug\\deps\\app.o.tmp app.o && echo MOVE_OK || echo MOVE_FAIL) & ",
+                "(ren target\\stale.o stale.moved.o && echo STALE_MOVE_OK || echo STALE_MOVE_FAIL) & ",
                 "(rmdir /S /Q target\\old_sub && echo RMDIR_OK || echo RMDIR_FAIL) & ",
                 "(mkdir dist\\assets && echo DIST_MKDIR_OK || echo DIST_MKDIR_FAIL) & ",
                 "(echo dist-med>dist\\assets\\app.js && echo DIST_WRITE_OK || echo DIST_WRITE_FAIL) & ",
