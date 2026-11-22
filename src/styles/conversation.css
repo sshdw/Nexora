@@ -899,6 +899,37 @@
   border-inline-start: 2px solid var(--state-warn);
 }
 
+.nex-composer-adjacent .nex-agent-approval {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--shape-medium);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  border-inline-start: 2px solid var(--state-warn);
+}
+
+.nex-agent-approval-headline {
+  color: var(--color-on-surface);
+  margin-bottom: var(--space-xxs);
+}
+
+.nex-agent-approval-meta p,
+p.nex-agent-approval-meta {
+  margin: 0 0 var(--space-xxs);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-agent-approval-target {
+  margin-top: var(--space-xxs);
+  padding: var(--space-xxs) var(--space-xs);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-canvas);
+  border: 1px solid var(--color-outline-variant);
+  color: var(--color-on-surface);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .nex-agent-approval-text {
   flex: 1 1 auto;
   min-width: 0;
@@ -1099,6 +1130,36 @@
   overflow-x: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.nex-agent-step-args-list {
+  margin: 0;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-agent-step-arg-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-sm);
+  align-items: baseline;
+}
+
+.nex-agent-step-arg-key {
+  color: var(--color-on-surface-tertiary);
+  white-space: nowrap;
+}
+
+.nex-agent-step-arg-val {
+  margin: 0;
+  color: var(--color-on-surface);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .nex-agent-step-observation {

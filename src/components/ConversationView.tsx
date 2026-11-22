@@ -55,6 +55,7 @@ import { useConversation } from "../lib/useConversation";
 import { useWorkQueue } from "../lib/useWorkQueue";
 import type { WorkspaceStore } from "../lib/useWorkspace";
 import AgentRunSteps from "./AgentRunSteps";
+import ApprovalPanel from "./runSteps/ApprovalPanel";
 import Composer from "./Composer";
 import ConfirmDialog from "./ConfirmDialog";
 import PlanDecisionPanel from "./PlanDecisionPanel";
@@ -247,6 +248,13 @@ export default function ConversationView({
   const hasActiveRun = activeRun !== null;
   const promptContext = useComposerContext(conversationId, workspace.root, draft, hasActiveRun, promptDraft);
   const pendingQuestion = activeRun?.pending_question ?? null;
+  const pendingApprovalRun = useMemo(
+    () =>
+      runs.find(
+        (r) => r.status !== "interrupted" && r.pending_approval !== null
+      ) ?? null,
+    [runs]
+  );
   const pendingPlanRun = useMemo(() => {
     const candidates = runs.filter(
       (r) =>
@@ -895,6 +903,7 @@ export default function ConversationView({
                   }
                   showFinalResult={!hasPersistedAssistant}
                   hasActiveRun={hasActiveRun}
+                  renderApprovalInline={false}
                   onResolveApproval={dispatchAgentApprove}
                   onCancel={dispatchAgentCancel}
                   onKillSubagent={dispatchKillSubagent}
@@ -1069,15 +1078,24 @@ export default function ConversationView({
         </div>
       )}
 
-      {(pendingQuestion || pendingPlanRun || queueItems.length > 0) && (
+      {(pendingApprovalRun ||
+        pendingQuestion ||
+        pendingPlanRun ||
+        queueItems.length > 0) && (
         <div className="nex-composer-adjacent">
-          {pendingQuestion && (
+          {pendingApprovalRun && (
+            <ApprovalPanel
+              run={pendingApprovalRun}
+              onResolveApproval={dispatchAgentApprove}
+            />
+          )}
+          {!pendingApprovalRun && pendingQuestion && (
             <QuestionPanel
               question={pendingQuestion}
               onSubmit={handleAnswerQuestion}
             />
           )}
-          {!pendingQuestion && pendingPlanRun && (
+          {!pendingApprovalRun && !pendingQuestion && pendingPlanRun && (
             <PlanDecisionPanel
               runId={pendingPlanRun.run_id}
               disabled={hasActiveRun || agentBusy}

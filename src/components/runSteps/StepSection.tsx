@@ -12,6 +12,7 @@ import Button from "../Button";
 import { FILE_TOOLS } from "./grouping";
 import {
   diffCounts,
+  formatStepArguments,
   hasToolVerb,
   parseToolArgs,
   ruPlural,
@@ -251,10 +252,11 @@ export function StepLine({
   // action slot without the approval branch made every approval row read
   // "Thought" — a settled decision reported as the model musing.
   const isCall = step.kind === "tool_call";
+  const isApproval = step.kind === "approval";
   const known = hasToolVerb(step);
   const action = (() => {
     if (isCall) return toolVerb(step, locale);
-    if (step.kind === "approval") {
+    if (isApproval) {
       return tr(locale, "agent.kindApproval", {
         tool: step.tool_name ?? "",
       }).trim();
@@ -265,13 +267,19 @@ export function StepLine({
   // one has to spend it on its OWN NAME, because the verb alone ("Called")
   // names nothing — the reader must be able to see which tool ran. Its
   // arguments, including any path, are on the expanded row either way.
-  const identity = !isCall
-    ? null
-    : known
-      ? target
-      : step.tool_name !== null
-        ? { text: step.tool_name, title: tr(locale, "agent.toolArgs") }
-        : null;
+  // Approval steps also surface their target (e.g. command or path) directly
+  // on the header line so the user never has to expand raw JSON to see what
+  // was approved.
+  const identity =
+    !isCall && !isApproval
+      ? null
+      : isApproval
+        ? target
+        : known
+          ? target
+          : step.tool_name !== null
+            ? { text: step.tool_name, title: tr(locale, "agent.toolArgs") }
+            : null;
   // Only genuine file targets get the directory/name split. Commands,
   // queries and unknown-tool names render whole as the file-name slot so a
   // non-path value is never forced through a path split. `identity.text` is
@@ -424,27 +432,38 @@ export const StepSection = memo(function StepSection({
               <DiffView observation={displayObservation} />
             </>
           ) : (
-            <>
-              {step.arguments && (
-                <pre
-                  className="nex-agent-step-args nex-tag-mono"
-                  role="group"
-                  aria-label={t("agent.toolArgs")}
-                >
-                  {step.arguments}
-                </pre>
-              )}
-              {displayObservation && (
-                <pre className="nex-agent-step-observation">
-                  {displayObservation}
-                </pre>
-              )}
-              {step.kind === "model_turn" && !displayObservation && (
-                <span className="nex-agent-step-empty">
-                  {t("agent.noContent")}
-                </span>
-              )}
-            </>
+            (() => {
+              const formattedArgs = formatStepArguments(step);
+              return (
+                <>
+                  {formattedArgs.length > 0 && (
+                    <dl
+                      className="nex-agent-step-args-list nex-tag-mono"
+                      aria-label={t("agent.toolArgs")}
+                    >
+                      {formattedArgs.map((entry) => (
+                        <div key={entry.key} className="nex-agent-step-arg-row">
+                          <dt className="nex-agent-step-arg-key">{entry.key}</dt>
+                          <dd className="nex-agent-step-arg-val">
+                            {entry.value}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                  {displayObservation && (
+                    <pre className="nex-agent-step-observation">
+                      {displayObservation}
+                    </pre>
+                  )}
+                  {step.kind === "model_turn" && !displayObservation && (
+                    <span className="nex-agent-step-empty">
+                      {t("agent.noContent")}
+                    </span>
+                  )}
+                </>
+              );
+            })()
           )}
           {step.observation_truncated && !expanded && (
             <Button

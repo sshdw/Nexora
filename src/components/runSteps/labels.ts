@@ -365,3 +365,58 @@ export function remainingSecs(
 ): number {
   return Math.min(timeoutSecs, Math.max(0, requestedAt + timeoutSecs - now));
 }
+
+function formatArgValue(val: unknown): string {
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return String(val);
+  if (Array.isArray(val)) return val.map(formatArgValue).join(", ");
+  if (val && typeof val === "object") return JSON.stringify(val);
+  return String(val ?? "");
+}
+
+/** Format tool arguments as clean key/value pairs, omitting the primary target
+ *  key (`path`, `command`, `query`) when `stepTarget` already surfaces it on
+ *  the step header line. */
+export function formatStepArguments(
+  step: AgentStepView,
+  includePrimaryTarget = false
+): Array<{ key: string; value: string }> {
+  const args = parseToolArgs(step.arguments);
+  if (!args) return [];
+  const primaryKey =
+    !includePrimaryTarget && stepTarget(step) !== null
+      ? step.tool_name === "execute_command"
+        ? "command"
+        : typeof args.path === "string"
+          ? "path"
+          : typeof args.query === "string"
+            ? "query"
+            : null
+      : null;
+  const entries: Array<{ key: string; value: string }> = [];
+  for (const [key, raw] of Object.entries(args)) {
+    if (key === primaryKey) continue;
+    if (raw === null || raw === undefined) continue;
+    const value = formatArgValue(raw).trim();
+    if (!value) continue;
+    entries.push({ key, value });
+  }
+  return entries;
+}
+
+/** Extract a human-readable primary target (command, path, or query) from a
+ *  pending approval's raw JSON arguments. */
+export function formatApprovalTarget(argumentsJson: string): string | null {
+  const args = parseToolArgs(argumentsJson);
+  if (!args) return null;
+  if (typeof args.command === "string" && args.command.trim()) {
+    return args.command.trim();
+  }
+  if (typeof args.path === "string" && args.path.trim()) {
+    return args.path.trim();
+  }
+  if (typeof args.query === "string" && args.query.trim()) {
+    return args.query.trim();
+  }
+  return null;
+}
