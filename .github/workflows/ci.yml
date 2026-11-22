@@ -516,5 +516,11 @@ jobs:
           done
           test -f "$mounted_plist"
           test -f "$mounted_executable" && test -x "$mounted_executable"
+          expected_version="$(node -p 'require("../../../tauri.conf.json").version ?? ""')"
+          mounted_version="$(plutil -extract CFBundleShortVersionString raw -expect string "$mounted_plist")"
+          if [[ -z "$expected_version" || "$mounted_version" != "$expected_version" ]]; then
+            echo "::error::Mounted app version must match tauri.conf.json"
+            exit 1
+          fi
           cmp "$plist" "$mounted_plist"
           cmp "${apps[0]}/Contents/MacOS/$executable" "$mounted_executable"
