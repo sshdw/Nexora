@@ -887,12 +887,17 @@ mod tests {
         let cmd = if cfg!(windows) {
             let script_path = ws.join("spawn_descendant.ps1");
             let escaped = pid_file.display().to_string().replace('\'', "''");
+            // Avoid cmdlets (`Start-Process`/`Start-Sleep`) that trigger PowerShell module
+            // autoloading on cold CI runners; direct .NET calls start quickly inside the Job.
             std::fs::write(
                 &script_path,
                 format!(
-                    "$p = Start-Process -FilePath 'ping.exe' -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru\r\n\
+                    "$psi = [System.Diagnostics.ProcessStartInfo]::new('ping.exe', '-n 60 127.0.0.1')\r\n\
+                     $psi.UseShellExecute = $false\r\n\
+                     $psi.CreateNoWindow = $true\r\n\
+                     $p = [System.Diagnostics.Process]::Start($psi)\r\n\
                      [System.IO.File]::WriteAllText('{escaped}', [string]$p.Id)\r\n\
-                     Start-Sleep -Seconds 60\r\n"
+                     [System.Threading.Thread]::Sleep(60000)\r\n"
                 ),
             )
             .expect("write helper ps1");
@@ -904,7 +909,11 @@ mod tests {
         };
         let args = serde_json::json!({ "command": cmd });
         let limits = CommandLimits {
-            timeout: Duration::from_secs(3),
+            timeout: if cfg!(windows) {
+                Duration::from_secs(6)
+            } else {
+                Duration::from_secs(3)
+            },
             drain_grace: Duration::from_millis(250),
             capture_cap: MAX_CAPTURE_BYTES,
         };

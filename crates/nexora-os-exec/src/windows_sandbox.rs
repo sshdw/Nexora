@@ -27,18 +27,19 @@ use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile,
 };
 use windows_sys::Win32::Security::{
-    CopySid, CreateRestrictedToken, DeleteAce, EqualSid, FreeSid, GetAce, GetTokenInformation,
-    SetTokenInformation, TokenDefaultDacl, TokenGroups, ACCESS_ALLOWED_ACE, ACE_HEADER,
-    CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE, SECURITY_CAPABILITIES,
-    SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL,
-    TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_QUERY,
+    AddMandatoryAce, CopySid, CreateRestrictedToken, DeleteAce, EqualSid, FreeSid, GetAce,
+    GetTokenInformation, InitializeAcl, SetTokenInformation, TokenDefaultDacl, TokenGroups,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_REVISION, CONTAINER_INHERIT_ACE,
+    DACL_SECURITY_INFORMATION, LABEL_SECURITY_INFORMATION, OBJECT_INHERIT_ACE,
+    SECURITY_CAPABILITIES, SID_AND_ATTRIBUTES, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
+    TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE, FILE_DELETE_CHILD,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_FLAG_OVERLAPPED, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
     FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    PIPE_ACCESS_INBOUND, READ_CONTROL, WRITE_DAC,
+    PIPE_ACCESS_INBOUND, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicUIRestrictions,
@@ -69,6 +70,8 @@ const DISABLE_MAX_PRIVILEGE: u32 = 1;
 // LPAC performs capability access checks in addition to the restricted-token pass.
 // Filesystem confinement is AppContainer LPAC plus per-launch workspace capability ACLs.
 const SYSTEM_READ_SID: &str = "S-1-1-0";
+const LOW_MANDATORY_SID: &str = "S-1-16-4096";
+const SYSTEM_MANDATORY_LABEL_NO_WRITE_UP: u32 = 1;
 const STILL_ACTIVE_CODE: u32 = 259;
 const WORKSPACE_ALLOW_MASK: u32 = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE;
 // Build/cache directories (`target/`, `dist/`, `node_modules/.cache/`, etc.) and
@@ -92,11 +95,29 @@ static CAP_SID_SEQ: AtomicU32 = AtomicU32::new(1);
 static PIPE_SEQ: AtomicU64 = AtomicU64::new(1);
 static TEMP_DIR_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Returns a per-canonical-workspace mutex used ONLY during brief DACL read-modify-write
-/// operations (`grant_tree` / `revoke`), never while child processes execute.
-fn workspace_acl_lock(workspace: &Path) -> Arc<Mutex<()>> {
-    static LOCKS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
-    let mut map = LOCKS
+/// Snapshot of an object's mandatory-label SACL prior to temporary Low-IL lowering.
+enum SavedMandatoryLabel {
+    Empty,
+    RawAcl(Vec<u32>),
+}
+
+struct LabelOverride {
+    original: SavedMandatoryLabel,
+    active_count: usize,
+}
+
+#[derive(Default)]
+struct WorkspaceAclState {
+    label_overrides: HashMap<PathBuf, LabelOverride>,
+}
+
+/// Returns per-canonical-workspace mutex-guarded state used ONLY during brief
+/// DACL/SACL read-modify-write operations (`grant_tree` / `revoke`), never while
+/// child processes execute.
+fn workspace_acl_state(workspace: &Path) -> Arc<Mutex<WorkspaceAclState>> {
+    static STATES: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<WorkspaceAclState>>>>> =
+        OnceLock::new();
+    let mut map = STATES
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -104,9 +125,9 @@ fn workspace_acl_lock(workspace: &Path) -> Arc<Mutex<()>> {
         return existing;
     }
     map.retain(|_, weak| weak.strong_count() > 0);
-    let lock = Arc::new(Mutex::new(()));
-    map.insert(workspace.to_path_buf(), Arc::downgrade(&lock));
-    lock
+    let state = Arc::new(Mutex::new(WorkspaceAclState::default()));
+    map.insert(workspace.to_path_buf(), Arc::downgrade(&state));
+    state
 }
 
 pub(crate) struct RestrictedChild {
@@ -952,13 +973,18 @@ impl SandboxTempDir {
             BUILD_CHILD_ALLOW_MASK,
             OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
         )];
+        let low_sid = OwnedLocalSid::from_str(LOW_MANDATORY_SID)?;
         for path in [canon, packages, moniker_dir, ac_dir, ac_temp] {
-            let handle = OpenOptions::new()
-                .access_mode(READ_CONTROL | WRITE_DAC)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(path)?;
+            let (handle, has_write_owner) =
+                open_security_handle(&path, FILE_SHARE_READ | FILE_SHARE_WRITE, true)?;
             apply_file_aces(&handle, &owned_sids, &child_ops)?;
+            if has_write_owner {
+                let _ = set_low_mandatory_label(
+                    &handle,
+                    low_sid.as_ptr(),
+                    OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                );
+            }
         }
         Ok(guard)
     }
@@ -1089,15 +1115,42 @@ impl Drop for ContainerProfile {
 }
 
 type AceOp = (i32, u32, u32);
+type PendingAclOp = (File, Vec<AceOp>, Option<(PathBuf, bool)>);
 
 fn is_transient_vanished(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(ERROR_DELETE_PENDING)
 }
 
+fn open_security_handle(
+    path: &Path,
+    share_mode: u32,
+    want_write_owner: bool,
+) -> io::Result<(File, bool)> {
+    if want_write_owner {
+        match OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC | WRITE_OWNER)
+            .share_mode(share_mode)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)
+        {
+            Ok(file) => return Ok((file, true)),
+            Err(err) if err.kind() == io::ErrorKind::PermissionDenied => {}
+            Err(err) => return Err(err),
+        }
+    }
+    let file = OpenOptions::new()
+        .access_mode(READ_CONTROL | WRITE_DAC)
+        .share_mode(share_mode)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    Ok((file, false))
+}
+
 struct WorkspaceAclGuard {
-    acl_lock: Arc<Mutex<()>>,
+    acl_state: Arc<Mutex<WorkspaceAclState>>,
     files: Vec<File>,
     build_roots: Vec<PathBuf>,
+    label_refs: Vec<(PathBuf, Option<usize>)>,
     sids: Vec<Vec<u64>>,
 }
 impl WorkspaceAclGuard {
@@ -1112,9 +1165,10 @@ impl WorkspaceAclGuard {
             owned_sids.push(copy);
         }
         let mut guard = Self {
-            acl_lock: workspace_acl_lock(root),
+            acl_state: workspace_acl_state(root),
             files: Vec::new(),
             build_roots: Vec::new(),
+            label_refs: Vec::new(),
             sids: owned_sids,
         };
         guard.grant_tree(policy, root)?;
@@ -1125,14 +1179,15 @@ impl WorkspaceAclGuard {
     fn grant_tree(&mut self, policy: &SandboxPolicy, root: &Path) -> io::Result<()> {
         let deny_read_prefixes = super::sandbox::canonical_prefixes(&policy.deny_read_paths);
         let deny_write_prefixes = super::sandbox::canonical_prefixes(&policy.deny_write_paths);
+        let low_sid = OwnedLocalSid::from_str(LOW_MANDATORY_SID)?;
         let mut stack = vec![root.to_path_buf()];
-        let mut retained_ops: Vec<(File, Vec<AceOp>)> = Vec::new();
-        let mut transient_build_ops: Vec<(File, Vec<AceOp>)> = Vec::new();
+        let mut retained_ops: Vec<PendingAclOp> = Vec::new();
+        let mut transient_build_ops: Vec<PendingAclOp> = Vec::new();
         let mut build_hardlinks: HashMap<(u32, u32, u32), (u32, HashSet<PathBuf>)> = HashMap::new();
         let mut visited = 0usize;
 
-        let _lock = self
-            .acl_lock
+        let mut state = self
+            .acl_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
@@ -1183,13 +1238,8 @@ impl WorkspaceAclGuard {
             } else {
                 FILE_SHARE_READ | FILE_SHARE_WRITE
             };
-            let file = match OpenOptions::new()
-                .access_mode(READ_CONTROL | WRITE_DAC)
-                .share_mode(share)
-                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-                .open(&path)
-            {
-                Ok(f) => f,
+            let (file, has_write_owner) = match open_security_handle(&path, share, in_build_tree) {
+                Ok(opened) => opened,
                 Err(err) if is_transient_vanished(&err) && is_transient_build_child => continue,
                 Err(err) => return Err(io::Error::other(format!("workspace handle: {err}"))),
             };
@@ -1271,10 +1321,15 @@ impl WorkspaceAclGuard {
                 vec![(GRANT_ACCESS, WORKSPACE_ALLOW_MASK, 0)]
             };
 
-            if is_transient_build_child {
-                transient_build_ops.push((file, ops));
+            let label_target = if in_build_tree && has_write_owner {
+                Some((canonical, is_dir))
             } else {
-                retained_ops.push((file, ops));
+                None
+            };
+            if is_transient_build_child {
+                transient_build_ops.push((file, ops, label_target));
+            } else {
+                retained_ops.push((file, ops, label_target));
             }
 
             if is_dir && !denied_read {
@@ -1303,21 +1358,50 @@ impl WorkspaceAclGuard {
             }
         }
 
-        // Retain handles before mutating any DACL so Drop revokes partial grants on error.
+        // Retain handles before mutating any DACL/SACL so Drop revokes partial grants on error.
         let mut retained_apply = Vec::with_capacity(retained_ops.len());
-        for (file, ops) in retained_ops {
+        for (file, ops, label_target) in retained_ops {
             let idx = self.files.len();
             self.files.push(file);
-            if !ops.is_empty() {
-                retained_apply.push((idx, ops));
+            if !ops.is_empty() || label_target.is_some() {
+                retained_apply.push((idx, ops, label_target));
             }
         }
-        for (idx, ops) in retained_apply {
-            apply_file_aces(&self.files[idx], &self.sids, &ops)?;
+        for (idx, ops, label_target) in retained_apply {
+            if !ops.is_empty() {
+                apply_file_aces(&self.files[idx], &self.sids, &ops)?;
+            }
+            if let Some((canon, is_dir)) = label_target {
+                acquire_low_label(
+                    &mut state,
+                    &mut self.label_refs,
+                    &self.files[idx],
+                    canon,
+                    is_dir,
+                    Some(idx),
+                    low_sid.as_ptr(),
+                )?;
+            }
         }
-        for (file, ops) in transient_build_ops {
+        for (file, ops, label_target) in transient_build_ops {
             if !ops.is_empty() {
                 if let Err(err) = apply_file_aces(&file, &self.sids, &ops) {
+                    if !is_transient_vanished(&err) {
+                        return Err(err);
+                    }
+                    continue;
+                }
+            }
+            if let Some((canon, is_dir)) = label_target {
+                if let Err(err) = acquire_low_label(
+                    &mut state,
+                    &mut self.label_refs,
+                    &file,
+                    canon,
+                    is_dir,
+                    None,
+                    low_sid.as_ptr(),
+                ) {
                     if !is_transient_vanished(&err) {
                         return Err(err);
                     }
@@ -1328,13 +1412,43 @@ impl WorkspaceAclGuard {
     }
 
     fn revoke(&mut self) {
-        if self.files.is_empty() && self.build_roots.is_empty() {
+        if self.files.is_empty() && self.build_roots.is_empty() && self.label_refs.is_empty() {
             return;
         }
-        let _lock = self
-            .acl_lock
+        let mut state = self
+            .acl_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Restore temporary Low-IL mandatory labels once the last concurrent sandbox
+        // referencing each build-tree path finishes.
+        for (canon, retained_idx) in self.label_refs.drain(..).rev() {
+            let restore = match state.label_overrides.get_mut(&canon) {
+                Some(entry) if entry.active_count > 1 => {
+                    entry.active_count -= 1;
+                    None
+                }
+                Some(_) => state.label_overrides.remove(&canon).map(|e| e.original),
+                None => None,
+            };
+            if let Some(original) = restore {
+                if let Some(idx) = retained_idx {
+                    if let Some(file) = self.files.get(idx) {
+                        let _ = restore_mandatory_label(file, &original);
+                    }
+                } else if let Ok(meta) = std::fs::symlink_metadata(&canon) {
+                    if meta.file_attributes() & 0x400 == 0 {
+                        if let Ok(file) = OpenOptions::new()
+                            .access_mode(READ_CONTROL | WRITE_OWNER)
+                            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                            .open(&canon)
+                        {
+                            let _ = restore_mandatory_label(&file, &original);
+                        }
+                    }
+                }
+            }
+        }
         // Retained non-delete-shared handles prevent rename/reparse races and allow
         // SID-specific removal without restoring stale snapshots over user ACL edits.
         for file in self.files.drain(..).rev() {
@@ -1375,9 +1489,165 @@ impl WorkspaceAclGuard {
 }
 impl Drop for WorkspaceAclGuard {
     fn drop(&mut self) {
-        if !self.files.is_empty() || !self.build_roots.is_empty() {
+        if !self.files.is_empty() || !self.build_roots.is_empty() || !self.label_refs.is_empty() {
             self.revoke();
         }
+    }
+}
+
+fn acquire_low_label(
+    state: &mut WorkspaceAclState,
+    label_refs: &mut Vec<(PathBuf, Option<usize>)>,
+    file: &File,
+    canon: PathBuf,
+    is_dir: bool,
+    retained_idx: Option<usize>,
+    low_sid: *mut c_void,
+) -> io::Result<()> {
+    if let Some(entry) = state.label_overrides.get_mut(&canon) {
+        entry.active_count += 1;
+        label_refs.push((canon, retained_idx));
+        return Ok(());
+    }
+    let original = read_mandatory_label_sacl(file)?;
+    let inherit = if is_dir {
+        OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+    } else {
+        0
+    };
+    set_low_mandatory_label(file, low_sid, inherit)?;
+    state.label_overrides.insert(
+        canon.clone(),
+        LabelOverride {
+            original,
+            active_count: 1,
+        },
+    );
+    label_refs.push((canon, retained_idx));
+    Ok(())
+}
+
+fn read_mandatory_label_sacl(file: &File) -> io::Result<SavedMandatoryLabel> {
+    let mut sacl = std::ptr::null_mut();
+    let mut sd = std::ptr::null_mut();
+    // SAFETY: open file handle has READ_CONTROL.
+    let result = unsafe {
+        GetSecurityInfo(
+            file.as_raw_handle().cast(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut sacl,
+            &raw mut sd,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(io::Error::from_raw_os_error(
+            i32::try_from(result).unwrap_or(5),
+        ));
+    }
+    let saved = if sacl.is_null() || unsafe { (*sacl).AceCount } == 0 {
+        SavedMandatoryLabel::Empty
+    } else {
+        // SAFETY: `sacl` is a valid Win32 `ACL` inside `sd`.
+        let byte_len = usize::from(unsafe { (*sacl).AclSize });
+        if byte_len < std::mem::size_of::<ACL>() {
+            unsafe {
+                if !sd.is_null() {
+                    LocalFree(sd as HLOCAL);
+                }
+            }
+            return Err(io::Error::other("invalid mandatory label SACL size"));
+        }
+        let mut words = vec![0u32; byte_len.div_ceil(4)];
+        // SAFETY: `sacl` points to `byte_len` readable bytes inside `sd`, and `words`
+        // is 4-byte aligned with at least `byte_len` writable bytes.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                sacl.cast::<u8>(),
+                words.as_mut_ptr().cast::<u8>(),
+                byte_len,
+            );
+        }
+        SavedMandatoryLabel::RawAcl(words)
+    };
+    unsafe {
+        if !sd.is_null() {
+            LocalFree(sd as HLOCAL);
+        }
+    }
+    Ok(saved)
+}
+
+fn set_low_mandatory_label(file: &File, low_sid: *mut c_void, inherit: u32) -> io::Result<()> {
+    // 64 bytes (4-byte aligned) comfortably fits `ACL` (8 B) + `SYSTEM_MANDATORY_LABEL_ACE` (20 B).
+    let mut acl_buf = [0u32; 16];
+    let acl_ptr = acl_buf.as_mut_ptr().cast::<ACL>();
+    let acl_bytes = u32::try_from(std::mem::size_of_val(&acl_buf))
+        .map_err(|_| io::Error::other("mandatory ACL buffer size overflow"))?;
+    // SAFETY: `acl_ptr` is 4-byte aligned and `acl_bytes` bytes wide.
+    if unsafe { InitializeAcl(acl_ptr, acl_bytes, ACL_REVISION) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `acl_ptr` is initialized and `low_sid` is a valid mandatory-label SID.
+    if unsafe {
+        AddMandatoryAce(
+            acl_ptr,
+            ACL_REVISION,
+            inherit,
+            SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+            low_sid,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: open file handle has WRITE_OWNER; `acl_ptr` stays live through the call.
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle().cast(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            acl_ptr,
+        )
+    };
+    if result == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(
+            i32::try_from(result).unwrap_or(5),
+        ))
+    }
+}
+
+fn restore_mandatory_label(file: &File, saved: &SavedMandatoryLabel) -> io::Result<()> {
+    let sacl_ptr = match saved {
+        SavedMandatoryLabel::Empty => std::ptr::null_mut(),
+        SavedMandatoryLabel::RawAcl(words) => words.as_ptr().cast_mut().cast::<ACL>(),
+    };
+    // SAFETY: open file handle has WRITE_OWNER; `sacl_ptr` is null or a valid 4-byte-aligned `ACL`.
+    let result = unsafe {
+        SetSecurityInfo(
+            file.as_raw_handle().cast(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            sacl_ptr,
+        )
+    };
+    if result == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(
+            i32::try_from(result).unwrap_or(5),
+        ))
     }
 }
 
@@ -2566,6 +2836,260 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // End-to-end Medium-IL build-dir write, concurrency, protected-path block, and exact label restoration proof.
+    fn medium_il_workspace_allows_build_dir_writes_and_restores_exact_mandatory_labels() {
+        let _native = crate::native_test_lock();
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent = crate::test_workspace_parent().join(format!("nx-win-medil-parent-{stamp}"));
+        let outside = crate::test_workspace_parent().join(format!("nx-win-medil-out-{stamp}"));
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let _gp = Fixture(parent.clone());
+        let _go = Fixture(outside.clone());
+
+        // Grant current user Full Control (WRITE_OWNER) and label the parent explicitly Medium IL
+        // with (OI)(CI) inheritance so all child directories/files created beneath it inherit Medium IL,
+        // reproducing Windows Medium-IL volumes / GitHub windows-latest `D:\a\_temp`.
+        let user = std::env::var("USERNAME").expect("USERNAME env var present on Windows");
+        let grant = Command::new("icacls")
+            .arg(&parent)
+            .args(["/grant", &format!("{user}:(OI)(CI)F"), "/Q"])
+            .status()
+            .expect("icacls grant available");
+        assert!(grant.success(), "icacls grant F failed: {grant}");
+        let set_med = Command::new("icacls")
+            .arg(&parent)
+            .args(["/setintegritylevel", "(OI)(CI)M", "/Q"])
+            .status()
+            .expect("icacls setintegritylevel available");
+        assert!(
+            set_med.success(),
+            "icacls setintegritylevel M failed: {set_med}"
+        );
+
+        let ws = parent.join("repo");
+        let src = ws.join("src");
+        let target = ws.join("target");
+        let old_sub = target.join("old_sub");
+        let kept_sub = target.join("kept_sub");
+        let dist = ws.join("dist");
+        let git_dir = ws.join(".git");
+        for dir in [&src, &old_sub, &kept_sub, &dist, &git_dir] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // Also test an explicitly labeled (non-inherited) Medium-IL build root (`dist`).
+        let set_dist = Command::new("icacls")
+            .arg(&dist)
+            .args(["/setintegritylevel", "(OI)(CI)M", "/Q"])
+            .status()
+            .expect("icacls setintegritylevel dist available");
+        assert!(
+            set_dist.success(),
+            "icacls setintegritylevel M on dist failed: {set_dist}"
+        );
+        // Also test an unlabeled (empty SACL) build root (`build`) where WRITE_OWNER is available.
+        let build = crate::test_workspace_parent().join(format!("nx-win-empty-il-{stamp}"));
+        let build_target = build.join("target");
+        std::fs::create_dir_all(&build_target).unwrap();
+        let _gb = Fixture(build.clone());
+        let grant_b = Command::new("icacls")
+            .arg(&build)
+            .args(["/grant", &format!("{user}:(OI)(CI)F"), "/Q"])
+            .status()
+            .expect("icacls grant build available");
+        assert!(grant_b.success());
+        let empty_before = (
+            acl_snapshot(&build_target, false),
+            acl_snapshot(&build_target, true),
+        );
+        assert!(
+            empty_before.1.is_empty(),
+            "fresh unlabeled build_target should start with empty SACL"
+        );
+
+        std::fs::write(src.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(old_sub.join("stale.o"), "old").unwrap();
+        std::fs::write(kept_sub.join("kept.o"), "keep").unwrap();
+        std::fs::write(target.join("stale.o"), "old").unwrap();
+        std::fs::write(target.join(".env"), "target-secret").unwrap();
+        std::fs::write(ws.join(".env"), "root-secret").unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        let outside_escape = outside.join("escaped.txt");
+
+        let tracked = [
+            &ws,
+            &src,
+            &target,
+            &dist,
+            &kept_sub,
+            &kept_sub.join("kept.o"),
+            &ws.join(".env"),
+            &target.join(".env"),
+            &git_dir.join("HEAD"),
+        ];
+        let before: Vec<_> = tracked
+            .iter()
+            .map(|p| (acl_snapshot(p, false), acl_snapshot(p, true)))
+            .collect();
+        assert!(
+            !before[2].1.is_empty(),
+            "target must carry inherited Medium IL mandatory label before sandbox run"
+        );
+        assert!(
+            !before[3].1.is_empty(),
+            "dist must carry explicit Medium IL mandatory label before sandbox run"
+        );
+
+        let script = format!(
+            concat!(
+                "mkdir target\\debug\\deps & ",
+                "echo obj-med>target\\debug\\deps\\app.o.tmp & ",
+                "move /Y target\\debug\\deps\\app.o.tmp target\\debug\\deps\\app.o >NUL & ",
+                "move /Y target\\stale.o target\\stale.moved.o >NUL & ",
+                "rmdir /S /Q target\\old_sub & ",
+                "mkdir dist\\assets & ",
+                "echo dist-med>dist\\assets\\app.js & ",
+                "(echo pwn>.env) 2>NUL & ",
+                "(echo pwn>target\\.env) 2>NUL & ",
+                "(echo pwn>.git\\HEAD) 2>NUL & ",
+                "(echo pwn>src\\new.rs) 2>NUL & ",
+                "(echo pwn>\"{out}\") 2>NUL & ",
+                "echo MED_IL_OK & exit /b 0"
+            ),
+            out = outside_escape.display()
+        );
+        let mut cmd = Command::new(windows_cmd_path());
+        cmd.current_dir(&ws).args(["/D", "/C", &script]);
+        let Some((status, stdout)) =
+            run_sandboxed_capture(&mut cmd, &SandboxSpawnConfig::for_workspace(&ws))
+        else {
+            return;
+        };
+        assert!(status.success(), "Medium-IL sandbox run failed: {status:?}");
+        assert!(stdout.contains("MED_IL_OK"), "missing marker: {stdout}");
+
+        assert_eq!(
+            std::fs::read_to_string(target.join("debug").join("deps").join("app.o"))
+                .unwrap()
+                .trim(),
+            "obj-med"
+        );
+        assert!(!target.join("stale.o").exists());
+        assert_eq!(
+            std::fs::read_to_string(target.join("stale.moved.o"))
+                .unwrap()
+                .trim(),
+            "old"
+        );
+        assert!(!old_sub.exists());
+        assert_eq!(
+            std::fs::read_to_string(dist.join("assets").join("app.js"))
+                .unwrap()
+                .trim(),
+            "dist-med"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ws.join(".env")).unwrap(),
+            "root-secret"
+        );
+        assert_eq!(
+            std::fs::read_to_string(target.join(".env")).unwrap(),
+            "target-secret"
+        );
+        assert_eq!(
+            std::fs::read_to_string(git_dir.join("HEAD")).unwrap(),
+            "ref: refs/heads/main\n"
+        );
+        assert!(!src.join("new.rs").exists());
+        assert!(!outside_escape.exists());
+
+        let after: Vec<_> = tracked
+            .iter()
+            .map(|p| (acl_snapshot(p, false), acl_snapshot(p, true)))
+            .collect();
+        assert_eq!(
+            before, after,
+            "Medium-IL workspace DACLs and mandatory labels must match before/after"
+        );
+
+        // Also verify unlabeled build root with WRITE_OWNER restores cleanly to empty SACL.
+        let mut cmd_empty = Command::new(windows_cmd_path());
+        cmd_empty.current_dir(&build).args([
+            "/D",
+            "/C",
+            "mkdir target\\out & echo ok>target\\out\\f.txt",
+        ]);
+        let (st_empty, _) =
+            run_sandboxed_capture(&mut cmd_empty, &SandboxSpawnConfig::for_workspace(&build))
+                .unwrap();
+        assert!(st_empty.success());
+        assert_eq!(
+            std::fs::read_to_string(build_target.join("out").join("f.txt"))
+                .unwrap()
+                .trim(),
+            "ok"
+        );
+        let empty_after = (
+            acl_snapshot(&build_target, false),
+            acl_snapshot(&build_target, true),
+        );
+        assert_eq!(
+            empty_before, empty_after,
+            "unlabeled build root must restore cleanly to empty SACL"
+        );
+
+        // Verify concurrent sandboxes on the same Medium-IL workspace keep Low IL active until
+        // the last worker finishes and then restore the exact Medium-IL mandatory label.
+        let worker_count: usize = 4;
+        let barrier = Arc::new(std::sync::Barrier::new(worker_count));
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            let ws_clone = ws.clone();
+            let barrier_clone = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                let mut c = Command::new(windows_cmd_path());
+                let s = format!(
+                    "mkdir target\\par{worker} & echo p{worker}>target\\par{worker}\\ok.txt & echo OK"
+                );
+                c.current_dir(&ws_clone).args(["/D", "/C", &s]);
+                let mut child = crate::spawn_sandboxed_in_process_tree(
+                    &mut c,
+                    &SandboxSpawnConfig::for_workspace(&ws_clone),
+                )
+                .expect("concurrent Medium-IL spawn must succeed");
+                barrier_clone.wait();
+                let status = child.wait().expect("wait concurrent Medium-IL child");
+                drop(child);
+                status
+            }));
+        }
+        for (worker, handle) in handles.into_iter().enumerate() {
+            let status = handle.join().expect("worker thread panicked");
+            assert!(
+                status.success(),
+                "concurrent Medium-IL worker {worker} failed"
+            );
+            assert_eq!(
+                std::fs::read_to_string(target.join(format!("par{worker}")).join("ok.txt"))
+                    .unwrap()
+                    .trim(),
+                format!("p{worker}")
+            );
+        }
+        let after_parallel: Vec<_> = tracked
+            .iter()
+            .map(|p| (acl_snapshot(p, false), acl_snapshot(p, true)))
+            .collect();
+        assert_eq!(
+            before, after_parallel,
+            "concurrent Medium-IL sandboxes must restore exact DACLs and mandatory labels"
         );
     }
 }
