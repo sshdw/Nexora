@@ -57,26 +57,12 @@ const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
 // `catalog.rs`. The paths here are re-exports so every existing consumer
 // (`mod.rs` aggregation, `registry`, `context_stats`, `privacy`, `compat`,
 // commands) keeps compiling unchanged.
-pub(crate) use super::catalog::openai::{
-    COMPAT_DISPLAY_NAME, COMPAT_NAME, MODEL_RATES, PROVIDER_DISPLAY_NAME, PROVIDER_NAME,
-    SUPPORTED_MODELS,
-};
+pub(crate) use super::catalog::openai::{COMPAT_NAME, PROVIDER_NAME, SUPPORTED_MODELS};
 #[cfg(test)]
 pub(crate) use super::catalog::openai::{
     NVIDIA_MODELS, OPENCODE_ZEN_MODELS, OPENROUTER_MODELS, OPENROUTER_NAME, XKIRO_MODELS,
     XKIRO_NAME,
 };
-
-/// Look up the estimated rate for a native OpenAI model ID.
-///
-/// Returns `None` for unknown IDs — never a guessed rate.
-#[must_use]
-pub(crate) fn rate_for_model(model: &str) -> Option<(u64, u64)> {
-    MODEL_RATES
-        .iter()
-        .find(|(name, _, _)| *name == model)
-        .map(|(_, input, output)| (*input, *output))
-}
 
 /// Whether `model` is listed for the OpenAI-family provider `name`.
 ///
