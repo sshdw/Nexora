@@ -1,4 +1,7 @@
-//! Phase-5 interactive TUI shell (issue #164, brief §5/§10/§12).
+//! Interactive TUI shell (issue #164) with the phase-6a UI depth scaffold
+//! (issue #165): sessions/diff overlays, inline approvals, Clap-derived palette
+//! and micro-UX — all backed by read-only sources that are `Unavailable` in the
+//! shipped binary (brief §5/§6/§8/§10/§12).
 //!
 //! Entered only from `main` when the bare command runs on three real terminals.
 //! One input thread polls Crossterm (through `ratatui::crossterm`), an optional
@@ -15,6 +18,7 @@ mod events;
 mod glyphs;
 mod layout;
 mod render;
+mod sources;
 mod terminal;
 
 #[cfg(test)]
@@ -38,7 +42,28 @@ use crate::run::CapabilityArgs;
 use app::{App, StatusSnapshot};
 use capabilities::Capabilities;
 use events::{channel, map_event, EventSender, UiEvent, POLL_INTERVAL};
+use sources::Sources;
 use terminal::{StderrIo, TerminalGuard};
+
+/// The only source bundle linked into the shipped binary. Every backend-backed
+/// source reports `Unavailable`; the command catalog is the real Clap grammar.
+#[must_use]
+fn sources() -> Sources {
+    Sources::shipped()
+}
+
+/// Test-only injection mirroring `ScriptedRunHost`: never reachable from `main`.
+#[cfg(test)]
+#[allow(clippy::option_option)]
+#[must_use]
+fn test_sources(
+    sessions: Option<Vec<sources::SessionSummary>>,
+    diff: Option<sources::DiffSnapshot>,
+    approval: Option<Option<sources::ApprovalRequest>>,
+    copy_ok: bool,
+) -> Sources {
+    Sources::scripted(sessions, diff, approval, copy_ok)
+}
 
 /// A cancellation request shared with the run thread. The mutex + condvar
 /// mirror the project's run/forwarder pattern without any async runtime.
@@ -94,7 +119,9 @@ fn run_inner(
 
     let (sender, receiver, shutdown) = channel();
     let cancel = CancelSignal::new();
+    let sources = sources();
     let mut app = App::new(resolved, snapshot, size.width, size.height);
+    app.set_command_specs(sources.commands());
 
     let input_handle = spawn_input(sender.clone(), Arc::clone(&shutdown));
     let mut run_handle: Option<JoinHandle<()>> = None;
@@ -107,6 +134,7 @@ fn run_inner(
         &cancel,
         &mut run_handle,
         caps,
+        &sources,
     );
 
     // Signal both workers and join before leaving the alternate screen.
@@ -123,7 +151,7 @@ fn run_inner(
     outcome
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -132,6 +160,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     cancel: &CancelSignal,
     run_handle: &mut Option<JoinHandle<()>>,
     caps: &CapabilityArgs,
+    sources: &Sources,
 ) -> Result<CliExitCode, CliError> {
     loop {
         if app.dirty {
@@ -143,7 +172,11 @@ fn event_loop<B: ratatui::backend::Backend>(
 
         match receiver.recv_timeout(POLL_INTERVAL) {
             Ok(event) => match app.apply(event) {
-                app::LoopCmd::Continue => {}
+                // Palette/local choices and session opening already applied
+                // their honest state in `App`; no backend action is invented.
+                app::LoopCmd::Continue
+                | app::LoopCmd::RunCommand(_)
+                | app::LoopCmd::OpenSession(_) => {}
                 app::LoopCmd::Submit(task) => {
                     if run_handle
                         .as_ref()
@@ -164,6 +197,22 @@ fn event_loop<B: ratatui::backend::Backend>(
                     // One request through the existing host seam; repeats are
                     // swallowed by `App::cancel_pending` before reaching here.
                     crate::run::host().request_cancel();
+                }
+                app::LoopCmd::LoadSessions => {
+                    let result = sources.load_sessions();
+                    app.apply(UiEvent::SessionsLoaded(result));
+                }
+                app::LoopCmd::LoadDiff => {
+                    let result = sources.load_diff();
+                    app.apply(UiEvent::DiffLoaded(result));
+                }
+                app::LoopCmd::LoadApproval => {
+                    let result = sources.load_approval();
+                    app.apply(UiEvent::ApprovalLoaded(result));
+                }
+                app::LoopCmd::Copy(text) => {
+                    let ok = sources.copy(&text);
+                    app.apply(UiEvent::CopyResult(ok));
                 }
                 app::LoopCmd::Quit(code) => return Ok(code),
             },

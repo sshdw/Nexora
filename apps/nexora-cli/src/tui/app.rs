@@ -3,8 +3,11 @@
 //! The app is pure with respect to I/O: it never reads a terminal, spawns a
 //! thread or calls a host. The main loop feeds it events and executes the
 //! returned [`LoopCmd`]. Every state that survives a resize, overlay or error
-//! (draft, scroll, focus, selection) lives here, never in the renderer. Run
-//! state is derived *only* from real host frames — it is never guessed.
+//! (draft, scroll, focus, selection, overlay coordinates) lives here, never in
+//! the renderer. Run state is derived *only* from real host frames — it is
+//! never guessed. Backend-backed overlays hold only projections delivered by
+//! [`UiEvent::SessionsLoaded`]/[`UiEvent::DiffLoaded`]/[`UiEvent::ApprovalLoaded`];
+//! the shipped sources report `Unavailable`, so no data is fabricated here.
 
 use std::path::Path;
 
@@ -17,6 +20,7 @@ use super::capabilities::Capabilities;
 use super::composer::{Composer, Vertical};
 use super::events::{Key, UiEvent};
 use super::layout::TIMELINE_MIN;
+use super::sources::{clap_commands, local_actions, Availability, CommandSpec, SessionSummary};
 
 /// Where keyboard navigation currently acts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,15 +55,28 @@ impl RunState {
 }
 
 /// Optional overlays. Opening/closing one never touches the run, draft or
-/// viewport (brief §8.1 Focus Memory).
+/// viewport (brief §8.1 Focus Memory). Approvals are an INLINE timeline block,
+/// deliberately not an overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Overlay {
     None,
     Help,
+    Sessions,
+    Diff,
+    Palette,
 }
 
-/// The small set of extra context lines drawn above the composer. Deferred
-/// features (F5/R/C/A/D/I/Retry, #165) are deliberately absent.
+/// A local, non-fabricated decision marker for the inline approval block.
+/// `Pending` is the only state in which `A`/`D` are accepted; `Esc` always
+/// leaves it pending and never resolves an approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ApprovalDecision {
+    Pending,
+    Approved,
+    Denied,
+}
+
+/// The small set of extra context lines drawn above the composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EntryKind {
     User,
@@ -85,6 +102,65 @@ impl TimelineEntry {
             detail,
         }
     }
+}
+
+/// A rendered row after the density guard. `Folded` is a *view* of a run of
+/// identical tool events; the original entries stay in `App::timeline`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RenderRow {
+    Entry(usize, TimelineEntry),
+    Folded {
+        anchor: usize,
+        label: String,
+        count: usize,
+    },
+}
+
+/// Run of identical tool events at which folding starts (SET: implementer
+/// picks the concrete threshold and pins it with a test, plan §8).
+pub(crate) const FOLD_THRESHOLD: usize = 3;
+
+fn foldable(entry: &TimelineEntry) -> bool {
+    matches!(entry.kind, EntryKind::Event)
+        && entry.label.starts_with("tool_")
+        && !entry.label.contains("approval")
+}
+
+/// Pure event-density guard (brief §8.3 F). Consecutive identical tool events
+/// become one counted row unless their anchor is expanded. Errors, approvals,
+/// terminal rows and user rows are never folded; order and counters survive.
+#[must_use]
+pub(crate) fn fold(
+    timeline: &[TimelineEntry],
+    expanded: &[usize],
+    threshold: usize,
+) -> Vec<RenderRow> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < timeline.len() {
+        if foldable(&timeline[i]) {
+            let mut j = i + 1;
+            while j < timeline.len() && timeline[j] == timeline[i] {
+                j += 1;
+            }
+            if j - i >= threshold && !expanded.contains(&i) {
+                out.push(RenderRow::Folded {
+                    anchor: i,
+                    label: timeline[i].label.clone(),
+                    count: j - i,
+                });
+            } else {
+                for (offset, entry) in timeline[i..j].iter().enumerate() {
+                    out.push(RenderRow::Entry(i + offset, entry.clone()));
+                }
+            }
+            i = j;
+        } else {
+            out.push(RenderRow::Entry(i, timeline[i].clone()));
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Normalised event types whose raw `type` string may be shown. Anything else
@@ -124,7 +200,9 @@ const DETAIL_FIELDS: &[&str] = &[
 
 /// Remove control characters (including ANSI ESC) and redact key-shaped bytes
 /// before any host-supplied string reaches the render buffer (brief §11/§18).
-fn sanitize(value: &str) -> String {
+/// Shared with `sources` so *every* projection string passes one gate.
+#[must_use]
+pub(crate) fn sanitize(value: &str) -> String {
     let cleaned: String = value
         .chars()
         .map(|ch| if ch.is_control() { ' ' } else { ch })
@@ -265,6 +343,18 @@ pub(crate) enum LoopCmd {
     RequestCancel,
     /// Leave the TUI with the last command's outcome.
     Quit(CliExitCode),
+    /// Query the sessions source; the loop applies `SessionsLoaded`.
+    LoadSessions,
+    /// Query the diff source; the loop applies `DiffLoaded`.
+    LoadDiff,
+    /// Query the approval source; the loop applies `ApprovalLoaded`.
+    LoadApproval,
+    /// Ask the clipboard sink to copy; the loop applies `CopyResult`.
+    Copy(String),
+    /// A palette entry was chosen (local effect already applied by `App`).
+    RunCommand(String),
+    /// A session row was chosen; NO run is started by this action.
+    OpenSession(String),
 }
 
 /// The complete TUI state. The booleans are independent interaction flags
@@ -292,12 +382,56 @@ pub(crate) struct App {
     pub(crate) dirty: bool,
     pub(crate) last_exit: CliExitCode,
     transient_ticks: u32,
+
+    // Focus memory: saved when an overlay opens, restored when it closes.
+    pub(crate) focus_before_overlay: Focus,
+    pub(crate) scroll_before_overlay: usize,
+    pub(crate) scroll_held_before_overlay: bool,
+
+    // Sessions overlay state (all coordinates are overlay-local).
+    pub(crate) sessions: Vec<SessionSummary>,
+    pub(crate) sessions_filter: String,
+    pub(crate) sessions_selection: usize,
+    pub(crate) sessions_delete_armed: bool,
+    pub(crate) sessions_unavailable: bool,
+
+    // Diff overlay state; coordinates survive close and are restored on reopen.
+    pub(crate) diff: Option<super::sources::DiffSnapshot>,
+    pub(crate) diff_file: usize,
+    pub(crate) diff_hunk: usize,
+    pub(crate) diff_line: usize,
+    pub(crate) diff_unavailable: bool,
+
+    // Inline approval block (never an overlay).
+    pub(crate) approval_request: Option<super::sources::ApprovalRequest>,
+    pub(crate) approval_decision: ApprovalDecision,
+    pub(crate) approval_inspect: bool,
+    pub(crate) approval_return: Option<usize>,
+
+    // View-only output freeze and density guard.
+    pub(crate) output_frozen: bool,
+    pub(crate) frozen_at_len: usize,
+    pub(crate) held_at_len: usize,
+    pub(crate) expanded: Vec<usize>,
+    pub(crate) copied_label: bool,
+
+    // Command palette state; `recent` is in-memory, bounded and secret-free.
+    pub(crate) palette_filter: String,
+    pub(crate) palette_commands: Vec<CommandSpec>,
+    pub(crate) palette_selection: usize,
+    pub(crate) palette_recent: Vec<String>,
 }
 
+/// Maximum number of in-memory recent palette entries (plan §8, bounded).
+const PALETTE_RECENT_MAX: usize = 8;
+
 impl App {
-    /// Build the initial idle app focused on the composer.
+    /// Build the initial idle app focused on the composer. Palette commands
+    /// come from the real Clap tree plus local actions (one grammar).
     #[must_use]
     pub(crate) fn new(caps: Capabilities, snapshot: StatusSnapshot, cols: u16, rows: u16) -> Self {
+        let mut palette_commands = local_actions();
+        palette_commands.extend(clap_commands());
         Self {
             caps,
             snapshot,
@@ -317,23 +451,82 @@ impl App {
             dirty: true,
             last_exit: CliExitCode::Ok,
             transient_ticks: 0,
+            focus_before_overlay: Focus::Composer,
+            scroll_before_overlay: usize::MAX,
+            scroll_held_before_overlay: false,
+            sessions: Vec::new(),
+            sessions_filter: String::new(),
+            sessions_selection: 0,
+            sessions_delete_armed: false,
+            sessions_unavailable: false,
+            diff: None,
+            diff_file: 0,
+            diff_hunk: 0,
+            diff_line: 0,
+            diff_unavailable: false,
+            approval_request: None,
+            approval_decision: ApprovalDecision::Pending,
+            approval_inspect: false,
+            approval_return: None,
+            output_frozen: false,
+            frozen_at_len: 0,
+            held_at_len: 0,
+            expanded: Vec::new(),
+            copied_label: false,
+            palette_filter: String::new(),
+            palette_commands,
+            palette_selection: 0,
+            palette_recent: Vec::new(),
         }
     }
 
-    /// Clamp the raw scroll to a concrete viewport height.
+    /// Replace the palette catalog from the loop's `sources().commands()`.
+    pub(crate) fn set_command_specs(&mut self, commands: Vec<CommandSpec>) {
+        self.palette_commands = commands;
+        self.dirty = true;
+    }
+
+    /// Clamp the raw scroll to a concrete viewport height of the *visible*
+    /// slice. When output is frozen the slice ends at `frozen_at_len`; clamping
+    /// against the full timeline would push `skip()` past the frozen rows and
+    /// render an empty viewport (the frozen content must stay readable).
     #[must_use]
     pub(crate) fn effective_scroll(&self, viewport_rows: usize) -> usize {
-        let max = self.timeline.len().saturating_sub(viewport_rows);
+        let max = self.visible_len().saturating_sub(viewport_rows);
         self.scroll.min(max)
+    }
+
+    /// Number of timeline rows currently visible (frozen view included).
+    #[must_use]
+    pub(crate) fn visible_len(&self) -> usize {
+        if self.output_frozen {
+            self.frozen_at_len.min(self.timeline.len())
+        } else {
+            self.timeline.len()
+        }
+    }
+
+    /// Frames appended since the current frozen/hold viewpoint.
+    #[must_use]
+    pub(crate) fn new_events_count(&self) -> usize {
+        self.timeline.len().saturating_sub(self.visible_len())
     }
 
     fn follow_tail(&mut self) {
         self.scroll = usize::MAX;
         self.scroll_held = false;
+        self.output_frozen = false;
+    }
+
+    fn engage_scroll_hold(&mut self) {
+        if !self.scroll_held {
+            self.held_at_len = self.timeline.len();
+        }
+        self.scroll_held = true;
     }
 
     fn set_transient(&mut self, message: &str) {
-        self.transient = Some(message.to_string());
+        self.transient = Some(sanitize(message));
         self.transient_ticks = 0;
         self.dirty = true;
     }
@@ -353,8 +546,254 @@ impl App {
         };
         let next = next.min(max);
         self.scroll = next;
-        self.scroll_held = next < max;
+        if next < max {
+            self.engage_scroll_hold();
+        }
         self.dirty = true;
+    }
+
+    fn open_overlay(&mut self, overlay: Overlay) {
+        if self.overlay == Overlay::None {
+            self.focus_before_overlay = self.focus;
+            self.scroll_before_overlay = self.scroll;
+            self.scroll_held_before_overlay = self.scroll_held;
+        }
+        self.overlay = overlay;
+        self.dirty = true;
+    }
+
+    fn close_overlay(&mut self) {
+        self.overlay = Overlay::None;
+        self.focus = self.focus_before_overlay;
+        self.scroll = self.scroll_before_overlay;
+        self.scroll_held = self.scroll_held_before_overlay;
+        self.sessions_delete_armed = false;
+        self.copied_label = false;
+        self.dirty = true;
+    }
+
+    fn toggle_freeze(&mut self) {
+        if self.output_frozen {
+            self.output_frozen = false;
+        } else {
+            self.output_frozen = true;
+            self.frozen_at_len = self.timeline.len();
+        }
+        self.dirty = true;
+    }
+
+    fn decide(&mut self, decision: ApprovalDecision) {
+        self.approval_decision = decision;
+        self.approval_inspect = false;
+        // A return marker only; never a claim that an agent continued.
+        self.approval_return = Some(self.timeline.len().saturating_sub(1));
+        self.dirty = true;
+    }
+
+    pub(crate) fn filtered_sessions(&self) -> Vec<SessionSummary> {
+        let needle = self.sessions_filter.to_lowercase();
+        self.sessions
+            .iter()
+            .filter(|s| {
+                needle.is_empty()
+                    || s.title.to_lowercase().contains(&needle)
+                    || s.id.to_lowercase().contains(&needle)
+                    || s.status.label().contains(&needle)
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn filtered_commands(&self) -> Vec<CommandSpec> {
+        let needle = self.palette_filter.trim().to_lowercase();
+        self.palette_commands
+            .iter()
+            .filter(|c| {
+                needle.is_empty()
+                    || c.label.to_lowercase().contains(&needle)
+                    || c.path.to_lowercase().contains(&needle)
+                    || c.about.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn file_count(&self) -> usize {
+        self.diff.as_ref().map_or(0, |d| d.files.len())
+    }
+
+    fn hunk_count(&self) -> usize {
+        self.diff
+            .as_ref()
+            .and_then(|d| d.files.get(self.diff_file))
+            .map_or(0, |f| f.hunks.len())
+    }
+
+    fn line_count(&self) -> usize {
+        self.diff
+            .as_ref()
+            .and_then(|d| d.files.get(self.diff_file))
+            .and_then(|f| f.hunks.get(self.diff_hunk))
+            .map_or(0, |h| h.lines.len())
+    }
+
+    fn run_palette_command(&mut self, cmd: CommandSpec) -> LoopCmd {
+        self.close_overlay();
+        // Paths are static grammar ids/UI ids — never user text or a secret.
+        self.palette_recent.push(cmd.path.clone());
+        while self.palette_recent.len() > PALETTE_RECENT_MAX {
+            self.palette_recent.remove(0);
+        }
+        match cmd.availability {
+            Availability::Unavailable(reason) => {
+                self.set_transient(&format!("{}: {}", cmd.label, reason));
+                LoopCmd::RunCommand(cmd.path)
+            }
+            Availability::Available => match cmd.path.as_str() {
+                "ui.sessions" => {
+                    self.open_overlay(Overlay::Sessions);
+                    LoopCmd::LoadSessions
+                }
+                "ui.diff" => {
+                    self.open_overlay(Overlay::Diff);
+                    LoopCmd::LoadDiff
+                }
+                "ui.help" => {
+                    self.open_overlay(Overlay::Help);
+                    LoopCmd::RunCommand(cmd.path)
+                }
+                "ui.focus_timeline" => {
+                    self.focus = Focus::Timeline;
+                    LoopCmd::RunCommand(cmd.path)
+                }
+                _ => LoopCmd::RunCommand(cmd.path),
+            },
+        }
+    }
+
+    fn sessions_key(&mut self, key: Key) -> LoopCmd {
+        match key {
+            Key::Esc => self.close_overlay(),
+            Key::Up => self.sessions_selection = self.sessions_selection.saturating_sub(1),
+            Key::Down => {
+                let count = self.filtered_sessions().len();
+                if count > 0 {
+                    self.sessions_selection = (self.sessions_selection + 1).min(count - 1);
+                }
+            }
+            Key::Backspace => {
+                self.sessions_filter.pop();
+                self.sessions_selection = 0;
+                self.sessions_delete_armed = false;
+            }
+            Key::Char('D') => {
+                if self.sessions_delete_armed {
+                    self.sessions_delete_armed = false;
+                    self.set_transient(
+                        "Session deletion is not available in this build; nothing was deleted",
+                    );
+                } else {
+                    self.sessions_delete_armed = true;
+                    self.set_transient(
+                        "Press D again to confirm delete (not available in this build)",
+                    );
+                }
+            }
+            Key::Char(ch) => {
+                self.sessions_filter.push(ch);
+                self.sessions_selection = 0;
+                self.sessions_delete_armed = false;
+            }
+            Key::Enter => {
+                if let Some(session) = self
+                    .filtered_sessions()
+                    .get(self.sessions_selection)
+                    .cloned()
+                {
+                    self.close_overlay();
+                    self.set_transient("Session selected locally; no agent was started");
+                    return LoopCmd::OpenSession(session.id);
+                }
+            }
+            _ => {}
+        }
+        LoopCmd::Continue
+    }
+
+    fn diff_key(&mut self, key: Key) -> LoopCmd {
+        match key {
+            Key::Esc => self.close_overlay(),
+            Key::Left => {
+                self.diff_file = self.diff_file.saturating_sub(1);
+                self.diff_hunk = 0;
+                self.diff_line = 0;
+            }
+            Key::Right => {
+                let count = self.file_count();
+                if count > 0 {
+                    self.diff_file = (self.diff_file + 1).min(count - 1);
+                    self.diff_hunk = 0;
+                    self.diff_line = 0;
+                }
+            }
+            Key::PageUp => self.diff_hunk = self.diff_hunk.saturating_sub(1),
+            Key::PageDown => {
+                let count = self.hunk_count();
+                if count > 0 {
+                    self.diff_hunk = (self.diff_hunk + 1).min(count - 1);
+                    self.diff_line = 0;
+                }
+            }
+            Key::Up => self.diff_line = self.diff_line.saturating_sub(1),
+            Key::Down => {
+                let count = self.line_count();
+                if count > 0 {
+                    self.diff_line = (self.diff_line + 1).min(count - 1);
+                }
+            }
+            Key::Char('C') => {
+                let path = self
+                    .diff
+                    .as_ref()
+                    .and_then(|d| d.files.get(self.diff_file))
+                    .map_or_else(|| "diff".to_string(), |f| f.path.clone());
+                return LoopCmd::Copy(path);
+            }
+            _ => {}
+        }
+        LoopCmd::Continue
+    }
+
+    fn palette_key(&mut self, key: Key) -> LoopCmd {
+        match key {
+            Key::Esc => self.close_overlay(),
+            Key::Up => self.palette_selection = self.palette_selection.saturating_sub(1),
+            Key::Down => {
+                let count = self.filtered_commands().len();
+                if count > 0 {
+                    self.palette_selection = (self.palette_selection + 1).min(count - 1);
+                }
+            }
+            Key::Backspace => {
+                self.palette_filter.pop();
+                self.palette_selection = 0;
+            }
+            Key::Char(ch) => {
+                self.palette_filter.push(ch);
+                self.palette_selection = 0;
+            }
+            Key::Enter => {
+                if let Some(cmd) = self
+                    .filtered_commands()
+                    .get(self.palette_selection)
+                    .cloned()
+                {
+                    return self.run_palette_command(cmd);
+                }
+            }
+            _ => {}
+        }
+        LoopCmd::Continue
     }
 
     /// Apply one event, returning the single action the main loop must take.
@@ -378,15 +817,25 @@ impl App {
                 }
             }
             UiEvent::Frame(frame) => {
+                let event_type = frame
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let entry = entry_from_frame(&frame);
                 if let Some(state) = state_from_frame(&frame) {
                     self.state = state;
                 }
                 self.timeline.push(entry);
-                if !self.scroll_held {
+                // A frozen view never follows the tail; new frames are still
+                // appended and counted, but the state is untouched.
+                if !self.scroll_held && !self.output_frozen {
                     self.follow_tail();
                 }
                 self.dirty = true;
+                if event_type == "approval_required" {
+                    return LoopCmd::LoadApproval;
+                }
             }
             UiEvent::HostAccepted => {
                 if self.submit_pending {
@@ -419,6 +868,60 @@ impl App {
                 self.cancel_pending = false;
                 self.dirty = true;
             }
+            UiEvent::SessionsLoaded(result) => {
+                match result {
+                    super::sources::Readiness::Ready(list) => {
+                        self.sessions = list;
+                        self.sessions_unavailable = false;
+                        let max = self.filtered_sessions().len().saturating_sub(1);
+                        self.sessions_selection = self.sessions_selection.min(max);
+                    }
+                    super::sources::Readiness::Unavailable => {
+                        self.sessions.clear();
+                        self.sessions_unavailable = true;
+                        self.sessions_selection = 0;
+                    }
+                }
+                self.dirty = true;
+            }
+            UiEvent::DiffLoaded(result) => {
+                match result {
+                    super::sources::Readiness::Ready(snapshot) => {
+                        self.diff = Some(snapshot);
+                        self.diff_unavailable = false;
+                        // Coordinates clamp to the newly loaded data but are
+                        // otherwise preserved (return position on reopen).
+                        self.diff_file = self.diff_file.min(self.file_count().saturating_sub(1));
+                        self.diff_hunk = self.diff_hunk.min(self.hunk_count().saturating_sub(1));
+                        self.diff_line = self.diff_line.min(self.line_count().saturating_sub(1));
+                    }
+                    super::sources::Readiness::Unavailable => {
+                        self.diff = None;
+                        self.diff_unavailable = true;
+                    }
+                }
+                self.dirty = true;
+            }
+            UiEvent::ApprovalLoaded(result) => {
+                // A freshly loaded request has no local decision yet. Tick,
+                // Frame and overlay toggles never touch `approval_decision`.
+                self.approval_request = match result {
+                    super::sources::Readiness::Ready(Some(request)) => Some(request),
+                    _ => None,
+                };
+                self.approval_decision = ApprovalDecision::Pending;
+                self.approval_inspect = false;
+                self.approval_return = None;
+                self.dirty = true;
+            }
+            UiEvent::CopyResult(ok) => {
+                self.copied_label = ok;
+                if ok {
+                    self.set_transient("Copied");
+                } else {
+                    self.set_transient("Copy is not available in this build; nothing was copied");
+                }
+            }
             UiEvent::Key(key) => return self.apply_key(key),
         }
         LoopCmd::Continue
@@ -426,19 +929,66 @@ impl App {
 
     #[allow(clippy::too_many_lines)]
     fn apply_key(&mut self, key: Key) -> LoopCmd {
-        // An overlay consumes every key except close/Esc, and never edits the
-        // draft or approves anything (brief §5.4, §10).
-        if self.overlay != Overlay::None {
-            self.dirty = true;
+        // The inline approval block owns A/D/I/Esc while it is pending and the
+        // timeline has focus; the composer keeps those keys as plain typing.
+        if self.overlay == Overlay::None
+            && self.focus == Focus::Timeline
+            && self.approval_request.is_some()
+            && self.approval_decision == ApprovalDecision::Pending
+        {
             match key {
-                Key::Esc | Key::Enter | Key::F1 => self.overlay = Overlay::None,
+                Key::Char('A') => {
+                    self.decide(ApprovalDecision::Approved);
+                    return LoopCmd::Continue;
+                }
+                Key::Char('D') => {
+                    self.decide(ApprovalDecision::Denied);
+                    return LoopCmd::Continue;
+                }
+                Key::Char('I') => {
+                    self.approval_inspect = !self.approval_inspect;
+                    self.dirty = true;
+                    return LoopCmd::Continue;
+                }
+                Key::Esc => {
+                    self.set_transient("Decision deferred; approval is still pending");
+                    return LoopCmd::Continue;
+                }
                 _ => {}
             }
-            return LoopCmd::Continue;
+        }
+
+        // An overlay consumes every key; closing restores focus/scroll/draft.
+        if self.overlay != Overlay::None {
+            self.dirty = true;
+            return match self.overlay {
+                Overlay::Help => {
+                    if matches!(key, Key::Esc | Key::Enter | Key::F1) {
+                        self.close_overlay();
+                    }
+                    LoopCmd::Continue
+                }
+                Overlay::Sessions => self.sessions_key(key),
+                Overlay::Diff => self.diff_key(key),
+                Overlay::Palette => self.palette_key(key),
+                Overlay::None => LoopCmd::Continue,
+            };
         }
 
         match key {
             Key::CtrlC => {
+                // An approval cancel is distinct from a local deny: it asks the
+                // main loop to stop the run and leaves the decision Pending.
+                if self.approval_request.is_some()
+                    && self.approval_decision == ApprovalDecision::Pending
+                {
+                    if self.cancel_pending {
+                        return LoopCmd::Continue;
+                    }
+                    self.cancel_pending = true;
+                    self.set_transient("Cancellation requested; approval left pending");
+                    return LoopCmd::RequestCancel;
+                }
                 if self.run_active {
                     if self.cancel_pending {
                         return LoopCmd::Continue;
@@ -474,12 +1024,12 @@ impl App {
 
         match key {
             Key::F1 => {
-                self.overlay = Overlay::Help;
-                self.dirty = true;
+                self.open_overlay(Overlay::Help);
             }
             Key::CtrlK => {
-                // Honest deferral — no fake palette (issue #164 contract).
-                self.set_transient("Command palette is not available in this build");
+                self.palette_filter.clear();
+                self.palette_selection = 0;
+                self.open_overlay(Overlay::Palette);
             }
             Key::Esc => {
                 // Defer / close overlay only; never approves or clears a draft.
@@ -523,7 +1073,7 @@ impl App {
             Key::Home => {
                 if self.focus == Focus::Timeline {
                     self.scroll = 0;
-                    self.scroll_held = true;
+                    self.engage_scroll_hold();
                 } else {
                     self.composer.move_line_start();
                 }
@@ -550,6 +1100,12 @@ impl App {
                 self.dirty = true;
             }
             Key::Enter => {
+                if self.focus == Focus::Timeline && (self.scroll_held || self.output_frozen) {
+                    // Enter returns to the live tail; it does NOT submit.
+                    self.follow_tail();
+                    self.dirty = true;
+                    return LoopCmd::Continue;
+                }
                 if self.submit_pending || self.composer.is_empty() {
                     return LoopCmd::Continue;
                 }
@@ -560,10 +1116,32 @@ impl App {
                 return LoopCmd::Submit(self.composer.draft().to_string());
             }
             Key::Char(ch) => {
-                // F5/R/C/A/D/I/Retry are deferred to #165. When the timeline
-                // has focus they are consumed (no fake action); while typing
-                // in the composer they remain ordinary printable characters.
-                if self.focus == Focus::Timeline && matches!(ch, 'R' | 'C' | 'A' | 'D' | 'I') {
+                if self.focus == Focus::Timeline {
+                    match ch {
+                        'f' => self.toggle_freeze(),
+                        'I' => {
+                            // Inspect = expand folded tool groups. Toggling a
+                            // second time collapses them; order is preserved.
+                            let anchors: Vec<usize> =
+                                fold(&self.timeline[..self.visible_len()], &[], FOLD_THRESHOLD)
+                                    .iter()
+                                    .filter_map(|row| match row {
+                                        RenderRow::Folded { anchor, .. } => Some(*anchor),
+                                        RenderRow::Entry(..) => None,
+                                    })
+                                    .collect();
+                            if anchors.is_empty()
+                                || anchors.iter().all(|anchor| self.expanded.contains(anchor))
+                            {
+                                self.expanded.clear();
+                            } else {
+                                self.expanded = anchors;
+                            }
+                        }
+                        // Other action letters are consumed with no fake
+                        // action; they remain printable in the composer.
+                        _ => {}
+                    }
                     self.dirty = true;
                 } else {
                     self.composer.insert_char(ch);

@@ -14,6 +14,8 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModif
 
 use crate::run::WireFrame;
 
+use super::sources::{ApprovalRequest, DiffSnapshot, Readiness, SessionSummary};
+
 /// Poll interval for the input thread and `recv_timeout` in the main loop.
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -64,6 +66,14 @@ pub(crate) enum UiEvent {
     HostRejected,
     /// The run thread has finished forwarding frames.
     HostDone,
+    /// A read-only sessions query resolved (or reported itself unavailable).
+    SessionsLoaded(Readiness<Vec<SessionSummary>>),
+    /// A read-only diff query resolved (or reported itself unavailable).
+    DiffLoaded(Readiness<DiffSnapshot>),
+    /// A read-only approval query resolved (or reported itself unavailable).
+    ApprovalLoaded(Readiness<Option<ApprovalRequest>>),
+    /// The main loop's clipboard attempt: `true` only after a real copy.
+    CopyResult(bool),
 }
 
 /// Translate one crossterm event into zero or one logical UI event. Ignores key

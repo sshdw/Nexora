@@ -150,3 +150,88 @@ fn no_color_env_does_not_change_usage_error_text() {
     assert_no_alternate_screen(&no_color);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Phase 6a (#165): the shipped binary contains no synthetic sessions,
+/// diffs, approvals or resumed agents. Scripted sources exist only under
+/// `#[cfg(test)]` and cannot be linked into `main`; a piped child still exits
+/// 2 through the unchanged usage/UnavailableRunHost path.
+#[test]
+fn no_fabricated_backend_data_in_shipped_binary() {
+    let base = sandbox("no-fabricated-data");
+
+    // Bare piped invocation: unchanged exit 2 + honest guidance, no TUI data.
+    let piped = run_bounded(command(&[], &base, &[]));
+    assert_eq!(piped.status.code(), Some(2), "bare piped run -> usage");
+    assert_no_alternate_screen(&piped);
+    let text = combined(&piped);
+    for fabricated in [
+        "Fix authentication",
+        "18m ago",
+        "+24 -8",
+        "Approval required",
+        "file 3/8",
+        "Copied",
+        "live output paused",
+    ] {
+        assert!(
+            !text.contains(fabricated),
+            "piped output fabricated '{fabricated}': {text}"
+        );
+    }
+
+    // A real machine run still maps to the unavailable host: no fabricated
+    // tool frames, diff or approval is emitted.
+    let run = run_bounded(command(
+        &["run", "Fix auth", "--format", "json"],
+        &base,
+        &[],
+    ));
+    assert_eq!(run.status.code(), Some(2), "unavailable host -> usage");
+    let run_text = combined(&run);
+    for fabricated in [
+        "tool_call_started",
+        "approval_required",
+        "run_finished",
+        "session_id",
+        "schema_version",
+    ] {
+        assert!(
+            !run_text.contains(fabricated),
+            "unavailable host emitted '{fabricated}': {run_text}"
+        );
+    }
+    assert!(
+        run_text.contains("not available in this CLI build"),
+        "honest fixed failure"
+    );
+
+    // Source-level proof: scripted projection types are behind `#[cfg(test)]`.
+    let sources = include_str!("../src/tui/sources.rs");
+    for scripted in [
+        "ScriptedSessionSource",
+        "ScriptedDiffSource",
+        "ScriptedApprovalView",
+        "ScriptedClipboardSink",
+    ] {
+        assert!(
+            sources.contains(scripted),
+            "scripted source '{scripted}' must exist for tests"
+        );
+    }
+    assert!(
+        sources.contains("#[cfg(test)]"),
+        "scripted sources must be cfg(test)-gated"
+    );
+    let shipped_markers = [
+        "Readiness::Unavailable",
+        "fn copy(&self, _text: &str) -> bool {\n        false",
+    ];
+    for marker in shipped_markers {
+        assert!(
+            sources.contains(marker),
+            "shipped source must be honestly unavailable: {marker}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&base);
+}

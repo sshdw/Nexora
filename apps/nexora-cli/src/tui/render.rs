@@ -1,10 +1,11 @@
-//! Pure draw functions for the four-zone TUI (brief §5, plan §2).
+//! Pure draw functions for the four-zone TUI (brief §5, plan §2, phase 6a #165).
 //!
 //! Nothing in this module mutates [`App`], reads a terminal or calls a host.
 //! `TestBackend` drives the exact same functions as the live loop, so render
 //! tests need no real terminal. Colour is strictly monochrome (grey/dim, no
 //! accent hue), and every status also carries a text or glyph marker so the
-//! no-colour and ASCII modes keep all information.
+//! no-colour and ASCII modes keep all information. Overlays are drawn in the
+//! timeline zone; the composer and its draft stay visible underneath.
 
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -12,10 +13,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::app::{App, EntryKind, Overlay, RunState};
+use super::app::{fold, App, ApprovalDecision, EntryKind, RenderRow, RunState, FOLD_THRESHOLD};
 use super::layout::{
     self, Metrics, Resolution, HINTS_ROWS, RULE_ROWS, STATUS_ROWS, TOO_SMALL_MESSAGE,
 };
+use super::sources::{ApprovalRequest, Availability, DiffLineKind};
 
 /// Muted/secondary styling. In no-colour mode this is the empty style — no
 /// foreground, background or modifier — so the text is identical but plain.
@@ -35,6 +37,12 @@ fn active(app: &App) -> Style {
     } else {
         Style::new()
     }
+}
+
+/// Reversed style used for a selection marker (works in every mode; contrast,
+/// never hue, carries selection per brief §12.5).
+fn selected() -> Style {
+    Style::new().add_modifier(Modifier::REVERSED)
 }
 
 /// The reversed style used for the composer caret (works in every mode).
@@ -71,10 +79,12 @@ fn render_usable(frame: &mut Frame<'_>, app: &App, metrics: Metrics) {
 
     render_status(frame, app, status_area, metrics);
     frame.render_widget(app.caps.glyphs.rule_line(feed.width), rule_top);
-    if app.overlay == Overlay::Help {
-        render_help(frame, app, timeline_area);
-    } else {
-        render_timeline(frame, app, timeline_area);
+    match app.overlay {
+        super::app::Overlay::Help => render_help(frame, app, timeline_area),
+        super::app::Overlay::Sessions => render_sessions(frame, app, timeline_area),
+        super::app::Overlay::Diff => render_diff(frame, app, timeline_area),
+        super::app::Overlay::Palette => render_palette(frame, app, timeline_area),
+        super::app::Overlay::None => render_timeline(frame, app, timeline_area),
     }
     frame.render_widget(app.caps.glyphs.rule_line(feed.width), rule_mid);
     render_composer(frame, app, composer_area);
@@ -140,61 +150,291 @@ fn short_autonomy(autonomy: &str) -> &'static str {
     }
 }
 
+/// Append one entry row using the activity-spine glyph vocabulary.
+fn push_entry(app: &App, lines: &mut Vec<Line<'static>>, entry: &super::app::TimelineEntry) {
+    let g = app.caps.glyphs;
+    match entry.kind {
+        EntryKind::User => {
+            lines.push(Line::from(Span::raw(entry.label.clone())));
+        }
+        EntryKind::Event => {
+            let mut spans = vec![
+                Span::styled(format!("{} ", g.spine), muted(app)),
+                Span::raw(entry.label.clone()),
+            ];
+            if let Some(detail) = &entry.detail {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(detail.clone(), muted(app)));
+            }
+            lines.push(Line::from(spans));
+        }
+        EntryKind::Terminal => {
+            let mut spans = vec![
+                Span::styled(format!("{} ", g.elbow), muted(app)),
+                Span::styled(g.check.to_string(), active(app)),
+                Span::raw(format!(" {}", entry.label)),
+            ];
+            if let Some(detail) = &entry.detail {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(detail.clone(), muted(app)));
+            }
+            lines.push(Line::from(spans));
+        }
+        EntryKind::Error => {
+            lines.push(Line::from(vec![
+                Span::raw("! "),
+                Span::raw(entry.label.clone()),
+            ]));
+        }
+    }
+}
+
+/// Inline approval block. The command, cwd, reason and risk class are shown
+/// BEFORE any decision; after A/D only local-decision text is shown (never a
+/// claim that an agent resumed).
+fn approval_lines(app: &App, request: &ApprovalRequest) -> Vec<Line<'static>> {
+    let header = match app.approval_decision {
+        ApprovalDecision::Pending => "! Approval required",
+        ApprovalDecision::Approved => "Approved locally",
+        ApprovalDecision::Denied => "Denied locally",
+    };
+    let mut lines = vec![Line::from(Span::styled(header.to_string(), active(app)))];
+    let expand = app.approval_inspect || app.approval_decision != ApprovalDecision::Pending;
+    let command = if expand || request.command.chars().count() <= 40 {
+        request.command.clone()
+    } else {
+        let shortened: String = request.command.chars().take(40).collect();
+        format!("{shortened}...")
+    };
+    lines.push(Line::from(vec![
+        Span::raw("  command: "),
+        Span::raw(command),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  Working directory: "),
+        Span::raw(request.cwd.clone()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  Reason / risk: "),
+        Span::raw(request.reason.clone()),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  risk class: "),
+        Span::raw(request.risk.label().to_string()),
+    ]));
+    match app.approval_decision {
+        ApprovalDecision::Pending => lines.push(Line::from(Span::raw(
+            "  [A] Approve once   [D] Deny   [I] Inspect   [Esc] Decide later",
+        ))),
+        _ => lines.push(Line::from(Span::styled(
+            "  decision recorded locally; no agent backend in this build",
+            muted(app),
+        ))),
+    }
+    lines
+}
+
 /// Build plain timeline lines from the (already whitelisted, sanitised)
-/// entries, applying the scroll offset. No fabricated statistics or progress.
+/// entries, applying the density guard, scroll offset and view-only freeze.
 fn timeline_lines(app: &App, height: usize) -> Vec<Line<'static>> {
     let g = app.caps.glyphs;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for entry in &app.timeline {
-        match entry.kind {
-            EntryKind::User => {
-                lines.push(Line::from(Span::raw(entry.label.clone())));
-            }
-            EntryKind::Event => {
-                let mut spans = vec![
+    let visible = &app.timeline[..app.visible_len()];
+    let rows = fold(visible, &app.expanded, FOLD_THRESHOLD);
+    let mut base: Vec<Line<'static>> = Vec::new();
+    for row in &rows {
+        match row {
+            RenderRow::Entry(_, entry) => push_entry(app, &mut base, entry),
+            RenderRow::Folded { label, count, .. } => {
+                base.push(Line::from(vec![
                     Span::styled(format!("{} ", g.spine), muted(app)),
-                    Span::raw(entry.label.clone()),
-                ];
-                if let Some(detail) = &entry.detail {
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(detail.clone(), muted(app)));
-                }
-                lines.push(Line::from(spans));
-            }
-            EntryKind::Terminal => {
-                let mut spans = vec![
-                    Span::styled(format!("{} ", g.elbow), muted(app)),
-                    Span::styled(g.check.to_string(), active(app)),
-                    Span::raw(format!(" {}", entry.label)),
-                ];
-                if let Some(detail) = &entry.detail {
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(detail.clone(), muted(app)));
-                }
-                lines.push(Line::from(spans));
-            }
-            EntryKind::Error => {
-                lines.push(Line::from(vec![
-                    Span::raw("! "),
-                    Span::raw(entry.label.clone()),
+                    Span::raw(format!("{count} repeated {label}")),
+                    Span::styled("  [I] expand", muted(app)),
                 ]));
             }
         }
     }
+    let start = app.effective_scroll(height);
+    let mut lines: Vec<Line<'static>> = base.into_iter().skip(start).take(height).collect();
+    // The approval block and view hints stay visible regardless of scroll.
+    if let Some(request) = &app.approval_request {
+        lines.extend(approval_lines(app, request));
+    }
     if app.scroll_held {
+        let new = app.timeline.len().saturating_sub(app.held_at_len);
         lines.push(Line::from(Span::styled(
-            format!("{} new events", g.arrow),
+            format!("{} {new} new events", g.arrow),
             muted(app),
         )));
     }
-    let start = app.effective_scroll(height);
-    lines.into_iter().skip(start).take(height).collect()
+    if app.output_frozen {
+        lines.push(Line::from(Span::styled(
+            format!("live output paused · {} new events", app.new_events_count()),
+            muted(app),
+        )));
+    }
+    lines
 }
 
 fn render_timeline(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let lines = timeline_lines(app, usize::from(area.height));
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+/// Sessions overlay: title/status/age rows, instant filter and a marker that
+/// reads through contrast (not colour). No fake sessions are ever shown.
+fn render_sessions(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines = vec![Line::from(Span::styled("Sessions", active(app)))];
+    if app.sessions_unavailable {
+        lines.push(Line::from(Span::styled(
+            "Session history is not available in this build",
+            muted(app),
+        )));
+    } else {
+        let rows = app.filtered_sessions();
+        if rows.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No sessions match the filter",
+                muted(app),
+            )));
+        } else {
+            for (index, session) in rows.iter().enumerate() {
+                let chosen = index == app.sessions_selection;
+                let marker = if chosen { ">" } else { " " };
+                let mut spans = vec![
+                    Span::styled(
+                        marker.to_string(),
+                        if chosen { selected() } else { Style::new() },
+                    ),
+                    Span::raw(format!(" {}  ", session.title)),
+                    Span::styled(session.status.label().to_string(), muted(app)),
+                    Span::raw("  "),
+                    Span::styled(session.age_label.clone(), muted(app)),
+                ];
+                if session.active {
+                    spans.push(Span::raw("  (active)"));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        format!("> filter: {}", app.sessions_filter),
+        active(app),
+    )));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Diff overlay: grouped by file with `+N -M`, a `+`/`-` column, the jump map
+/// `file i/N · hunk j/M`, and a thin touch marker only from source data.
+fn render_diff(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines = vec![Line::from(vec![
+        Span::styled("Diff", active(app)),
+        Span::raw(if app.copied_label { "  Copied" } else { "" }),
+    ])];
+    if app.diff_unavailable {
+        lines.push(Line::from(Span::styled(
+            "Diff is not available in this build; nothing was opened or changed",
+            muted(app),
+        )));
+    } else if let Some(snapshot) = &app.diff {
+        // Grouped file rows, each with a touch marker drawn only from data.
+        let mut total_plus = 0u32;
+        let mut total_minus = 0u32;
+        for (index, file) in snapshot.files.iter().enumerate() {
+            total_plus = total_plus.saturating_add(file.plus);
+            total_minus = total_minus.saturating_add(file.minus);
+            let touch = if file.touched { "│ " } else { "  " };
+            let mark = if index == app.diff_file { ">" } else { " " };
+            lines.push(Line::from(vec![
+                Span::raw(format!("{mark}{touch}")),
+                Span::raw(file.path.clone()),
+                Span::raw(format!("  +{} -{}", file.plus, file.minus)),
+            ]));
+        }
+        lines.push(Line::from(Span::styled(
+            format!("total +{total_plus} -{total_minus}"),
+            muted(app),
+        )));
+        if let Some(file) = snapshot.files.get(app.diff_file) {
+            let hunks = file.hunks.len();
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "file {}/{} · hunk {}/{}",
+                    app.diff_file + 1,
+                    snapshot.files.len(),
+                    (app.diff_hunk + 1).min(hunks.max(1)),
+                    hunks.max(1)
+                ),
+                muted(app),
+            )));
+            if let Some(hunk) = file.hunks.get(app.diff_hunk) {
+                lines.push(Line::from(Span::styled(hunk.header.clone(), muted(app))));
+                for (index, diff_line) in hunk.lines.iter().enumerate() {
+                    let column = match diff_line.kind {
+                        DiffLineKind::Add => "+",
+                        DiffLineKind::Remove => "-",
+                        DiffLineKind::Context => " ",
+                    };
+                    let marker = if index == app.diff_line { ">" } else { " " };
+                    let text = format!("{marker}{column} {}", diff_line.text);
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        if index == app.diff_line {
+                            selected()
+                        } else {
+                            Style::new()
+                        },
+                    )));
+                }
+            }
+        } else {
+            lines.push(Line::from(Span::styled(
+                "No diff is available for the current run",
+                muted(app),
+            )));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
+}
+
+/// Command palette: the filter reacts immediately; unavailable actions are
+/// marked with their reason and never run.
+fn render_palette(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let mut lines = vec![
+        Line::from(Span::styled("Command", active(app))),
+        Line::from(Span::styled(
+            format!("> {}", app.palette_filter),
+            active(app),
+        )),
+    ];
+    let rows = app.filtered_commands();
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No commands match the filter",
+            muted(app),
+        )));
+    } else {
+        for (index, command) in rows.iter().enumerate() {
+            let chosen = index == app.palette_selection;
+            let marker = if chosen { ">" } else { " " };
+            let recent = if app.palette_recent.contains(&command.path) {
+                " (recent)"
+            } else {
+                ""
+            };
+            let reason = match &command.availability {
+                Availability::Available => String::new(),
+                Availability::Unavailable(text) => format!("  [unavailable: {text}]"),
+            };
+            let text = format!("{marker} {}{recent}{reason}", command.label);
+            lines.push(Line::from(Span::styled(
+                text,
+                if chosen { selected() } else { Style::new() },
+            )));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
 }
 
 /// Build the composer lines plus the (row, column) of the caret, both relative
@@ -267,14 +507,40 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 /// A single, compact, state-specific hint line (brief §10, §5.5 short mode).
 pub(crate) fn hint_text(app: &App, metrics: Metrics) -> String {
+    // Transient feedback (confirm prompts, honest copy/decision results)
+    // wins even inside an overlay, so it is never silently swallowed.
     if let Some(message) = &app.transient {
         return message.clone();
+    }
+    match app.overlay {
+        super::app::Overlay::Sessions => {
+            return "Type to filter · Up/Down select · Enter open (no agent started) · D delete · Esc back"
+                .to_string()
+        }
+        super::app::Overlay::Diff => {
+            return "Left/Right file · PgUp/PgDn hunk · Up/Down lines · C copy · Esc back"
+                .to_string()
+        }
+        super::app::Overlay::Palette => {
+            return "Type to filter · Up/Down select · Enter run · Esc back".to_string()
+        }
+        super::app::Overlay::Help => return "Esc or Enter to close".to_string(),
+        super::app::Overlay::None => {}
     }
     if app.exit_confirm {
         return "Ctrl+C again to exit · Esc defer".to_string();
     }
     if app.cancel_pending {
         return "cancellation pending · PgUp/PgDn scroll · F1 help".to_string();
+    }
+    if app.output_frozen {
+        return format!(
+            "live output paused · {} new events · Enter/End return to live",
+            app.new_events_count()
+        );
+    }
+    if app.approval_request.is_some() && app.approval_decision == ApprovalDecision::Pending {
+        return "[A] Approve once [D] Deny [I] Inspect [Esc] Decide later".to_string();
     }
     let unicode = !app.caps.ascii;
     let up_down = if unicode { "↑/↓" } else { "Up/Down" };
@@ -303,14 +569,18 @@ fn render_hints(frame: &mut Frame<'_>, app: &App, area: Rect, metrics: Metrics) 
     frame.render_widget(Paragraph::new(line), area);
 }
 
+/// Only keys this build actually handles are listed; no "deferred" actions.
 const HELP_LINES: &[&str] = &[
     "KEYS — help (Esc or Enter to close)",
-    "Enter send / close overlay    Ctrl+J newline    Shift+Enter newline",
-    "Up/Down composer or timeline   Left/Right composer caret",
-    "Tab / Shift+Tab focus          PgUp/PgDn page    Home/End line or ends",
-    "Ctrl+C cancel run / clear / confirm exit    Ctrl+D exit when idle+empty",
-    "Ctrl+K commands (not in this build)   F1 this help",
-    "F5 / R / C / A / D / I / Retry: deferred to a later build",
+    "Enter send / select / close    Ctrl+J newline    Shift+Enter newline",
+    "Up/Down composer, timeline, lists   Left/Right caret or diff file",
+    "Tab / Shift+Tab focus   PgUp/PgDn page or hunk   Home/End line or tail",
+    "Ctrl+K palette   F1 this help   Ctrl+C cancel run / clear / confirm exit",
+    "Ctrl+D exit when idle+empty   f freeze view   Enter/End return to live",
+    "Sessions: type filter · Up/Down · Enter open (no agent) · D delete · Esc back",
+    "Diff: Left/Right file · PgUp/PgDn hunk · Up/Down line · C copy · Esc back",
+    "Approval: A approve locally · D deny locally · I inspect · Esc defer",
+    "Overlays preserve draft, run and viewport; no agent is started here",
 ];
 
 fn render_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
