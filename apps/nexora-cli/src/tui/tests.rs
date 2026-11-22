@@ -6,8 +6,10 @@
 //! `WireFrame` seam; a scripted streaming host supplies a terminal frame last.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Cell;
@@ -29,7 +31,12 @@ use super::sources::{
     Hunk, RiskClass, SessionStatus, SessionSummary, Sources,
 };
 use super::terminal::{TerminalGuard, TerminalIo};
-use crate::run::WireFrame;
+use crate::run::{validate, CapabilityArgs, CliAgentHost, HostMode, RunArgs, WireFrame};
+use nexora_core::storage::database::in_memory_database;
+use nexora_runtime::application::agent::control::CancellationToken;
+use nexora_runtime::application::execution::{
+    AiRequest, AiResponse, ExecutorError, ProviderExecutor, ToolCall,
+};
 
 const SECRET: &str = "sk-live-sentinel-1234567890";
 
@@ -2146,4 +2153,271 @@ fn ascii_no_color_keep_all_overlay_workflows_available() {
     let text = draw(&a, 100, 30);
     assert!(text.contains("! Approval required"), "{text}");
     assert!(text.contains("[A] Approve once"), "{text}");
+}
+
+// ---- real runtime wire vocabulary + real-host TUI path --------------------
+
+fn real_governance(event: serde_json::Value) -> WireFrame {
+    WireFrame::new("governance")
+        .with("run_id", json!(1))
+        .with("conversation_id", json!(1))
+        .with("event", event)
+}
+
+fn real_finished(status: &str) -> WireFrame {
+    WireFrame::new("finished").with(
+        "event",
+        json!({"status": status, "error": null, "final_content": null}),
+    )
+}
+
+#[test]
+fn real_governance_frame_loads_the_card_and_only_core_resolution_confirms_it() {
+    let sources = approval_sources();
+    let mut a = app_with_approval(&sources);
+    a.approval_request = None;
+
+    // A REAL serialized RunFrame governance payload, not the scaffold shape.
+    let gate = real_governance(json!({
+        "type": "approval_requested",
+        "call_id": "approval-9",
+        "name": "execute_command",
+        "arguments": "{\"command\":\"echo hi\"}"
+    }));
+    let cmd = a.apply(UiEvent::Frame(gate));
+    assert_eq!(
+        cmd,
+        LoopCmd::LoadApproval,
+        "nested gate must refresh the card"
+    );
+    assert_eq!(a.state, RunState::WaitingApproval);
+    drive(&mut a, cmd, &sources);
+    assert!(
+        a.approval_request.is_some(),
+        "the card loaded from the source"
+    );
+
+    // A/D is a request: requested != done.
+    let cmd = a.apply(UiEvent::Key(Key::Char('A')));
+    assert!(matches!(
+        cmd,
+        LoopCmd::RespondApproval { approved: true, .. }
+    ));
+    assert_eq!(a.approval_decision, ApprovalDecision::Pending);
+    assert!(a.approval_return.is_none());
+
+    // Only the core-emitted resolution sets the decision and return point.
+    let resolved = real_governance(json!({
+        "type": "approval_resolved",
+        "call_id": "approval-9",
+        "approved": true
+    }));
+    a.apply(UiEvent::Frame(resolved));
+    assert_eq!(a.approval_decision, ApprovalDecision::Approved);
+    assert!(a.approval_return.is_some());
+    let text = draw(&a, 100, 30);
+    assert!(text.contains("Approved by core"), "{text}");
+}
+
+#[test]
+fn real_frame_vocabulary_maps_states_nested_details_and_terminal_status() {
+    let mut a = app();
+    a.apply(UiEvent::Frame(real_governance(json!({"type": "paused"}))));
+    assert_eq!(a.state, RunState::Paused);
+    a.apply(UiEvent::Frame(real_governance(json!({"type": "resumed"}))));
+    assert_eq!(a.state, RunState::Running);
+
+    let step = WireFrame::new("step").with(
+        "event",
+        json!({
+            "kind": "tool_call",
+            "tool_name": "write_file",
+            "arguments": "{\"path\":\"a.txt\"}",
+            "observation": "ok",
+            "status": "succeeded"
+        }),
+    );
+    a.apply(UiEvent::Frame(step));
+    let text = draw(&a, 100, 30);
+    assert!(
+        text.contains("write_file"),
+        "nested tool_name is shown: {text}"
+    );
+
+    a.apply(UiEvent::Frame(real_finished("cancelled")));
+    assert_eq!(a.state, RunState::Failed);
+    let text = draw(&a, 100, 30);
+    assert!(
+        text.contains("Cancelled"),
+        "terminal status is shown: {text}"
+    );
+
+    // A durable frame carries no lifecycle and fabricates no stats.
+    let before = a.state;
+    a.apply(UiEvent::Frame(
+        WireFrame::new("durable").with("event_id", json!(7)),
+    ));
+    assert_eq!(a.state, before);
+    assert!(!draw(&a, 100, 30).contains("tokens"));
+}
+
+struct TuiScriptedExecutor {
+    steps: Mutex<VecDeque<Result<AiResponse, ExecutorError>>>,
+}
+
+impl ProviderExecutor for TuiScriptedExecutor {
+    fn execute(
+        &self,
+        _request: &AiRequest,
+        _credential: &str,
+        _token: &CancellationToken,
+    ) -> Result<AiResponse, ExecutorError> {
+        self.steps
+            .lock()
+            .expect("script lock")
+            .pop_front()
+            .unwrap_or(Err(ExecutorError::Failure))
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn real_host_tui_pause_resume_and_approval_response_reach_the_live_run() {
+    let _serial = crate::run::REAL_HOST_TEST_LOCK
+        .lock()
+        .expect("serial guard");
+    let db = in_memory_database();
+    let workspace = std::env::temp_dir().join(format!(
+        "nexora-cli-tui-real-{}-{}",
+        std::process::id(),
+        "approval"
+    ));
+    let _ = std::fs::remove_dir_all(&workspace);
+    std::fs::create_dir_all(&workspace).expect("synthetic workspace");
+
+    let executor = Arc::new(TuiScriptedExecutor {
+        steps: Mutex::new(
+            vec![
+                Ok(AiResponse {
+                    content: String::new(),
+                    model: "test-model".to_string(),
+                    tool_calls: vec![ToolCall {
+                        id: "call-1".to_string(),
+                        name: "write_file".to_string(),
+                        arguments: r#"{"path":"a.txt","content":"ok"}"#.to_string(),
+                        thought_signature: None,
+                    }],
+                    usage: None,
+                }),
+                Ok(AiResponse {
+                    content: "done".to_string(),
+                    model: "test-model".to_string(),
+                    tool_calls: Vec::new(),
+                    usage: None,
+                }),
+            ]
+            .into(),
+        ),
+    });
+
+    let args = RunArgs {
+        prompt: Some("approve this".to_string()),
+        provider: Some("openai".to_string()),
+        model: Some("gpt-5.6-terra".to_string()),
+        mode: Some("supervised".to_string()),
+        max_steps: None,
+        budget_usd: None,
+        workspace: Some(workspace.to_string_lossy().into_owned()),
+        format: "jsonl".to_string(),
+        plain: false,
+        no_color: false,
+        quiet: false,
+        verbose: false,
+    };
+    let caps = CapabilityArgs {
+        color: "auto".to_string(),
+        ascii: false,
+        motion: "quiet".to_string(),
+    };
+    let prompt = args.prompt.clone().expect("prompt");
+    let launch = validate(&args, &caps, prompt).expect("valid interactive launch");
+
+    let paused = Arc::new(Mutex::new(false));
+    let resumed = Arc::new(Mutex::new(false));
+    let answered = Arc::new(Mutex::new(false));
+    let (saw_paused, saw_resumed, saw_answered) = (
+        Arc::clone(&paused),
+        Arc::clone(&resumed),
+        Arc::clone(&answered),
+    );
+    let decision_db = db.clone();
+
+    let frames = CliAgentHost::start_real_with_observer(
+        HostMode::Interactive,
+        &launch,
+        Some(db),
+        Some(executor),
+        Some("stub-credential".to_string()),
+        &move |frame| {
+            if frame.get("type").and_then(serde_json::Value::as_str) != Some("governance") {
+                return;
+            }
+            let event_type = frame_event_type(frame);
+            if event_type != "approval_requested" {
+                return;
+            }
+            *saw_paused.lock().expect("pause flag") = super::request_pause();
+            *saw_resumed.lock().expect("resume flag") = super::request_resume();
+            let call_id = frame
+                .get("event")
+                .and_then(|event| event.get("call_id"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            *saw_answered.lock().expect("answer flag") =
+                super::respond_approval_with(Some(decision_db.clone()), &call_id, true);
+        },
+    )
+    .expect("interactive run with a scripted provider");
+
+    assert!(
+        *paused.lock().expect("pause"),
+        "pause reached the live registry"
+    );
+    assert!(
+        *resumed.lock().expect("resume"),
+        "resume reached the live registry"
+    );
+    assert!(
+        *answered.lock().expect("answer"),
+        "A reached the live approval gate"
+    );
+
+    // Feed the real frames through the TUI state machine: the card loads from
+    // the governance frame and the core resolution confirms it.
+    let sources = approval_sources();
+    let mut a = app();
+    for frame in frames {
+        if frame_event_type(&frame) == "approval_requested" {
+            let cmd = a.apply(UiEvent::Frame(frame));
+            assert_eq!(cmd, LoopCmd::LoadApproval);
+            drive(&mut a, cmd, &sources);
+        } else {
+            a.apply(UiEvent::Frame(frame));
+        }
+    }
+    assert_eq!(a.approval_decision, ApprovalDecision::Approved);
+    assert!(
+        a.approval_return.is_some(),
+        "return point after core confirmation"
+    );
+    let _ = std::fs::remove_dir_all(&workspace);
+}
+
+fn frame_event_type(frame: &WireFrame) -> &str {
+    frame
+        .get("event")
+        .and_then(|event| event.get("type"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
 }

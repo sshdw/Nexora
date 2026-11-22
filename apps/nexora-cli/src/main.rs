@@ -43,9 +43,9 @@ use error::CliError;
         read-only checks; `providers list`, `models list`, and `config get/set`\n\
         read the SAME catalog and settings as Nexora Desktop. `auth set` stores\n\
         a credential in the OS keyring from hidden input (never from argv).\n\
-        Nothing here opens a fullscreen UI or prints a credential. The\n\
-        interactive TUI is not part of this build: a bare `nexora` exits with\n\
-        usage guidance, including when output is redirected.",
+        No command prints a credential. A bare `nexora` enters the interactive\n\
+        TUI on an interactive terminal; with redirected output it prints usage\n\
+        guidance instead and never opens the alternate screen.",
     after_help = "Commands: run, doctor, providers list, models list, config get|set, auth set.\n\
         `sessions` and `diff` are available inside the interactive TUI."
 )]
@@ -158,7 +158,8 @@ fn run(cli: &Cli) -> Result<run::RunOutcome, CliError> {
             // entered only on an interactive terminal, via `tui::run` in
             // `main`, never from this arm.
             Err(CliError::validation(
-                "interactive mode is not available in this build; try `nexora --help` or `nexora doctor`",
+                "no command given; a bare `nexora` opens the interactive TUI on a terminal \
+                 (try `nexora --help` or `nexora doctor`)",
             ))
         }
     }

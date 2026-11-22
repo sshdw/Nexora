@@ -733,21 +733,34 @@ fn gated_event(event: &AgentRunEvent) -> bool {
     )
 }
 
+/// Which shell drives the run. The distinction is load-bearing for approvals:
+/// only a non-interactive `nexora run` may fail closed by cancelling the run;
+/// the interactive TUI must leave the park alive so A/D/Ctrl+C can decide it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostMode {
+    /// Machine output, no user present: a gate cancels immediately.
+    NonInteractive,
+    /// Interactive TUI: a gate stays parked for the user to answer.
+    Interactive,
+}
+
 /// The shipped host: a thin adapter from the runtime's `AgentRunHost` frames to
 /// the CLI's versioned machine-output seam. Per-run instances carry a clone of
 /// the frame sender (so one can be handed to the runtime's run/forwarder
-/// threads); the `'static` seam instance is stateless.
+/// threads) and the owning shell mode.
 #[derive(Clone)]
 pub(crate) struct CliAgentHost {
+    mode: HostMode,
     registry: Arc<AgentRunRegistry>,
     tx: mpsc::Sender<WireFrame>,
 }
 
 impl CliAgentHost {
-    fn new() -> (Self, mpsc::Receiver<WireFrame>) {
+    fn new(mode: HostMode) -> (Self, mpsc::Receiver<WireFrame>) {
         let (tx, rx) = mpsc::channel();
         (
             Self {
+                mode,
                 registry: registry(),
                 tx,
             },
@@ -758,11 +771,15 @@ impl CliAgentHost {
 
 impl AgentRunHost for CliAgentHost {
     fn emit(&self, frame: &RunFrame) {
-        // Non-interactive approval fail-closed: the first gate frame cancels
-        // the run through the shared registry. The runner then emits an honest
-        // `Cancelled` terminal outcome; no approval is ever auto-granted.
-        if let Some(run_id) = gated_run_id(frame) {
-            let _ = self.registry.cancel(run_id);
+        // Approval fail-closed applies ONLY to `nexora run`: with no user to
+        // answer, the first gate frame cancels through the shared registry and
+        // the runner emits an honest `Cancelled` terminal outcome. In the
+        // interactive TUI the park stays alive for A/D/Ctrl+C; never auto-grant
+        // and never auto-cancel there.
+        if self.mode == HostMode::NonInteractive {
+            if let Some(run_id) = gated_run_id(frame) {
+                let _ = self.registry.cancel(run_id);
+            }
         }
         // Best effort: a disconnected receiver means the caller stopped
         // draining, which never affects the run itself.
@@ -891,7 +908,7 @@ impl RunHost for CliAgentHost {
         // Composition root for the CLI process: installs the scoped Tokio HTTP
         // reactor and the OS-keyring credential source exactly once.
         install_provider_sources();
-        Self::start_real(launch, None, None, None)
+        Self::start_real(self.mode, launch, None, None, None)
     }
 
     fn request_cancel(&self) {
@@ -908,12 +925,27 @@ impl CliAgentHost {
     /// `ProviderExecutor`, and `credential` is a stub value. None of them is
     /// reachable from `RunHost::start`, which always uses the real DB, the real
     /// provider registry and the real keyring seam.
-    #[allow(clippy::too_many_lines)]
     fn start_real(
+        mode: HostMode,
         launch: &LaunchSettings,
         db: Option<Database>,
         executor: Option<Arc<dyn ProviderExecutor + Send + Sync>>,
         credential: Option<String>,
+    ) -> Result<Vec<WireFrame>, RunFailure> {
+        Self::start_real_with_observer(mode, launch, db, executor, credential, &|_| {})
+    }
+
+    /// Full real-host path with a frame observer. Production passes a no-op;
+    /// tests observe a live gate and drive the real registry (approve/pause/
+    /// resume) without a TTY or network.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn start_real_with_observer(
+        mode: HostMode,
+        launch: &LaunchSettings,
+        db: Option<Database>,
+        executor: Option<Arc<dyn ProviderExecutor + Send + Sync>>,
+        credential: Option<String>,
+        on_frame: &dyn Fn(&WireFrame),
     ) -> Result<Vec<WireFrame>, RunFailure> {
         let db = match db {
             Some(db) => db,
@@ -939,7 +971,7 @@ impl CliAgentHost {
             || std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             PathBuf::from,
         );
-        let mode = autonomy_mode(&launch.mode);
+        let autonomy = autonomy_mode(&launch.mode);
         // Read-only resolution from the shared settings tiers: a CLI override
         // never reaches any settings writer.
         let preset = resolve_preset_for_workspace(&db, Some(&workspace));
@@ -960,7 +992,7 @@ impl CliAgentHost {
             max_iterations: Some(usize::try_from(launch.max_steps).unwrap_or(usize::MAX)),
             spend_limit_micro_usd: spend_limit,
         };
-        let (host, rx) = Self::new();
+        let (host, rx) = Self::new(mode);
         let run_id = start_run_with_options(
             &db,
             Arc::clone(&host.registry),
@@ -968,7 +1000,7 @@ impl CliAgentHost {
             executor,
             workspace,
             request,
-            mode,
+            autonomy,
             preset,
             RunLaunchOptions::default(),
         )
@@ -981,6 +1013,7 @@ impl CliAgentHost {
         let mut frames = Vec::new();
         for frame in rx {
             let terminal = frame.get("type").and_then(Value::as_str) == Some("finished");
+            on_frame(&frame);
             frames.push(frame);
             if terminal {
                 break;
@@ -1065,16 +1098,25 @@ pub(crate) fn render_machine(frames: &[WireFrame], format: OutputFormat) -> Stri
     }
 }
 
-/// The only host implementation linked into the shipped binary. `pub(crate)`
-/// so the TUI's run thread drives the same seam (no parallel event model).
+/// Host for `nexora run`: no user is present, so a governance gate cancels
+/// immediately and exits 4 with the fixed hint.
 pub(crate) fn host() -> &'static dyn RunHost {
-    // Keep the receiver alive alongside the stateless seam host: any frame an
-    // external caller emits through this handle is drained instead of silently
-    // dropped, and `request_cancel` still reaches the global registry.
     static HOST: OnceLock<(CliAgentHost, Mutex<mpsc::Receiver<WireFrame>>)> = OnceLock::new();
     &HOST
         .get_or_init(|| {
-            let (host, rx) = CliAgentHost::new();
+            let (host, rx) = CliAgentHost::new(HostMode::NonInteractive);
+            (host, Mutex::new(rx))
+        })
+        .0
+}
+
+/// Host for the interactive TUI: the same seam and registry, but a governance
+/// gate stays parked until the user answers it.
+pub(crate) fn interactive_host() -> &'static dyn RunHost {
+    static HOST: OnceLock<(CliAgentHost, Mutex<mpsc::Receiver<WireFrame>>)> = OnceLock::new();
+    &HOST
+        .get_or_init(|| {
+            let (host, rx) = CliAgentHost::new(HostMode::Interactive);
             (host, Mutex::new(rx))
         })
         .0
@@ -1103,6 +1145,25 @@ fn saw_gate(frames: &[WireFrame]) -> bool {
     })
 }
 
+/// Classify the secret-free, fixed-vocabulary error text carried by a
+/// `RunFinished` frame. `AgentError` is crate-private to the runtime, so the
+/// classified `Display` text is the wire contract: internal categories
+/// (context exhaustion, persistence, empty response) must NOT be reported as
+/// provider/network/auth failures. Unknown text fails closed as `Failed` (1),
+/// never as a provider failure.
+fn classify_run_error(error: &str) -> CliRunOutcome {
+    if error.starts_with("the AI provider") || error.starts_with("provider reported") {
+        return CliRunOutcome::Provider;
+    }
+    if error.contains("context window exhausted") {
+        return CliRunOutcome::ContextExhausted;
+    }
+    if error.contains("run history could not be saved") {
+        return CliRunOutcome::PersistenceFailure;
+    }
+    CliRunOutcome::Failed
+}
+
 /// Map the terminal frame's persisted status onto the shared 0–5 table. A
 /// missing non-terminal frame fails closed as `Internal` — never a fake zero.
 fn exit_code_for_frames(frames: &[WireFrame]) -> CliExitCode {
@@ -1112,8 +1173,8 @@ fn exit_code_for_frames(frames: &[WireFrame]) -> CliExitCode {
     if last.get("type").and_then(Value::as_str) != Some("finished") {
         return CliExitCode::Internal;
     }
-    let status = last
-        .get("event")
+    let event = last.get("event");
+    let status = event
         .and_then(|event| event.get("status"))
         .and_then(Value::as_str)
         .unwrap_or("error");
@@ -1122,9 +1183,28 @@ fn exit_code_for_frames(frames: &[WireFrame]) -> CliExitCode {
         "cancelled" => CliRunOutcome::Cancelled,
         "budget_exhausted" => CliRunOutcome::BudgetExhausted,
         "spend_limit_exceeded" => CliRunOutcome::SpendLimitExceeded,
-        _ => CliRunOutcome::Provider,
+        "error" => classify_run_error(
+            event
+                .and_then(|event| event.get("error"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        ),
+        _ => CliRunOutcome::Failed,
     };
     CliExitCode::for_run_outcome(outcome)
+}
+
+/// Turn a drained frame stream into the process outcome. Shared by `execute`
+/// and by the full-path tests so exit codes are pinned end to end.
+fn finish_run(frames: &[WireFrame], format: OutputFormat) -> RunOutcome {
+    let code = exit_code_for_frames(frames);
+    let notice =
+        (code == CliExitCode::Cancelled && saw_gate(frames)).then(|| NO_APPROVAL_HINT.to_string());
+    RunOutcome {
+        text: render_machine(frames, format),
+        code,
+        notice,
+    }
 }
 
 /// Build validated launch settings for a task submitted from the TUI. Uses the
@@ -1170,15 +1250,13 @@ pub(crate) fn execute(args: &RunArgs, caps: &CapabilityArgs) -> Result<RunOutcom
     let frames = host()
         .start(&launch)
         .map_err(|failure| host_failure(failure, &launch))?;
-    let code = exit_code_for_frames(&frames);
-    let notice =
-        (code == CliExitCode::Cancelled && saw_gate(&frames)).then(|| NO_APPROVAL_HINT.to_string());
-    Ok(RunOutcome {
-        text: render_machine(&frames, launch.format),
-        code,
-        notice,
-    })
+    Ok(finish_run(&frames, launch.format))
 }
+
+/// Process-wide registry claims one conversation id; every in-memory test DB
+/// starts at id 1, so all real-host tests across CLI and TUI serialize here.
+#[cfg(test)]
+pub(crate) static REAL_HOST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -1190,7 +1268,7 @@ mod tests {
     use nexora_core::storage::database::in_memory_database;
     use nexora_core::storage::repository::agent_runs::AgentRunRepository;
     use nexora_core::storage::repository::settings::SettingsRepository;
-    use nexora_runtime::application::execution::{AiResponse, ExecutorError, ToolCall};
+    use nexora_runtime::application::execution::{AiResponse, ExecutorError, TokenUsage, ToolCall};
 
     use super::*;
     use crate::{Cli, Commands};
@@ -1667,10 +1745,6 @@ mod tests {
 
     // ---- real host over the shared runtime (scripted provider, no network) --
 
-    // The process-wide registry claims conversation ids; every in-memory test
-    // database starts at id 1, so real-host tests must not overlap.
-    static REAL_HOST_LOCK: Mutex<()> = Mutex::new(());
-
     struct ScriptedExecutor {
         steps: Mutex<VecDeque<Result<AiResponse, ExecutorError>>>,
     }
@@ -1744,12 +1818,13 @@ mod tests {
 
     #[test]
     fn real_host_emits_verbatim_frames_and_terminal_last() {
-        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
             Arc::new(ScriptedExecutor::new(vec![Ok(text_response("all done"))]));
         let launch = real_launch("semi_autonomous", "do work", None);
         let frames = CliAgentHost::start_real(
+            HostMode::NonInteractive,
             &launch,
             Some(db),
             Some(executor),
@@ -1783,15 +1858,20 @@ mod tests {
 
     #[test]
     fn real_host_plain_text_is_no_ansi_and_carries_no_credential() {
-        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> = Arc::new(ScriptedExecutor::new(
             vec![Err(ExecutorError::Authentication)],
         ));
         let launch = real_launch("supervised", "plain text run", None);
-        let frames =
-            CliAgentHost::start_real(&launch, Some(db), Some(executor), Some(SECRET.to_string()))
-                .expect("classified provider failure still emits frames");
+        let frames = CliAgentHost::start_real(
+            HostMode::NonInteractive,
+            &launch,
+            Some(db),
+            Some(executor),
+            Some(SECRET.to_string()),
+        )
+        .expect("classified provider failure still emits frames");
         for format in [OutputFormat::Text, OutputFormat::Json, OutputFormat::Jsonl] {
             let rendered = render_machine(&frames, format);
             assert!(!rendered.contains('\u{1b}'), "{format:?} emitted ANSI");
@@ -1805,12 +1885,13 @@ mod tests {
 
     #[test]
     fn launch_settings_are_recorded_without_writing_overrides() {
-        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
             Arc::new(ScriptedExecutor::new(vec![Ok(text_response("done"))]));
         let launch = real_launch("full_autonomous", "record the launch", None);
         let _ = CliAgentHost::start_real(
+            HostMode::NonInteractive,
             &launch,
             Some(db.clone()),
             Some(executor),
@@ -1844,37 +1925,192 @@ mod tests {
 
     #[test]
     fn approval_request_fails_closed_and_exits_distinct_from_provider_failure() {
-        let _serial = REAL_HOST_LOCK.lock().expect("serial guard");
+        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
         let workspace = synthetic_workspace("approval");
         let db = in_memory_database();
         let executor: Arc<dyn ProviderExecutor + Send + Sync> =
             Arc::new(ScriptedExecutor::new(vec![
-                Ok(tool_response("gate", "write_file", r#"{"path":"a.txt"}"#)),
+                Ok(tool_response(
+                    "gate",
+                    "write_file",
+                    r#"{"path":"a.txt","content":"ok"}"#,
+                )),
                 Ok(text_response("must never run")),
             ]));
         let launch = real_launch("supervised", "needs approval", Some(&workspace));
-        let frames =
-            CliAgentHost::start_real(&launch, Some(db), Some(executor), Some("stub".to_string()))
-                .expect("run is cancelled, not a pre-spawn failure");
+        let frames = CliAgentHost::start_real(
+            HostMode::NonInteractive,
+            &launch,
+            Some(db),
+            Some(executor),
+            Some("stub".to_string()),
+        )
+        .expect("run is cancelled, not a pre-spawn failure");
 
         assert!(saw_gate(&frames), "the gate frame must be emitted");
-        assert_eq!(exit_code_for_frames(&frames), CliExitCode::Cancelled);
-        let rendered = render_machine(&frames, OutputFormat::Jsonl);
+        // Full run-path outcome, not just the mapping helper: exit 4 + hint.
+        let outcome = finish_run(&frames, OutputFormat::Jsonl);
+        assert_eq!(outcome.code, CliExitCode::Cancelled);
+        assert_eq!(outcome.notice.as_deref(), Some(NO_APPROVAL_HINT));
         assert!(
-            rendered.contains("approval_requested"),
-            "honest governance event: {rendered}"
+            outcome.text.contains("approval_requested"),
+            "honest governance event: {}",
+            outcome.text
         );
         assert!(
-            !rendered.contains("\"approved\":true"),
-            "no auto-approval may be fabricated: {rendered}"
+            !outcome.text.contains("\"approved\":true"),
+            "no auto-approval may be fabricated: {}",
+            outcome.text
         );
         assert!(
             !workspace.join("a.txt").exists(),
             "the gated tool must never dispatch"
         );
-        let hint = NO_APPROVAL_HINT;
-        assert!(hint.contains("no approval was granted"));
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn interactive_host_leaves_the_approval_parked_for_the_user() {
+        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let workspace = synthetic_workspace("interactive");
+        let db = in_memory_database();
+        let executor: Arc<dyn ProviderExecutor + Send + Sync> =
+            Arc::new(ScriptedExecutor::new(vec![
+                Ok(tool_response(
+                    "gate",
+                    "write_file",
+                    r#"{"path":"a.txt","content":"ok"}"#,
+                )),
+                Ok(text_response("finished after approval")),
+            ]));
+        let launch = real_launch("supervised", "needs a human", Some(&workspace));
+        let decision_db = db.clone();
+        let responded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let saw_responded = Arc::clone(&responded);
+        let frames = CliAgentHost::start_real_with_observer(
+            HostMode::Interactive,
+            &launch,
+            Some(db),
+            Some(executor),
+            Some("stub".to_string()),
+            &move |frame| {
+                let governance = frame.get("type").and_then(Value::as_str) == Some("governance");
+                let requested = frame
+                    .get("event")
+                    .and_then(|event| event.get("type"))
+                    .and_then(Value::as_str)
+                    == Some("approval_requested");
+                if governance && requested {
+                    let call_id = frame
+                        .get("event")
+                        .and_then(|event| event.get("call_id"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let run_id = frame.get("run_id").and_then(Value::as_i64).unwrap_or(0);
+                    let registry = crate::run::registry();
+                    let ok = nexora_runtime::application::agent::permissions::resolve_approval(
+                        registry.as_ref(),
+                        &decision_db,
+                        run_id,
+                        &call_id,
+                        true,
+                        None,
+                    )
+                    .is_ok();
+                    saw_responded.store(ok, Ordering::SeqCst);
+                }
+            },
+        )
+        .expect("interactive run with a scripted provider");
+
+        assert!(
+            responded.load(Ordering::SeqCst),
+            "the park must survive until the user answers it"
+        );
+        let outcome = finish_run(&frames, OutputFormat::Jsonl);
+        assert_eq!(outcome.code, CliExitCode::Ok, "no auto-cancel in TUI mode");
+        assert_eq!(outcome.notice, None, "no non-interactive hint in TUI mode");
+        assert!(outcome.text.contains("\"approved\":true"));
+        assert!(
+            workspace.join("a.txt").exists(),
+            "the approved tool actually ran: {}",
+            outcome.text
+        );
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[test]
+    fn spend_limit_exhaustion_exits_five_over_the_full_run_path() {
+        let _serial = REAL_HOST_TEST_LOCK.lock().expect("serial guard");
+        let db = in_memory_database();
+        let usage = AiResponse {
+            content: "never final".to_string(),
+            model: "test-model".to_string(),
+            tool_calls: Vec::new(),
+            usage: Some(TokenUsage {
+                input_tokens: 400_000,
+                output_tokens: 0,
+                cached_tokens: 0,
+            }),
+        };
+        let executor: Arc<dyn ProviderExecutor + Send + Sync> =
+            Arc::new(ScriptedExecutor::new(vec![Ok(usage)]));
+        let mut launch = real_launch("semi_autonomous", "spend test", None);
+        launch.budget_micro_usd = Some(1_000_000);
+        let frames = CliAgentHost::start_real(
+            HostMode::NonInteractive,
+            &launch,
+            Some(db),
+            Some(executor),
+            Some("stub".to_string()),
+        )
+        .expect("spend-limited run");
+        let outcome = finish_run(&frames, OutputFormat::Jsonl);
+        assert_eq!(outcome.code, CliExitCode::Budget);
+        assert_eq!(outcome.notice, None, "budget is not an approval hint");
+        assert!(outcome.text.contains("spend_limit_exceeded"));
+    }
+
+    #[test]
+    fn classified_error_text_is_not_always_a_provider_failure() {
+        let cases = [
+            (
+                "the AI provider could not be reached (network or timeout)",
+                CliExitCode::Provider,
+            ),
+            (
+                "the AI provider rejected the stored credential (HTTP 401/403)",
+                CliExitCode::Provider,
+            ),
+            (
+                "provider reported insufficient credits/quota (HTTP 402)",
+                CliExitCode::Provider,
+            ),
+            (
+                "agent stopped: context window exhausted after recovery attempts",
+                CliExitCode::Internal,
+            ),
+            (
+                "agent stopped: run history could not be saved",
+                CliExitCode::Internal,
+            ),
+            (
+                "agent stopped: the model returned an empty response",
+                CliExitCode::Internal,
+            ),
+            ("unclassified failure", CliExitCode::Internal),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                CliExitCode::for_run_outcome(classify_run_error(error)),
+                expected,
+                "error text {error}"
+            );
+            let frames = vec![WireFrame::new("finished")
+                .with("event", json!({"status": "error", "error": error}))];
+            assert_eq!(exit_code_for_frames(&frames), expected, "frame {error}");
+        }
     }
 
     #[test]
@@ -1884,7 +2120,6 @@ mod tests {
             ("cancelled", CliExitCode::Cancelled),
             ("budget_exhausted", CliExitCode::Budget),
             ("spend_limit_exceeded", CliExitCode::Budget),
-            ("error", CliExitCode::Provider),
         ];
         for (status, expected) in cases {
             let frames = vec![WireFrame::new("finished").with("event", json!({"status": status}))];

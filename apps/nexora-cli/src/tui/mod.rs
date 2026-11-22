@@ -100,9 +100,19 @@ fn terminal_error() -> CliError {
 /// `false` on every failure (no active run, unreadable store, stale request):
 /// the park stays pending and the UI makes no decision claim.
 fn respond_approval(id: &str, approved: bool) -> bool {
+    respond_approval_with(None, id, approved)
+}
+
+/// Testable core of [`respond_approval`]: `db` lets a real-host test supply an
+/// in-memory store while using the same production decision path.
+fn respond_approval_with(
+    db: Option<nexora_runtime::infrastructure::database::Database>,
+    id: &str,
+    approved: bool,
+) -> bool {
     let (Some(run_id), Some(db)) = (
         crate::run::active_run_id(),
-        crate::store::open_existing_db(),
+        db.or_else(crate::store::open_existing_db),
     ) else {
         return false;
     };
@@ -116,6 +126,17 @@ fn respond_approval(id: &str, approved: bool) -> bool {
         None,
     )
     .is_ok()
+}
+
+/// Request a real pause on the active run. The displayed state changes only
+/// when the core emits a `paused` frame, never on the key press.
+fn request_pause() -> bool {
+    crate::run::active_run_id().is_some_and(|id| crate::run::registry().pause(id))
+}
+
+/// Request a real resume on the active run (requested != done).
+fn request_resume() -> bool {
+    crate::run::active_run_id().is_some_and(|id| crate::run::registry().resume(id))
 }
 
 /// Enter the TUI. Returns the exit code reflecting the last command outcome.
@@ -238,14 +259,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                     }
                 }
                 app::LoopCmd::RequestPause => {
-                    if let Some(run_id) = crate::run::active_run_id() {
-                        let _ = crate::run::registry().pause(run_id);
-                    }
+                    let _ = request_pause();
                 }
                 app::LoopCmd::RequestResume => {
-                    if let Some(run_id) = crate::run::active_run_id() {
-                        let _ = crate::run::registry().resume(run_id);
-                    }
+                    let _ = request_resume();
                 }
                 app::LoopCmd::LoadDiff => {
                     let result = sources.load_diff();
@@ -305,7 +322,7 @@ fn spawn_run(
             sender.send(UiEvent::HostDone);
             return;
         };
-        if let Ok(frames) = crate::run::host().start(&launch) {
+        if let Ok(frames) = crate::run::interactive_host().start(&launch) {
             sender.send(UiEvent::HostAccepted);
             for frame in frames {
                 if cancel.is_requested() {

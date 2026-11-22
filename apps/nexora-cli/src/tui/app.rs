@@ -163,9 +163,33 @@ pub(crate) fn fold(
     out
 }
 
-/// Normalised event types whose raw `type` string may be shown. Anything else
-/// becomes the fixed `Event` label (brief §7.2, "unknown types → fixed label").
+/// Normalised event types whose resolved token may be shown. Covers BOTH the
+/// real runtime wire vocabulary (top-level `step`/`governance`/`finished`/
+/// `durable` with nested `event.type`/`event.kind`) and the legacy `scaffold`
+/// top-level types used by the `TestBackend` suite. Anything else becomes the
+/// fixed `Event` label (brief §7.2, "unknown types → fixed label").
 const KNOWN_TYPES: &[&str] = &[
+    // Real runtime frames.
+    "durable",
+    "step",
+    "governance",
+    "finished",
+    "approval_requested",
+    "approval_resolved",
+    "question_requested",
+    "question_resolved",
+    "paused",
+    "resumed",
+    "budget_exhausted",
+    "spend_limit_exceeded",
+    "cancelled",
+    "completed",
+    "stream_delta",
+    "command_output",
+    "model_turn",
+    "tool_call",
+    "approval",
+    // Legacy scaffold vocabulary (kept for the scripted suite).
     "run_started",
     "run_finished",
     "run_completed",
@@ -195,8 +219,77 @@ const KNOWN_TYPES: &[&str] = &[
 /// Fields a host frame is allowed to contribute to a timeline row. All other
 /// fields (and all secrets) are discarded.
 const DETAIL_FIELDS: &[&str] = &[
-    "tool", "name", "path", "file", "command", "summary", "message", "detail", "result",
+    "tool",
+    "tool_name",
+    "name",
+    "path",
+    "file",
+    "command",
+    "summary",
+    "message",
+    "detail",
+    "result",
+    "arguments",
+    "observation",
+    "kind",
+    "status",
+    "delta",
+    "chunk",
+    "reason",
 ];
+
+/// Top-level discriminator of a wire frame.
+fn frame_type(frame: &WireFrame) -> &str {
+    frame
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+/// Nested payload of a real runtime frame (`RunFrame` serialises internally
+/// tagged with `event` fields); absent on legacy scaffold frames.
+fn frame_event(frame: &WireFrame) -> Option<&serde_json::Value> {
+    frame.get("event")
+}
+
+/// Normalised event token shared by the label, state and approval bridges.
+/// Real governance/step frames are read from their nested payload; legacy
+/// frames keep their top-level type.
+fn logical_event(frame: &WireFrame) -> &str {
+    let top = frame_type(frame);
+    match top {
+        "governance" | "step" => frame_event(frame)
+            .and_then(|event| event.get("type").or_else(|| event.get("kind")))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(top),
+        "finished" => "run_finished",
+        _ => top,
+    }
+}
+
+/// Terminal status of a real `finished` frame, if present.
+fn finished_status(frame: &WireFrame) -> Option<&str> {
+    if frame_type(frame) != "finished" {
+        return None;
+    }
+    frame_event(frame)
+        .and_then(|event| event.get("status"))
+        .and_then(serde_json::Value::as_str)
+}
+
+/// One bounded, sanitised detail string. Nested real fields win; legacy
+/// top-level fields remain a fallback. No stats or payloads are invented.
+fn detail_from_frame(frame: &WireFrame) -> Option<String> {
+    DETAIL_FIELDS
+        .iter()
+        .find_map(|key| {
+            frame_event(frame)
+                .and_then(|event| event.get(key))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| frame.get(key).and_then(serde_json::Value::as_str))
+        })
+        .map(sanitize)
+}
 
 /// Remove control characters (including ANSI ESC) and redact key-shaped bytes
 /// before any host-supplied string reaches the render buffer (brief §11/§18).
@@ -211,14 +304,40 @@ pub(crate) fn sanitize(value: &str) -> String {
     redacted.chars().take(200).collect()
 }
 
-fn is_terminal_type(event_type: &str, status: Option<&str>) -> bool {
-    matches!(event_type, "run_finished" | "run_completed") || status == Some("completed")
+fn is_terminal_type(frame: &WireFrame) -> bool {
+    let event_type = logical_event(frame);
+    frame_type(frame) == "finished"
+        || matches!(event_type, "run_finished" | "run_completed")
+        || frame.get("status").and_then(serde_json::Value::as_str) == Some("completed")
 }
 
 /// Derive a run state from one real frame. `None` means the frame carries no
 /// lifecycle information and must not change the displayed state.
 fn state_from_frame(frame: &WireFrame) -> Option<RunState> {
-    let event_type = frame.get("type").and_then(serde_json::Value::as_str)?;
+    let top = frame_type(frame);
+    if top == "governance" {
+        return match logical_event(frame) {
+            "paused" => Some(RunState::Paused),
+            "resumed" | "stream_delta" | "command_output" | "approval_resolved"
+            | "question_resolved" => Some(RunState::Running),
+            "approval_requested" | "question_requested" => Some(RunState::WaitingApproval),
+            "cancelled" | "budget_exhausted" | "spend_limit_exceeded" => Some(RunState::Failed),
+            "completed" => Some(RunState::Idle),
+            _ => None,
+        };
+    }
+    if top == "finished" {
+        return Some(if finished_status(frame) == Some("completed") {
+            RunState::Idle
+        } else {
+            RunState::Failed
+        });
+    }
+    if top == "step" || top == "durable" {
+        return None;
+    }
+    // Legacy scaffold vocabulary.
+    let event_type = top;
     let status = frame.get("status").and_then(serde_json::Value::as_str);
     match event_type {
         "run_started" | "run_resumed" => Some(RunState::Running),
@@ -236,22 +355,24 @@ fn state_from_frame(frame: &WireFrame) -> Option<RunState> {
 
 /// Build one timeline row from a real frame, using only whitelisted fields.
 fn entry_from_frame(frame: &WireFrame) -> TimelineEntry {
-    let raw_type = frame
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let status = frame.get("status").and_then(serde_json::Value::as_str);
-    let label = if KNOWN_TYPES.contains(&raw_type) {
-        raw_type.to_string()
+    let event_type = logical_event(frame);
+    let label = if KNOWN_TYPES.contains(&event_type) {
+        event_type.to_string()
     } else {
         "Event".to_string()
     };
-    let detail = DETAIL_FIELDS
-        .iter()
-        .find_map(|key| frame.get(key).and_then(serde_json::Value::as_str))
-        .map(sanitize);
-    if is_terminal_type(raw_type, status) {
-        TimelineEntry::new(EntryKind::Terminal, "Completed", detail)
+    let detail = detail_from_frame(frame);
+    if is_terminal_type(frame) {
+        // A real `RunFinished` carries its persisted status; legacy frames
+        // keep the fixed "Completed" header.
+        let header = match finished_status(frame).unwrap_or("completed") {
+            "cancelled" => "Cancelled",
+            "budget_exhausted" => "BudgetExhausted",
+            "spend_limit_exceeded" => "SpendLimitExceeded",
+            "error" => "Failed",
+            _ => "Completed",
+        };
+        TimelineEntry::new(EntryKind::Terminal, header, detail)
     } else {
         TimelineEntry::new(EntryKind::Event, label, detail)
     }
@@ -593,6 +714,21 @@ impl App {
         self.dirty = true;
     }
 
+    /// Apply a core-confirmed approval resolution. Only this helper sets the
+    /// decision and the return marker — never a key press or a local guess.
+    fn confirm_approval(&mut self, approved: bool) {
+        self.approval_decision = if approved {
+            ApprovalDecision::Approved
+        } else {
+            ApprovalDecision::Denied
+        };
+        self.approval_return = Some(self.timeline.len().saturating_sub(1));
+        // Keep the confirmed card at its return point until the next real
+        // approval read replaces it.
+        self.approval_inspect = false;
+        self.dirty = true;
+    }
+
     /// A/D only *request* a decision: the core owns the park and must confirm
     /// before the local view changes. Esc never reaches this path.
     fn decide(&mut self, decision: ApprovalDecision) -> LoopCmd {
@@ -847,11 +983,7 @@ impl App {
                 }
             }
             UiEvent::Frame(frame) => {
-                let event_type = frame
-                    .get("type")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
+                let event_type = logical_event(&frame).to_string();
                 let entry = entry_from_frame(&frame);
                 if let Some(state) = state_from_frame(&frame) {
                     self.state = state;
@@ -863,8 +995,26 @@ impl App {
                     self.follow_tail();
                 }
                 self.dirty = true;
-                if event_type == "approval_required" {
+                // Real runtime governance frames are nested under `event`;
+                // the legacy scaffold used top-level `approval_required`.
+                // A gate frame must refresh the card from the live run state;
+                // a core-emitted resolution is the ONLY confirmation allowed
+                // to move the local decision.
+                if matches!(
+                    event_type.as_str(),
+                    "approval_requested"
+                        | "question_requested"
+                        | "approval_required"
+                        | "question_resolved"
+                ) {
                     return LoopCmd::LoadApproval;
+                }
+                if event_type == "approval_resolved" {
+                    let approved = frame_event(&frame)
+                        .and_then(|event| event.get("approved"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    self.confirm_approval(approved);
                 }
             }
             UiEvent::HostAccepted => {
@@ -944,20 +1094,7 @@ impl App {
                 self.approval_return = None;
                 self.dirty = true;
             }
-            UiEvent::ApprovalResponded { approved, .. } => {
-                // Only a core confirmation makes the decision real. The return marker
-                // is placed here, never on the key press.
-                self.approval_decision = if approved {
-                    ApprovalDecision::Approved
-                } else {
-                    ApprovalDecision::Denied
-                };
-                self.approval_return = Some(self.timeline.len().saturating_sub(1));
-                // Keep the confirmed card at its return point until the next real
-                // approval read replaces it; never clear it on a key press.
-                self.approval_inspect = false;
-                self.dirty = true;
-            }
+            UiEvent::ApprovalResponded { approved, .. } => self.confirm_approval(approved),
             UiEvent::ApprovalResponseFailed => {
                 // The park survives a failed response: still pending, no local claim.
                 self.approval_decision = ApprovalDecision::Pending;
