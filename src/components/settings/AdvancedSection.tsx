@@ -16,8 +16,13 @@ import {
   summarizeMcpServers,
   summarizeRoutingProfile,
 } from "./model";
-import { Checkbox } from "../ui/checkbox";
+import { Switch } from "../ui/switch";
 import SettingSourceBadge from "./SettingSourceBadge";
+
+function formatFlagLabel(name: string): string {
+  const spaced = name.replace(/_/g, " ");
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
 
 export interface AdvancedSectionProps {
   locale: Locale;
@@ -79,36 +84,37 @@ export default function AdvancedSection({
           {t("settings.flagsLabel")}
         </span>
         <p className="nex-settings-hint">{t("settings.flagsHint")}</p>
-        {FLAG_DEFS.map((flag) => (
-          <label
-            key={flag.name}
-            className="nex-flag-row"
-            htmlFor={`flag-${flag.name}`}
-          >
-            <Checkbox
-              id={`flag-${flag.name}`}
-              checked={flagValues[flag.name] ?? true}
-              disabled={flagsSaving !== null}
-              onCheckedChange={(checked) => onFlagToggle(flag.name, checked)}
-              aria-describedby={`flag-${flag.name}-hint`}
-            />
-            <span>
-              <span className="nex-provider-name">{flag.name}</span>{" "}
-              <span className="nex-tag">
-                {flag.enforced
-                  ? t("settings.enforced")
-                  : t("settings.resolvedOnly")}
-              </span>{" "}
-              <SettingSourceBadge
-                entry={resolvedEntries?.[`flags.${flag.name}`]}
-              />
-              <span id={`flag-${flag.name}-hint`} className="nex-settings-hint">
-                {" "}
-                {t(flag.descriptionKey)}
-              </span>
-            </span>
-          </label>
-        ))}
+        <div className="nex-flag-list" role="group" aria-labelledby="flags-label">
+          {FLAG_DEFS.map((flag) => {
+            const label = formatFlagLabel(flag.name);
+            return (
+              <div key={flag.name} className="nex-flag-row">
+                <div className="nex-flag-info">
+                  <label className="nex-flag-title" htmlFor={`flag-${flag.name}`}>
+                    {label}
+                  </label>
+                  <p id={`flag-${flag.name}-hint`} className="nex-flag-desc">
+                    {t(flag.descriptionKey)}
+                  </p>
+                </div>
+                <div className="nex-flag-control">
+                  <span className="nex-flag-status">
+                    {flag.enforced
+                      ? t("settings.enforced")
+                      : t("settings.resolvedOnly")}
+                  </span>
+                  <Switch
+                    id={`flag-${flag.name}`}
+                    checked={flagValues[flag.name] ?? true}
+                    disabled={flagsSaving !== null}
+                    onCheckedChange={(checked) => onFlagToggle(flag.name, checked)}
+                    aria-describedby={`flag-${flag.name}-hint`}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
         {flagsError && (
           <p className="nex-settings-error nex-fade-in" role="alert">
             {flagsError}

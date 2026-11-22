@@ -44,6 +44,8 @@ export interface ConversationPaneProps {
   secondary: boolean;
   /** Compact per-pane identity is visible only while split is active. */
   split?: boolean;
+  initialPrompt?: ConversationViewProps["initialPrompt"];
+  onInitialPromptConsumed?: ConversationViewProps["onInitialPromptConsumed"];
 }
 
 /** The props every pane receives identically (AC-305, review 03 §2): App
@@ -94,6 +96,8 @@ export default function ConversationPane({
   workspace,
   secondary,
   split = false,
+  initialPrompt,
+  onInitialPromptConsumed,
 }: ConversationPaneProps) {
   const { t } = useStrings();
   const isArchived = conversation.status === "archived";
@@ -149,6 +153,8 @@ export default function ConversationPane({
             promptDraft={promptDraft}
             reviewSend={reviewSend}
             workspace={workspace}
+            initialPrompt={initialPrompt}
+            onInitialPromptConsumed={onInitialPromptConsumed}
           />
         </ErrorBoundary>
       </div>

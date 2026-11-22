@@ -126,6 +126,7 @@ export default function CredentialsSection({
               {credentialed && (
                 <Button
                   variant="quiet"
+                  size="sm"
                   className="nex-provider-remove"
                   disabled={store.working}
                   onClick={() => onDisconnect(supported)}
@@ -264,6 +265,7 @@ export default function CredentialsSection({
                 store.disconnectChatGptOAuth && (
                   <Button
                     variant="quiet"
+                    size="sm"
                     className="nex-provider-remove"
                     disabled={oauthBusy}
                     onClick={() => void store.disconnectChatGptOAuth?.()}

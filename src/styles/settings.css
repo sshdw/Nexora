@@ -52,7 +52,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: var(--space-xl) var(--space-lg);
+  padding: var(--space-md) var(--space-lg);
 }
 
 /* ---- Layout: nav pane + content pane ---- */
@@ -68,14 +68,14 @@
 .nex-settings-nav {
   width: 200px;
   flex-shrink: 0;
-  padding: var(--space-lg) var(--space-sm);
+  padding: var(--space-md) var(--space-sm);
   border-right: 1px solid var(--color-outline-variant);
   background: var(--color-surface-container-low);
   overflow-y: auto;
 }
 
 .nex-settings-nav-group {
-  margin-bottom: var(--space-md);
+  margin-bottom: var(--space-sm);
 }
 
 .nex-settings-nav-label {
@@ -91,8 +91,8 @@
   position: relative;
   display: block;
   width: 100%;
-  min-height: 36px;
-  padding: 8px var(--space-sm);
+  min-height: 32px;
+  padding: 6px var(--space-sm);
   border: none;
   border-radius: var(--shape-small);
   background: transparent;
@@ -147,7 +147,7 @@
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-xl);
+  gap: var(--space-lg);
 }
 
 /* ---- Section composition (0.3.0): heading + hint + controls on
@@ -250,19 +250,62 @@
   color: var(--color-on-surface-tertiary);
 }
 
-/* Advanced flag toggles: native checkbox + label rows separated by
-   hairlines (structural seams, same language as the credential list). */
+/* Advanced flag toggles: clean aligned rows with label + description on
+   the left, compact status + monochrome switch on the right, separated by
+   1px solid var(--border) hairlines. */
+.nex-flag-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--shape-medium);
+  background: var(--color-surface-container);
+}
+
 .nex-flag-row {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-sm);
-  padding: var(--space-xs) 0;
-  border-bottom: 1px solid var(--color-outline-variant);
-  cursor: pointer;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--border);
 }
 
 .nex-flag-row:last-child {
   border-bottom: none;
+}
+
+.nex-flag-info {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxxs);
+  min-width: 0;
+}
+
+.nex-flag-title {
+  font-size: var(--type-size-body-medium);
+  font-weight: var(--type-weight-medium);
+  color: var(--color-on-surface);
+  cursor: pointer;
+}
+
+.nex-flag-desc {
+  margin: 0;
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
+  line-height: var(--type-line-height-normal);
+}
+
+.nex-flag-control {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.nex-flag-status {
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-tertiary);
+  white-space: nowrap;
 }
 
 /* Advanced read-only power keys: demarked collapsible containers on the
@@ -296,17 +339,20 @@
   display: flex;
   flex-direction: column;
   margin-top: var(--space-xs);
-  border: 1px solid var(--color-outline-variant);
-  border-radius: var(--shape-large);
+  border: 1px solid var(--border);
+  border-radius: var(--shape-medium);
   background: var(--color-surface-container);
 }
 
 .nex-provider-row {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-sm);
-  padding: var(--space-md) var(--space-lg);
-  border-bottom: 1px solid var(--color-outline-variant);
+  padding: var(--space-xs) var(--space-sm);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 
 .nex-provider-row:last-child {
@@ -316,8 +362,8 @@
 .nex-provider-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
+  min-width: 0;
 }
 
 .nex-provider-name {
@@ -335,10 +381,16 @@
   display: flex;
   align-items: center;
   gap: var(--space-xs);
+  margin-left: auto;
 }
 
 .nex-provider-actions .nex-input {
-  max-width: 360px;
+  height: 32px;
+  min-height: 32px;
+  width: 220px;
+  max-width: 240px;
+  padding: 0 var(--space-xs);
+  font-size: var(--type-size-body-small);
 }
 
 .nex-provider-remove {
@@ -354,11 +406,11 @@
 .nex-optin-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  margin-top: var(--space-md);
-  padding: var(--space-md) var(--space-lg);
-  border: 1px solid var(--color-outline-variant);
-  border-radius: var(--shape-large);
+  gap: var(--space-xs);
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--shape-medium);
   background: var(--color-surface-container);
 }
 
@@ -405,13 +457,14 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-xs);
-  min-height: 40px;
-  padding: 0 var(--space-lg);
+  height: 32px;
+  min-height: 32px;
+  padding: 0 var(--space-md);
   border-radius: var(--shape-full);
-  border: 1px solid var(--color-outline-variant);
+  border: 1px solid var(--border);
   background: var(--primary);
   color: var(--primary-foreground);
-  font-size: var(--type-size-label-large);
+  font-size: var(--type-size-body-small);
   font-weight: var(--type-weight-medium);
   line-height: 1;
   transition:

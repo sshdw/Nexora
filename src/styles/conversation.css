@@ -377,9 +377,12 @@
    card or a bubble per event. The base `.nex-message-body` styles the
    text; there is no surface to remove on fold or re-group. */
 
-/* Assistant turns: bare canvas, full measure. */
+/* Assistant turns: bare canvas, full measure. Markdown HTML uses normal
+   whitespace so HTML line breaks between blocks never stack onto margins. */
 .nex-message-assistant .nex-message-body {
   padding: var(--space-xxxs) 0;
+  white-space: normal;
+  line-height: var(--type-line-height-normal);
 }
 
 /* The meta line is ONE fact — who, with which model — and a timestamp.
@@ -490,7 +493,7 @@
 .nex-message-body blockquote,
 .nex-message-body table,
 .nex-message-body hr {
-  margin: var(--space-xs) 0 0;
+  margin: var(--space-xxs) 0 0;
 }
 /* The first block continues the meta line's rhythm; it carries no extra
    offset of its own. */
@@ -503,7 +506,7 @@
    ladder step than the chrome uses (THEME §3). */
 .nex-message-body h1,
 .nex-message-body h2 {
-  margin: var(--space-sm) 0 0;
+  margin: var(--space-xs) 0 0;
   font-size: var(--type-size-title-medium);
   line-height: var(--type-line-height-normal);
   font-weight: var(--type-weight-semibold);
@@ -512,7 +515,7 @@
 .nex-message-body h4,
 .nex-message-body h5,
 .nex-message-body h6 {
-  margin: var(--space-sm) 0 0;
+  margin: var(--space-xs) 0 0;
   font-size: var(--type-size-title-small);
   line-height: var(--type-line-height-normal);
   font-weight: var(--type-weight-semibold);
@@ -522,9 +525,15 @@
 .nex-message-body ol {
   padding-inline-start: var(--space-md);
 }
+.nex-message-body li + li {
+  margin-top: var(--space-xxxs);
+}
+.nex-message-body li > p {
+  margin-top: 0;
+}
 .nex-message-body li > ul,
 .nex-message-body li > ol {
-  margin: var(--space-xxs) 0 0;
+  margin: var(--space-xxxs) 0 0;
 }
 /* Task lists (GFM): the disabled checkbox replaces the bullet, so the item
    pulls back into the marker column instead of leaving a dead indent. */

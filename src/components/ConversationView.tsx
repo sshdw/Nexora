@@ -107,6 +107,13 @@ export interface ConversationViewProps {
   /** Effective workspace store, for the composer's workspace control
    *  (D3 / R6-03). */
   workspace: WorkspaceStore;
+  /** Optional first message staged from a draft thread when the DB row is created. */
+  initialPrompt?: {
+    content: string;
+    agentMode: boolean;
+    planMode: boolean;
+  } | null;
+  onInitialPromptConsumed?: () => void;
 }
 
 export default function ConversationView({
@@ -131,6 +138,8 @@ export default function ConversationView({
   promptDraft,
   reviewSend,
   workspace,
+  initialPrompt,
+  onInitialPromptConsumed,
 }: ConversationViewProps) {
   const { locale, t } = useStrings();
   const [undo, setUndo] = useState<{ runId: number; turn: number; count: number } | null>(null);
@@ -651,6 +660,108 @@ export default function ConversationView({
     }
   };
 
+  const submitContent = useCallback(
+    async (content: string, useAgentMode: boolean, usePlanMode: boolean) => {
+      if (!content || !selectedProvider || !selectedModel) return;
+      const attachmentIds = attachments.map((attachment) => attachment.id);
+      const hasAutomaticSkills = Boolean(
+        promptContext.references?.automatic_skills?.length
+      );
+      // Agent path: opt-in streaming via start_agent_run (DP-3, DP-4).
+      if (useAgentMode) {
+        setAgentError(null);
+        setAgentBusy(true);
+        const submittedDraft = chatDraftRef.current;
+        try {
+          await startAgentRun(
+            conversationId,
+            content,
+            selectedProvider,
+            selectedModel,
+            effectiveEffort,
+            useAgentMode && usePlanMode,
+            attachmentIds,
+            ...(promptContext.references ? [promptContext.references] : [])
+          );
+          clearAcceptedDraft(submittedDraft);
+          promptContext.consumeSelection();
+          // User message persisted before spawn; refresh both histories.
+          await Promise.all([refreshAttachments(), reloadAgent()]);
+          onMessageSent?.();
+        } catch (e) {
+          // Start failed: surface error, restore draft, and reload to show persisted state.
+          const msg =
+            e instanceof Error
+              ? e.message
+              : typeof e === "object" && e !== null && "message" in e
+                ? String((e as { message: unknown }).message)
+                : String(e);
+          setAgentError(msg);
+          await Promise.all([
+            refreshAttachments(),
+            reloadAgent(),
+            ...(hasAutomaticSkills ? [promptContext.refresh()] : []),
+          ]);
+        } finally {
+          setAgentBusy(false);
+        }
+        return;
+      }
+      const submittedDraft = chatDraftRef.current;
+      const failure = await send(
+        content,
+        selectedProvider,
+        selectedModel,
+        attachmentIds,
+        effectiveEffort,
+        ...(promptContext.references ? [promptContext.references] : [])
+      );
+      // Admission can reject before the user message is persisted. Keep the
+      // draft for every failure, including provider requests. On success the
+      // tab owns draft reconciliation even if this pane has unmounted.
+      // History remains exclusively backend-owned (DATABASE.md §7.2).
+      if (failure === null) {
+        clearAcceptedDraft(submittedDraft);
+        promptContext.consumeSelection();
+      }
+      if (failure !== null && hasAutomaticSkills) await promptContext.refresh();
+      // The backend is the source of truth: on success the drafts are now
+      // message-linked and disappear; on failure they remain drafts and
+      // reappear unchanged (FR-008 draft lifecycle).
+      await refreshAttachments();
+      onMessageSent?.();
+    },
+    [
+      attachments,
+      clearAcceptedDraft,
+      conversationId,
+      effectiveEffort,
+      onMessageSent,
+      promptContext,
+      refreshAttachments,
+      reloadAgent,
+      selectedModel,
+      selectedProvider,
+      send,
+      startAgentRun,
+    ]
+  );
+
+  const consumedInitialPromptRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!initialPrompt) return;
+    if (consumedInitialPromptRef.current === conversationId) return;
+    consumedInitialPromptRef.current = conversationId;
+    setAgentMode(initialPrompt.agentMode);
+    setPlanMode(initialPrompt.planMode);
+    onInitialPromptConsumed?.();
+    void submitContent(
+      initialPrompt.content,
+      initialPrompt.agentMode,
+      initialPrompt.planMode
+    );
+  }, [conversationId, initialPrompt, onInitialPromptConsumed, submitContent]);
+
   const handleSubmit = async () => {
     const content = draft.trim();
     if (content === "/compact") {
@@ -667,68 +778,7 @@ export default function ConversationView({
       return;
     }
     if (!canSend || !content || !selectedProvider || !selectedModel) return;
-    const attachmentIds = attachments.map((attachment) => attachment.id);
-    const hasAutomaticSkills = Boolean(promptContext.references?.automatic_skills?.length);
-    // Agent path: opt-in streaming via start_agent_run (DP-3, DP-4).
-    if (agentMode) {
-      setAgentError(null);
-      setAgentBusy(true);
-      const submittedDraft = chatDraftRef.current;
-      try {
-        await startAgentRun(
-          conversationId,
-          content,
-          selectedProvider,
-          selectedModel,
-          effectiveEffort,
-          agentMode && planMode,
-          attachmentIds,
-          ...(promptContext.references ? [promptContext.references] : [])
-        );
-        clearAcceptedDraft(submittedDraft);
-        promptContext.consumeSelection();
-        // User message persisted before spawn; refresh both histories.
-        await Promise.all([refreshAttachments(), reloadAgent()]);
-        onMessageSent?.();
-      } catch (e) {
-        // Start failed: surface error, restore draft, and reload to show persisted state.
-        const msg =
-          e instanceof Error
-            ? e.message
-            : typeof e === "object" && e !== null && "message" in e
-              ? String((e as { message: unknown }).message)
-              : String(e);
-        setAgentError(msg);
-        await Promise.all([refreshAttachments(), reloadAgent(),
-          ...(hasAutomaticSkills ? [promptContext.refresh()] : [])]);
-      } finally {
-        setAgentBusy(false);
-      }
-      return;
-    }
-    const submittedDraft = chatDraftRef.current;
-    const failure = await send(
-      content,
-      selectedProvider,
-      selectedModel,
-      attachmentIds,
-      effectiveEffort,
-      ...(promptContext.references ? [promptContext.references] : [])
-    );
-    // Admission can reject before the user message is persisted. Keep the
-    // draft for every failure, including provider requests. On success the
-    // tab owns draft reconciliation even if this pane has unmounted.
-    // History remains exclusively backend-owned (DATABASE.md §7.2).
-    if (failure === null) {
-      clearAcceptedDraft(submittedDraft);
-      promptContext.consumeSelection();
-    }
-    if (failure !== null && hasAutomaticSkills) await promptContext.refresh();
-    // The backend is the source of truth: on success the drafts are now
-    // message-linked and disappear; on failure they remain drafts and
-    // reappear unchanged (FR-008 draft lifecycle).
-    await refreshAttachments();
-    onMessageSent?.();
+    await submitContent(content, agentMode, planMode);
   };
 
   const handleClarifyNow = useCallback(async () => {

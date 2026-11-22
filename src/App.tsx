@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import Composer from "./components/Composer";
 import CommandPalette from "./components/CommandPalette";
 import ConversationPane, { type PaneSlot } from "./components/ConversationPane";
 import type { ModelConnectionGroup } from "./components/ModelPicker";
@@ -12,7 +13,6 @@ import Dock from "./components/Dock";
 import DockPanel, { type DockPanelId } from "./components/DockPanel";
 import SessionsPanel from "./components/SessionsPanel";
 import DocsPanel from "./components/DocsPanel";
-import EmptyState from "./components/EmptyState";
 import ReleasePanel from "./components/ReleasePanel";
 import { ExportModal, ImportModal } from "./components/ImportExportModals";
 import IssuesPanel from "./components/IssuesPanel";
@@ -128,6 +128,16 @@ function AppShell() {
   // conversation switch). The Prompt Library stages into the active pane's
   // draft (FR-007).
   const [drafts, setDrafts] = useState<Record<number, { text: string }>>({});
+  const [draftThreadText, setDraftThreadText] = useState("");
+  const [draftThreadAgentMode, setDraftThreadAgentMode] = useState(false);
+  const [draftThreadPlanMode, setDraftThreadPlanMode] = useState(false);
+  const [draftThreadCreating, setDraftThreadCreating] = useState(false);
+  const [pendingInitialPrompt, setPendingInitialPrompt] = useState<{
+    conversationId: number;
+    content: string;
+    agentMode: boolean;
+    planMode: boolean;
+  } | null>(null);
   const [promptDrafts, setPromptDrafts] = useState<Record<number, ComposerPromptDraft>>({});
   const reviewingTabs = useRef(new Set<number>());
   const [pendingReviews, setPendingReviews] = useState<ReadonlySet<number>>(new Set());
@@ -411,8 +421,38 @@ function AppShell() {
   const handleUsePrompt = (content: string) => {
     if (tabs.activeId !== null) {
       setDraftFor(tabs.activeId)(content);
+    } else {
+      setDraftThreadText(content);
     }
     router.closeLibrary();
+  };
+
+  const handleDraftThreadSubmit = async () => {
+    const content = draftThreadText.trim();
+    if (
+      !content ||
+      !providers.selectedProvider ||
+      !providers.selectedModel ||
+      draftThreadCreating
+    ) {
+      return;
+    }
+    setDraftThreadCreating(true);
+    try {
+      const id = await create();
+      if (id !== null) {
+        setPendingInitialPrompt({
+          conversationId: id,
+          content,
+          agentMode: draftThreadAgentMode,
+          planMode: draftThreadAgentMode && draftThreadPlanMode,
+        });
+        setDraftThreadText("");
+        tabs.open(id);
+      }
+    } finally {
+      setDraftThreadCreating(false);
+    }
   };
   // Split toggle (Alt+S and the permanent strip): close the secondary pane
   // when open; otherwise split the most-recently opened other tab beside the
@@ -762,19 +802,64 @@ function AppShell() {
   const conversationContent =
     activeConversation === undefined ? (
       tabs.openIds.length === 0 ? (
-        // First-run empty state: logo + heading + supporting line only. The
-        // sidebar's New Conversation row is the single creation CTA (one
-        // primary per region) — no duplicate CTA here (contract §Shell).
-        // With history present but nothing open, the copy says so instead of
-        // claiming there are no conversations (data honesty).
-        <EmptyState
-          title={
-            conversations.length === 0 ? undefined : t("app.noSessionTitle")
-          }
-          description={
-            conversations.length === 0 ? undefined : t("app.noSessionText")
-          }
-        />
+        loading ? null : (
+        // Ready empty/draft thread: Composer is visible and focused on
+        // startup, and no DB row is created until the first message is sent.
+        <section className="nex-pane" aria-label={t("common.conversation")}>
+          <div className="nex-pane-body">
+            <div className="nex-conv-view">
+              <div className="nex-conv-empty-stage">
+                <Composer
+                  draft={draftThreadText}
+                  onDraftChange={setDraftThreadText}
+                  onSubmit={() => void handleDraftThreadSubmit()}
+                  sending={draftThreadCreating}
+                  agentBusy={false}
+                  attachmentsBusy={false}
+                  canSend={Boolean(
+                    draftThreadText.trim() &&
+                      providers.selectedProvider &&
+                      providers.selectedModel &&
+                      !draftThreadCreating
+                  )}
+                  attachments={[]}
+                  onPickFiles={() => {}}
+                  onRemoveAttachment={() => {}}
+                  agentMode={draftThreadAgentMode}
+                  onAgentModeChange={setDraftThreadAgentMode}
+                  planMode={draftThreadAgentMode ? draftThreadPlanMode : false}
+                  onPlanModeChange={setDraftThreadPlanMode}
+                  autonomy={autonomy}
+                  onAutonomyChange={(mode) => {
+                    void autonomy.setMode(mode);
+                  }}
+                  selectedModel={providers.selectedModel}
+                  models={providerModels}
+                  onSelectModel={selectModel}
+                  connectionGroups={connectionGroups}
+                  selectedConnectionId={providers.selectedProvider}
+                  onSelectConnectionModel={selectConnectionModel}
+                  selectedCapabilities={providers.selectedCapabilities}
+                  capabilitiesByKey={capabilitiesByKey}
+                  selectedEffort={providers.selectedEffort}
+                  onSelectEffort={selectEffort}
+                  modelError={modelError}
+                  ready={Boolean(
+                    providers.selectedProvider && providers.selectedModel
+                  )}
+                  onOpenSettings={openDefaultSettings}
+                  conversationId={null}
+                  contextRevision="draft"
+                  liveRunId={null}
+                  onStop={() => {}}
+                  workspace={workspace}
+                  autoFocusField
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+        )
       ) : (
         // Tabs exist but the active id has no list entry yet (reload in
         // flight after delete/import) — hold the calm placeholder.
@@ -804,6 +889,12 @@ function AppShell() {
           reviewSend={reviewSendFor(activeConversation.id)}
           secondary={false}
           split
+          initialPrompt={
+            pendingInitialPrompt?.conversationId === activeConversation.id
+              ? pendingInitialPrompt
+              : null
+          }
+          onInitialPromptConsumed={() => setPendingInitialPrompt(null)}
         />
         <ConversationPane
           {...paneSlot}
@@ -827,6 +918,12 @@ function AppShell() {
         promptDraft={promptDraftFor(activeConversation.id)}
         reviewSend={reviewSendFor(activeConversation.id)}
         secondary={false}
+        initialPrompt={
+          pendingInitialPrompt?.conversationId === activeConversation.id
+            ? pendingInitialPrompt
+            : null
+        }
+        onInitialPromptConsumed={() => setPendingInitialPrompt(null)}
       />
     );
 
