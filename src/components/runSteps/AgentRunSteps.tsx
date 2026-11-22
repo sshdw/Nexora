@@ -18,7 +18,7 @@ import Button from "../Button";
 import Toolbar from "../Toolbar";
 import MessageMarkdown from "../MessageMarkdown";
 import ThinkingBlock from "../ThinkingBlock";
-import { CheckIcon, TaskIcon } from "../icons";
+import { CheckIcon, ChevronRightIcon, TaskIcon } from "../icons";
 import {
   countedPhrase,
   diffCounts,
@@ -556,6 +556,9 @@ function AgentRunSteps({
             <span className="nex-agent-run-status" role="status">
               {lineText}
             </span>
+            <span className="nex-agent-disclosure-chevron" aria-hidden="true">
+              <ChevronRightIcon size={16} />
+            </span>
           </button>
         )}
         <Toolbar
@@ -668,15 +671,6 @@ function AgentRunSteps({
       {!collapsed && displayTimelineSteps.length > 0 && summaryText && (
         <div className="nex-agent-run-detail">
           <span className="nex-agent-run-summary">{summaryText}</span>
-          <span className="nex-agent-run-meta">
-            <span
-              className="nex-tag nex-tag-mono"
-              title={t("agent.modelTitle")}
-            >
-              {run.model || "agent"}
-            </span>
-            <span className="nex-agent-run-id">run {run.run_id}</span>
-          </span>
         </div>
       )}
 

@@ -566,6 +566,8 @@ export const en = {
   "ctx.compactFailed": "Could not compact context.",
   "ctx.compactedAt": "Compacted ({count})",
   "ctx.preservedLabel": "Preserved Goal, Plan, Decisions & Files",
+  "ctx.percentFull": "{percent}% Full",
+  "ctx.tokensOfLimit": "~{used} / {limit} Tokens",
   "agent.compacting": "Compacting context…",
   "agent.compacted": "Context compacted ({summarized} folded, {retained} kept)",
   "agent.compactionFailed": "Compaction skipped",

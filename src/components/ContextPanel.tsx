@@ -338,8 +338,85 @@ export default function ContextPanel({
   // without permanent clutter", and never hover-ONLY).
   const cost = formatCost(stats.total_cost_micro_usd);
 
+  const breakdownItems = [
+    {
+      key: "sys",
+      segClass: "nex-context-seg-user",
+      label: t("ctx.catSystemSkills"),
+      tokens: sysTokens,
+    },
+    {
+      key: "msg",
+      segClass: "nex-context-seg-assistant",
+      label: t("ctx.catMessages"),
+      tokens: msgTokens,
+    },
+    {
+      key: "att",
+      segClass: "nex-context-seg-tools",
+      label: t("ctx.catAttachments"),
+      tokens: attTokens,
+    },
+    {
+      key: "tool",
+      segClass: "nex-context-seg-other",
+      label: t("ctx.catToolOutput"),
+      tokens: toolTokens,
+    },
+  ];
+
   return (
     <div className="nex-context" role="group" aria-label={t("ctx.group")}>
+      {/* R5-01 stays binding in the popover: `has_token_data: false` is a
+          real state, not zero. Without a usage reading the four percentage
+          rows would all say 0% — a measurement the backend never made — so
+          the breakdown is absent rather than fabricated. The budget block
+          below still explains the absence in words, and the changed-files
+          list is independent of token accounting. */}
+      {showBreakdown && (
+        <section
+          className="nex-context-breakdown"
+          aria-label={t("ctx.breakdown")}
+        >
+          <div
+            className="nex-context-bar"
+            role="img"
+            aria-label={t("ctx.categoryBreakdownAria", {
+              sys: pct(sysTokens).toFixed(1),
+              msg: pct(msgTokens).toFixed(1),
+              att: pct(attTokens).toFixed(1),
+              tool: pct(toolTokens).toFixed(1),
+            })}
+          >
+            {breakdownItems.map((item) =>
+              item.tokens > 0 ? (
+                <span
+                  key={item.key}
+                  className={`nex-context-seg ${item.segClass}`}
+                  style={{ width: `${pct(item.tokens)}%` }}
+                />
+              ) : null
+            )}
+          </div>
+          <ul className="nex-context-legend">
+            {breakdownItems.map((item) => (
+              <li key={item.key} className="nex-context-legend-row">
+                <span className="nex-context-legend-left">
+                  <span
+                    className={`nex-context-dot ${item.segClass}`}
+                    aria-hidden="true"
+                  />
+                  <span className="nex-context-legend-label">{item.label}</span>
+                </span>
+                <span className="nex-context-legend-value">
+                  {formatCount(item.tokens)} ({pct(item.tokens).toFixed(1)}%)
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <dl className="nex-context-grid">
         {rows.map((row) => (
           <div
@@ -356,78 +433,6 @@ export default function ContextPanel({
           </div>
         ))}
       </dl>
-
-      {/* R5-01 stays binding in the popover: `has_token_data: false` is a
-          real state, not zero. Without a usage reading the four percentage
-          rows would all say 0% — a measurement the backend never made — so
-          the breakdown is absent rather than fabricated. The budget block
-          below still explains the absence in words, and the changed-files
-          list is independent of token accounting. */}
-      {showBreakdown && (
-        <section
-          className="nex-context-breakdown"
-          aria-label={t("ctx.breakdown")}
-        >
-          <h3 className="nex-context-section-title">{t("ctx.breakdown")}</h3>
-          <div
-            className="nex-context-bar"
-            role="img"
-            aria-label={t("ctx.categoryBreakdownAria", {
-              sys: pct(sysTokens).toFixed(1),
-              msg: pct(msgTokens).toFixed(1),
-              att: pct(attTokens).toFixed(1),
-              tool: pct(toolTokens).toFixed(1),
-            })}
-          >
-            <span
-              className="nex-context-seg nex-context-seg-user"
-              style={{ width: `${pct(sysTokens)}%` }}
-            />
-            <span
-              className="nex-context-seg nex-context-seg-assistant"
-              style={{ width: `${pct(msgTokens)}%` }}
-            />
-            <span
-              className="nex-context-seg nex-context-seg-tools"
-              style={{ width: `${pct(attTokens)}%` }}
-            />
-            <span
-              className="nex-context-seg nex-context-seg-other"
-              style={{ width: `${pct(toolTokens)}%` }}
-            />
-          </div>
-          <ul className="nex-context-legend">
-            <li>
-              <span
-                className="nex-context-dot nex-context-seg-user"
-                aria-hidden="true"
-              />
-              {t("ctx.catSystemSkills")} · {formatCount(sysTokens)} ({pct(sysTokens).toFixed(1)}%)
-            </li>
-            <li>
-              <span
-                className="nex-context-dot nex-context-seg-assistant"
-                aria-hidden="true"
-              />
-              {t("ctx.catMessages")} · {formatCount(msgTokens)} ({pct(msgTokens).toFixed(1)}%)
-            </li>
-            <li>
-              <span
-                className="nex-context-dot nex-context-seg-tools"
-                aria-hidden="true"
-              />
-              {t("ctx.catAttachments")} · {formatCount(attTokens)} ({pct(attTokens).toFixed(1)}%)
-            </li>
-            <li>
-              <span
-                className="nex-context-dot nex-context-seg-other"
-                aria-hidden="true"
-              />
-              {t("ctx.catToolOutput")} · {formatCount(toolTokens)} ({pct(toolTokens).toFixed(1)}%)
-            </li>
-          </ul>
-        </section>
-      )}
 
       {(stats.compaction_count ?? 0) > 0 && (
         <section className="nex-context-compaction" aria-label={t("ctx.preservedLabel")}>

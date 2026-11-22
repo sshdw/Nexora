@@ -229,13 +229,29 @@ export default function ContextRing({
             {compacting ? t("ctx.compacting") : t("ctx.compactAction")}
           </Button>
         </PopoverHeader>
-        <p
-          className={
-            "nex-composer-context-usage" + (usageEmpty ? " is-empty" : "")
-          }
-        >
-          {usage}
-        </p>
+        {known && stats !== null && resolvedWindow !== null ? (
+          <div className="nex-composer-context-subheader">
+            <span className="nex-composer-context-percent">
+              {t("ctx.percentFull", {
+                percent: Math.round(stats.usage_percent),
+              })}
+            </span>
+            <span className="nex-composer-context-tokens">
+              {t("ctx.tokensOfLimit", {
+                used: formatCompactTokens(stats.total_tokens),
+                limit: formatCompactTokens(resolvedWindow),
+              })}
+            </span>
+          </div>
+        ) : (
+          <p
+            className={
+              "nex-composer-context-usage" + (usageEmpty ? " is-empty" : "")
+            }
+          >
+            {usage}
+          </p>
+        )}
         {compactFeedback && (
           <p
             className={

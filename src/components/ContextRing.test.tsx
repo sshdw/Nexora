@@ -218,7 +218,8 @@ describe("context ring — value", () => {
     });
     fireEvent.click(trigger);
 
-    expect(screen.getByText("12K / 200K (6%)")).toBeInTheDocument();
+    expect(screen.getByText("6% Full")).toBeInTheDocument();
+    expect(screen.getByText("~12K / 200K Tokens")).toBeInTheDocument();
     expect(screen.getByText("Provider")).toBeInTheDocument();
     expect(screen.getByText("OpenAI")).toBeInTheDocument();
     expect(screen.getByText("Model")).toBeInTheDocument();

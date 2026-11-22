@@ -157,8 +157,10 @@ const connectors = (c: HTMLElement): Element[] => [
 const rows = (c: HTMLElement): Element[] => [
   ...c.querySelectorAll(".nex-agent-step"),
 ];
-const seqOf = (row: Element): string | null | undefined =>
-  row.querySelector(".nex-agent-step-seq")?.textContent;
+const seqOf = (row: Element): string | null => {
+  const seq = row.getAttribute("data-step-seq");
+  return seq ? `#${seq}` : null;
+};
 
 afterEach(() => {
   cleanup();
@@ -1182,7 +1184,8 @@ describe("run-scoped callbacks", () => {
     expect(onCancel).toHaveBeenCalledWith(7);
     fireEvent.click(screen.getByRole("button", { name: "Pause" }));
     expect(onPause).toHaveBeenCalledWith(7);
-    expect(within(container).getByText("run 7")).toBeInTheDocument();
+    expect(within(container).queryByText("run 7")).toBeNull();
+    expect(container.querySelector(".nex-agent-step-seq")).toBeNull();
   });
 });
 
@@ -1679,7 +1682,7 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
     expect(screen.getByText("const next = 2;")).toBeInTheDocument();
 
     // Expand the edit_file step and verify 1-click Revert is available right beside its diff too.
-    fireEvent.click(screen.getByRole("button", { name: /#1/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Edited.*src\/app\.ts/ }));
     const revertButtons = screen.getAllByRole("button", { name: "Revert" });
     expect(revertButtons.length).toBeGreaterThanOrEqual(2);
     fireEvent.click(revertButtons[0]!);
@@ -1783,7 +1786,7 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
         steps_loaded: true,
       })
     );
-    fireEvent.click(screen.getByRole("button", { name: /#1/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Ran.*sleep 60/ }));
     expect(screen.getByText("Killed")).toBeInTheDocument();
   });
 

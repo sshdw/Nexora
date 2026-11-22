@@ -88,7 +88,8 @@
 
 .nex-context-bar {
   display: flex;
-  height: 8px;
+  gap: 2px;
+  height: 6px;
   overflow: hidden;
   border-radius: var(--shape-full);
   background: var(--color-surface-container-high);
@@ -150,32 +151,26 @@
    below re-spreads the ladder so even the last rung is legible on its
    own. */
 .nex-context-seg-user {
-  background: color-mix(in oklch, var(--color-on-surface) 100%, transparent);
+  background: var(--foreground);
 }
 
 .nex-context-seg-assistant {
-  background: color-mix(in oklch, var(--color-on-surface) 72%, transparent);
+  background: color-mix(in oklch, var(--foreground) 68%, transparent);
 }
 
 .nex-context-seg-tools {
-  background: color-mix(in oklch, var(--color-on-surface) 48%, transparent);
+  background: var(--muted-foreground);
 }
 
 .nex-context-seg-other {
-  background: color-mix(in oklch, var(--color-on-surface) 26%, transparent);
+  background: color-mix(in oklch, var(--muted-foreground) 45%, transparent);
 }
 
-/* The structural edge. One track-coloured pixel between neighbours, on
-   the segment's own leading edge so it survives `overflow: hidden` on the
-   bar. Box-shadow rather than a border: the segments are percentage-width
-   flex children, and a border would eat into the share each one reports.
-   The last child keeps its trailing edge so the bar closes cleanly. */
+/* The structural edge: segments sit with a clean 2px track gap on the flex
+   bar and keep crisp full-height fills. */
 .nex-context-seg {
   height: 100%;
-  box-shadow: inset 1px 0 0 0 var(--color-surface-container-high);
-}
-.nex-context-seg:last-child {
-  box-shadow: inset -1px 0 0 0 var(--color-surface-container-high);
+  border-radius: var(--radius-sm);
 }
 
 /* High contrast: re-spread the ladder rather than scaling the dark one —
@@ -188,26 +183,26 @@
    specificity, so they win the tie-break by order. */
 :root[data-theme="high-contrast"] .nex-context-seg-user,
 .nex-theme-high-contrast .nex-context-seg-user {
-  background: color-mix(in oklch, var(--color-on-surface) 100%, transparent);
+  background: var(--foreground);
 }
 :root[data-theme="high-contrast"] .nex-context-seg-assistant,
 .nex-theme-high-contrast .nex-context-seg-assistant {
-  background: color-mix(in oklch, var(--color-on-surface) 78%, transparent);
+  background: color-mix(in oklch, var(--foreground) 78%, transparent);
 }
 :root[data-theme="high-contrast"] .nex-context-seg-tools,
 .nex-theme-high-contrast .nex-context-seg-tools {
-  background: color-mix(in oklch, var(--color-on-surface) 58%, transparent);
+  background: color-mix(in oklch, var(--foreground) 58%, transparent);
 }
 :root[data-theme="high-contrast"] .nex-context-seg-other,
 .nex-theme-high-contrast .nex-context-seg-other {
-  background: color-mix(in oklch, var(--color-on-surface) 40%, transparent);
+  background: color-mix(in oklch, var(--foreground) 40%, transparent);
 }
 
 .nex-context-legend {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-xxxs) var(--space-xs);
-  margin: var(--space-xxs) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: var(--space-xs) 0 0;
   padding: 0;
   min-width: 0;
   list-style: none;
@@ -215,13 +210,33 @@
   color: var(--color-on-surface-variant);
 }
 
-.nex-context-legend li {
+.nex-context-legend-row {
   display: flex;
   align-items: center;
-  gap: var(--space-xxs);
+  justify-content: space-between;
+  gap: var(--space-xs);
   min-width: 0;
+}
+
+.nex-context-legend-left {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.nex-context-legend-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-on-surface-variant);
+}
+
+.nex-context-legend-value {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-on-surface);
   white-space: nowrap;
 }
 
@@ -229,7 +244,7 @@
   flex: 0 0 auto;
   width: 8px;
   height: 8px;
-  border-radius: var(--shape-full);
+  border-radius: var(--shape-extra-small);
 }
 
 .nex-context-files-empty {

@@ -10,7 +10,7 @@
 //! and src/components/ui/slider.tsx; the tokens those files use are asserted
 //! in src/components/Composer.test.tsx.
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import {
   afterAll,
   afterEach,
@@ -336,7 +336,7 @@ describe("context panel — budget slider", () => {
     ).toBeInTheDocument();
   });
 
-  it("uses a compact 2-column grid for stats and 2x2 grid for breakdown legend", () => {
+  it("uses a compact 2-column grid for stats and aligned rows with square swatches for breakdown legend", () => {
     const sheet = readRepoFile("src/styles/context.css");
     const gridStart = sheet.indexOf(".nex-context-grid {");
     expect(gridStart).toBeGreaterThan(-1);
@@ -347,8 +347,13 @@ describe("context panel — budget slider", () => {
     const legendStart = sheet.indexOf(".nex-context-legend {");
     expect(legendStart).toBeGreaterThan(-1);
     const legend = sheet.slice(legendStart, sheet.indexOf("}", legendStart));
-    expect(legend).toMatch(/display:\s*grid/);
-    expect(legend).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+    expect(legend).toMatch(/display:\s*flex/);
+    expect(legend).toMatch(/flex-direction:\s*column/);
+
+    const dotStart = sheet.indexOf(".nex-context-dot {");
+    expect(dotStart).toBeGreaterThan(-1);
+    const dot = sheet.slice(dotStart, sheet.indexOf("}", dotStart));
+    expect(dot).toMatch(/border-radius:\s*var\(--shape-extra-small\)/);
 
     const valueStart = sheet.indexOf(".nex-context-value {");
     const value = sheet.slice(valueStart, sheet.indexOf("}", valueStart));
@@ -496,15 +501,18 @@ describe("context popover — M16 category breakdown & reduced motion", () => {
       last_compacted_at: 1_700_003_600,
     });
 
+    const breakdown = screen.getByRole("region", { name: "Context breakdown" });
+    expect(breakdown).toBeInTheDocument();
+    expect(within(breakdown).getByText("System/Skills")).toBeInTheDocument();
+    expect(within(breakdown).getByText("1 000 (10.0%)")).toBeInTheDocument();
+    expect(within(breakdown).getByText("Messages")).toBeInTheDocument();
+    expect(within(breakdown).getByText("4 000 (40.0%)")).toBeInTheDocument();
     expect(
-      screen.getByRole("region", { name: "Context breakdown" })
+      within(breakdown).getByText("Attachments/@Context")
     ).toBeInTheDocument();
-    expect(screen.getByText(/System\/Skills · 1 000 \(10\.0%\)/)).toBeInTheDocument();
-    expect(screen.getByText(/Messages · 4 000 \(40\.0%\)/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/Attachments\/@Context · 2 000 \(20\.0%\)/)
-    ).toBeInTheDocument();
-    expect(screen.getByText(/Tool Output · 3 000 \(30\.0%\)/)).toBeInTheDocument();
+    expect(within(breakdown).getByText("2 000 (20.0%)")).toBeInTheDocument();
+    expect(within(breakdown).getByText("Tool Output")).toBeInTheDocument();
+    expect(within(breakdown).getByText("3 000 (30.0%)")).toBeInTheDocument();
     expect(screen.getByText("Compacted (1)")).toBeInTheDocument();
   });
 

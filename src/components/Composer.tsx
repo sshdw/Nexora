@@ -89,21 +89,30 @@ import {
   Popover,
   PopoverAnchor,
   PopoverContent,
-  PopoverHeader,
-  PopoverTitle,
   PopoverTrigger,
 } from "./ui/popover";
 import {
+  ArchiveIcon,
   ArrowUpIcon,
+  BookIcon,
+  BranchIcon,
   ChatGptMarkIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   CloseIcon,
+  CodeIcon,
+  FileTextIcon,
   FolderIcon,
   PaperclipIcon,
   PlusIcon,
+  SearchIcon,
   SettingsIcon,
+  SlidersIcon,
   StopIcon,
   TaskIcon,
+  TerminalIcon,
+  TrashIcon,
+  UndoIcon,
 } from "./icons";
 
 const CHATGPT_MANAGE_USAGE_URL = "https://chatgpt.com/#settings";
@@ -188,6 +197,59 @@ export interface ComposerProps {
 }
 
 const CONTEXT_SELECTORS = ["file", "folder", "diff", "symbol"] as const;
+
+function slashItemIcon(id: string) {
+  switch (id) {
+    case "agent":
+      return <TerminalIcon size={16} />;
+    case "chat":
+      return <BookIcon size={16} />;
+    case "plan":
+      return <TaskIcon size={16} />;
+    case "compact":
+      return <ArchiveIcon size={16} />;
+    case "attach":
+      return <PaperclipIcon size={16} />;
+    case "clear":
+      return <TrashIcon size={16} />;
+    case "settings":
+      return <SettingsIcon size={16} />;
+    case "review":
+      return <SearchIcon size={16} />;
+    case "undo":
+      return <UndoIcon size={16} />;
+    case "context:file":
+      return <FileTextIcon size={16} />;
+    case "context:folder":
+      return <FolderIcon size={16} />;
+    case "context:diff":
+      return <BranchIcon size={16} />;
+    case "context:symbol":
+      return <CodeIcon size={16} />;
+    default:
+      return <SlidersIcon size={16} />;
+  }
+}
+
+function slashItemHasChevron(id: string): boolean {
+  return (
+    id === "settings" ||
+    id === "review" ||
+    id === "attach" ||
+    id === "skill-catalog" ||
+    id.startsWith("context:") ||
+    id.startsWith("skill:")
+  );
+}
+
+function mentionItemIcon(id: string, kind: "workspace" | "attachment" | "action") {
+  if (id === "context:file") return <FileTextIcon size={16} />;
+  if (id === "context:folder") return <FolderIcon size={16} />;
+  if (id === "context:diff") return <BranchIcon size={16} />;
+  if (id === "context:symbol") return <CodeIcon size={16} />;
+  if (kind === "attachment") return <PaperclipIcon size={16} />;
+  return <FolderIcon size={16} />;
+}
 
 function mentionAt(draft: string, caret: number) {
   const match = /(?:^|\s)(\/?@)(\S*)$/.exec(draft.slice(0, caret));
@@ -705,9 +767,6 @@ export default function Composer({
               className="nex-composer-trigger-menu"
               onOpenAutoFocus={(event) => event.preventDefault()}
             >
-              <PopoverHeader>
-                <PopoverTitle>{t("conv.slashMenuTitle")}</PopoverTitle>
-              </PopoverHeader>
               {slashItems.length === 0 && promptContext?.skillsLoading ? (
                 <p role="status" className="nex-composer-trigger-empty">{t("common.loading")}</p>
               ) : slashItems.length === 0 ? (
@@ -736,12 +795,23 @@ export default function Composer({
                         }
                         onClick={() => runSlashItem(item)}
                       >
+                        <span className="nex-composer-trigger-icon" aria-hidden="true">
+                          {slashItemIcon(item.id)}
+                        </span>
                         <code className="nex-composer-trigger-cmd">
                           {item.command}
                         </code>
-                        <span className="nex-composer-trigger-desc">
+                        <span
+                          className="nex-composer-trigger-desc"
+                          title={item.description}
+                        >
                           {item.description}
                         </span>
+                        {slashItemHasChevron(item.id) && (
+                          <span className="nex-composer-trigger-chevron" aria-hidden="true">
+                            <ChevronRightIcon size={16} />
+                          </span>
+                        )}
                       </button>
                     </li>
                   ))}
@@ -769,9 +839,6 @@ export default function Composer({
               className="nex-composer-trigger-menu"
               onOpenAutoFocus={(event) => event.preventDefault()}
             >
-              <PopoverHeader>
-                <PopoverTitle>{t("conv.mentionMenuTitle")}</PopoverTitle>
-              </PopoverHeader>
               {mentionItems.length === 0 ? (
                 <p className="nex-composer-trigger-empty">
                   {t("conv.mentionEmpty")}
@@ -794,21 +861,23 @@ export default function Composer({
                         }
                         onClick={() => runMentionItem(item)}
                       >
-                        <span className="nex-composer-trigger-icon">
-                          {item.kind === "attachment" ? (
-                            <PaperclipIcon />
-                          ) : item.kind === "action" ? (
-                            <SettingsIcon />
-                          ) : (
-                            <FolderIcon />
-                          )}
+                        <span className="nex-composer-trigger-icon" aria-hidden="true">
+                          {mentionItemIcon(item.id, item.kind)}
                         </span>
                         <span className="nex-composer-trigger-cmd">
                           {item.label}
                         </span>
-                        <span className="nex-composer-trigger-desc">
+                        <span
+                          className="nex-composer-trigger-desc"
+                          title={item.detail}
+                        >
                           {item.detail}
                         </span>
+                        {(item.id.startsWith("context:") || item.kind === "action") && (
+                          <span className="nex-composer-trigger-chevron" aria-hidden="true">
+                            <ChevronRightIcon size={16} />
+                          </span>
+                        )}
                       </button>
                     </li>
                   ))}
@@ -1192,13 +1261,10 @@ export default function Composer({
                     collisionPadding={8}
                     className="nex-composer-autonomy-menu"
                   >
-                    <PopoverHeader>
-                      <PopoverTitle>{t("access.label")}</PopoverTitle>
-                    </PopoverHeader>
                     <AccessProfileControl
                       store={autonomy.access}
                       showLabel={false}
-                      segmentedClassName="nex-composer-autonomy"
+                      variant="list"
                     />
                   </PopoverContent>
                 </Popover>

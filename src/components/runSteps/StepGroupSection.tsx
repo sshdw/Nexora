@@ -9,6 +9,7 @@ import type { FileCheckpoint } from "../../lib/tauri";
 import type { AgentStepView } from "../../lib/useAgentRun";
 import { tp } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
+import { ChevronRightIcon } from "../icons";
 import { isProtectedRow, stepTarget } from "./labels";
 import type { StepGroup } from "./grouping";
 import { StepLine, StepSection } from "./StepSection";
@@ -57,7 +58,10 @@ export const StepGroupSection = memo(function StepGroupSection({
   const n = group.steps.length;
   const target = stepTarget(head);
   return (
-    <div className={fade ? `nex-agent-step ${fade}` : "nex-agent-step"}>
+    <div
+      className={fade ? `nex-agent-step ${fade}` : "nex-agent-step"}
+      data-step-seq={head.seq}
+    >
       <button
         type="button"
         className="nex-agent-step-header nex-agent-step-header-group"
@@ -69,15 +73,12 @@ export const StepGroupSection = memo(function StepGroupSection({
         })}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="nex-agent-step-seq">
-          #{head.seq}–#{group.steps[group.steps.length - 1].seq}
-        </span>
         <StepLine step={head} live={live} locale={locale} />
         <span className="nex-agent-step-count nex-tag-mono">
           {t("agent.repeatedCalls", { n })}
         </span>
         <span className="nex-agent-step-chevron" aria-hidden="true">
-          {open ? "▾" : "▸"}
+          <ChevronRightIcon size={16} />
         </span>
       </button>
       {/* `hidden`, NEVER a conditional mount — the same discipline as the
