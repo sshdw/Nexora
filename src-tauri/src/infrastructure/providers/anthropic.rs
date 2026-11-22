@@ -52,6 +52,9 @@ use nexora_core::provider::{
 #[cfg(test)]
 use nexora_core::provider::{AiAttachment, AiToolResult, ModelConfig, ToolDefinition};
 
+use std::sync::Arc;
+
+use super::async_spawner::AsyncSpawner;
 use super::transport::{
     Credential, HttpClient, PostOutcome, PostRequest, StreamOutcome, StreamPostError,
 };
@@ -104,16 +107,16 @@ pub(crate) struct AnthropicExecutor {
 
 impl AnthropicExecutor {
     /// Create an executor targeting the Anthropic production endpoint.
-    pub(crate) fn new() -> Self {
-        Self::with_endpoint(ENDPOINT.to_string())
+    pub(crate) fn new(spawner: Arc<dyn AsyncSpawner>) -> Self {
+        Self::with_endpoint(ENDPOINT.to_string(), spawner)
     }
 
     /// Create an executor targeting an explicit `endpoint` (used by tests to
     /// exercise the full request/response path without a live Anthropic
     /// service).
-    fn with_endpoint(endpoint: String) -> Self {
+    fn with_endpoint(endpoint: String, spawner: Arc<dyn AsyncSpawner>) -> Self {
         Self {
-            client: HttpClient::new(),
+            client: HttpClient::new(spawner),
             endpoint,
         }
     }
@@ -1045,6 +1048,7 @@ impl std::fmt::Display for AnthropicError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::async_spawner::test_spawner;
     use super::*;
 
     fn sample_request() -> AiRequest {
@@ -1340,7 +1344,7 @@ mod tests {
     #[test]
     fn executor_maps_failure_to_boundary_failure() {
         let executor = AnthropicExecutor {
-            client: HttpClient::new(),
+            client: HttpClient::new(test_spawner()),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
         };
         // The boundary surfaces the classified category (here: network), never an
@@ -1356,7 +1360,7 @@ mod tests {
     #[test]
     fn credential_never_appears_in_returned_error() {
         let executor = AnthropicExecutor {
-            client: HttpClient::new(),
+            client: HttpClient::new(test_spawner()),
             endpoint: "http://127.0.0.1:1".to_string(),
         };
         let credential = "sk-secret-example";
@@ -1373,7 +1377,8 @@ mod tests {
 
     #[test]
     fn run_classifies_network_failure() {
-        let executor = AnthropicExecutor::with_endpoint("http://127.0.0.1:1".to_string());
+        let executor =
+            AnthropicExecutor::with_endpoint("http://127.0.0.1:1".to_string(), test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1385,7 +1390,7 @@ mod tests {
     #[test]
     fn run_classifies_authentication_failure() {
         let (endpoint, _captured, server) = spawn_server(401, "");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1398,7 +1403,7 @@ mod tests {
     #[test]
     fn run_classifies_invalid_request_failure() {
         let (endpoint, _captured, server) = spawn_server(400, "");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1411,7 +1416,7 @@ mod tests {
     #[test]
     fn run_classifies_provider_failure() {
         let (endpoint, _captured, server) = spawn_server(422, "");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1426,7 +1431,7 @@ mod tests {
         // 404 (unknown model/route) surfaces as invalid request, matching the
         // OpenAI-compatible path.
         let (endpoint, _captured, server) = spawn_server(404, "");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1510,7 +1515,7 @@ mod tests {
     fn executor_round_trips_through_local_server() {
         let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
         let (endpoint, _captured, server) = spawn_server(200, body);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -1528,7 +1533,7 @@ mod tests {
     fn request_authenticates_with_x_api_key_header() {
         let body = r#"{"model":"claude-sonnet-5","content":[{"type":"text","text":"pong"}]}"#;
         let (endpoint, captured, server) = spawn_server(200, body);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let credential = "sk-secret-example";
         executor
             .execute(&sample_request(), credential, &CancellationToken::new())
@@ -1889,7 +1894,7 @@ mod tests {
                 // timeout instead of completing.
             }
         });
-        let executor = AnthropicExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = AnthropicExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let mut request = sample_request();
         request.request_timeout = Some(Duration::from_millis(200));
         let start = std::time::Instant::now();
@@ -1926,7 +1931,7 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
             (429, String::new(), Some("0".to_string())),
         ]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1946,7 +1951,7 @@ mod tests {
             (429, String::new(), None),
             (429, String::new(), None),
         ]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1970,7 +1975,7 @@ mod tests {
                 (status, String::new(), None),
                 (status, String::new(), None),
             ]);
-            let executor = AnthropicExecutor::with_endpoint(endpoint);
+            let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
             let result = executor.execute(
                 &sample_request(),
                 "sk-secret-example",
@@ -1987,7 +1992,7 @@ mod tests {
     #[test]
     fn other_client_errors_still_surface_as_failure() {
         let (endpoint, _captured, server) = spawn_server(422, "");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2002,7 +2007,7 @@ mod tests {
         // Unknown model/route surfaces as invalid request, matching the
         // OpenAI-compatible path.
         let (endpoint, _captured, server) = spawn_server(404, "");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2171,7 +2176,7 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
             (200, success, None),
         ]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2194,7 +2199,7 @@ mod tests {
             (503, String::new(), Some("0".to_string())),
             (200, success, None),
         ]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2212,7 +2217,7 @@ mod tests {
     fn retry_400_is_never_retried() {
         use std::sync::atomic::Ordering;
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, String::new(), None)]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2230,7 +2235,7 @@ mod tests {
         // malformed request — and, like every 400, it fires exactly once.
         let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 200000 tokens > 100000 maximum"}}"#.to_string();
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, body, None)]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2256,7 +2261,7 @@ mod tests {
             (503, String::new(), Some("0".to_string())),
             (503, String::new(), Some("0".to_string())),
         ]);
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2333,7 +2338,7 @@ mod tests {
         });
 
         let endpoint = format!("http://{addr}/v1/messages");
-        let executor = AnthropicExecutor::with_endpoint(endpoint);
+        let executor = AnthropicExecutor::with_endpoint(endpoint, test_spawner());
         let mut req = sample_request();
         req.model_config =
             Some(ModelConfig::new("claude-sonnet-5").with_effort(Some("xhigh".to_string())));

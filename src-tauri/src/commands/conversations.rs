@@ -287,6 +287,7 @@ pub(crate) async fn send_message(
 mod tests {
     use crate::application::agent::control::CancellationToken;
     use crate::application::execution::{AiMessage, AiRequest, AiRole, ProviderExecutor};
+    use crate::infrastructure::providers::async_spawner::test_spawner;
     use crate::infrastructure::providers::openai::{OpenAiExecutor, PROVIDER_NAME};
 
     /// Regression for the BUG-005 follow-up ("all sends hang indefinitely"):
@@ -338,7 +339,7 @@ mod tests {
             stream.flush().expect("flush response");
         });
 
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),
@@ -388,7 +389,8 @@ mod tests {
         // Unreachable endpoint: refused connections retry per the bounded
         // attempt cap, then classify as Network (two computed backoffs:
         // [1.5, 2.5] s + [3, 5] s).
-        let executor = OpenAiExecutor::with_endpoint("http://127.0.0.1:1".to_string());
+        let executor =
+            OpenAiExecutor::with_endpoint("http://127.0.0.1:1".to_string(), test_spawner());
         let request = AiRequest {
             provider: PROVIDER_NAME.to_string(),
             model: "gpt-5.6-terra".to_string(),

@@ -202,8 +202,12 @@ pub(crate) async fn refresh_provider_model_metadata(
     let handle = app.clone();
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let db = handle.state::<Database>();
-        refresh_connection_metadata(db.inner(), connection_id.trim())
-            .map_err(|err| CommandError::new(ErrorKind::Request, err.to_string()))
+        refresh_connection_metadata(
+            db.inner(),
+            connection_id.trim(),
+            std::sync::Arc::new(crate::async_spawner::TauriSpawner),
+        )
+        .map_err(|err| CommandError::new(ErrorKind::Request, err.to_string()))
     })
     .await;
     match outcome {

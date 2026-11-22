@@ -11,7 +11,10 @@ use nexora_core::config::MODEL_CAPABILITY_OVERRIDES_KEY;
 use nexora_core::provider::{ExecutorError, ReasoningEffort};
 use serde::{Deserialize, Serialize};
 
+use std::sync::Arc;
+
 use crate::infrastructure::database::Database;
+use crate::infrastructure::providers::async_spawner::AsyncSpawner;
 use crate::infrastructure::providers::catalog::gemini::GEMINI_LITE_MODELS;
 use crate::infrastructure::providers::metadata::{fetch_connection_metadata, ApiModelMetadata};
 use crate::infrastructure::providers::supported_providers;
@@ -502,14 +505,21 @@ fn compat_metadata_target(
 pub(crate) fn refresh_connection_metadata(
     db: &Database,
     connection_id: &str,
+    spawner: Arc<dyn AsyncSpawner>,
 ) -> Result<Vec<ConnectionModelCapabilities>, ExecutorError> {
-    refresh_connection_metadata_with_execution(db, &RequestExecutionService::new(db), connection_id)
+    refresh_connection_metadata_with_execution(
+        db,
+        &RequestExecutionService::new(db),
+        connection_id,
+        spawner,
+    )
 }
 
 fn refresh_connection_metadata_with_execution(
     db: &Database,
     execution: &RequestExecutionService<'_>,
     connection_id: &str,
+    spawner: Arc<dyn AsyncSpawner>,
 ) -> Result<Vec<ConnectionModelCapabilities>, ExecutorError> {
     if connection_id == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME {
         return Err(ExecutorError::InvalidRequest);
@@ -524,6 +534,7 @@ fn refresh_connection_metadata_with_execution(
         &credential,
         target.compat_url.as_deref(),
         &target.compat_headers,
+        spawner,
     )?;
     cache_api_metadata(connection_id, &discovered);
     let overrides = read_effective_overrides(db);
@@ -538,6 +549,7 @@ mod tests {
     use super::*;
     use crate::application::execution::ExecutionSources;
     use crate::infrastructure::database;
+    use crate::infrastructure::providers::async_spawner::test_spawner;
     use crate::infrastructure::providers::openai::CompatConfig;
     use nexora_core::provider::{CredentialError, CredentialSource, ExecutorRegistry};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -674,7 +686,7 @@ mod tests {
         // Case 1: unconfigured / missing URL fails validation without credential lookup.
         let empty_db = in_memory_db();
         assert!(matches!(
-            refresh_connection_metadata(&empty_db, "openai_compat"),
+            refresh_connection_metadata(&empty_db, "openai_compat", test_spawner()),
             Err(ExecutorError::InvalidRequest)
         ));
 
@@ -700,7 +712,7 @@ mod tests {
                 .expect("write model");
 
             assert!(matches!(
-                refresh_connection_metadata(&db, "openai_compat"),
+                refresh_connection_metadata(&db, "openai_compat", test_spawner()),
                 Err(ExecutorError::InvalidRequest)
             ));
 
@@ -710,7 +722,12 @@ mod tests {
                 Arc::clone(&creds) as Arc<dyn CredentialSource>,
             );
             let execution = RequestExecutionService::with_sources(&db, sources);
-            let res = refresh_connection_metadata_with_execution(&db, &execution, "openai_compat");
+            let res = refresh_connection_metadata_with_execution(
+                &db,
+                &execution,
+                "openai_compat",
+                test_spawner(),
+            );
             assert!(matches!(res, Err(ExecutorError::InvalidRequest)));
             assert_eq!(creds.lookup_count(), 0);
             assert!(matches!(listener.accept(), Err(ref e) if e.kind() == ErrorKind::WouldBlock));
@@ -748,7 +765,12 @@ mod tests {
             Arc::clone(&creds) as Arc<dyn CredentialSource>,
         );
         let execution = RequestExecutionService::with_sources(&db, sources);
-        let res = refresh_connection_metadata_with_execution(&db, &execution, "openai_compat");
+        let res = refresh_connection_metadata_with_execution(
+            &db,
+            &execution,
+            "openai_compat",
+            test_spawner(),
+        );
         assert!(matches!(res, Err(ExecutorError::InvalidRequest)));
         assert_eq!(creds.lookup_count(), 0);
         assert!(matches!(listener.accept(), Err(ref e) if e.kind() == ErrorKind::WouldBlock));
@@ -815,8 +837,13 @@ mod tests {
             Arc::clone(&creds) as Arc<dyn CredentialSource>,
         );
         let execution = RequestExecutionService::with_sources(&db, sources);
-        let caps = refresh_connection_metadata_with_execution(&db, &execution, "openai_compat")
-            .expect("refresh compat metadata succeeds");
+        let caps = refresh_connection_metadata_with_execution(
+            &db,
+            &execution,
+            "openai_compat",
+            test_spawner(),
+        )
+        .expect("refresh compat metadata succeeds");
         let head = server.join().expect("server thread joins");
 
         assert!(

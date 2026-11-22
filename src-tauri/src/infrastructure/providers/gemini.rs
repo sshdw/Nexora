@@ -57,6 +57,9 @@ use nexora_core::provider::{
 #[cfg(test)]
 use nexora_core::provider::{AiAttachment, AiToolResult, ModelConfig, ToolDefinition};
 
+use std::sync::Arc;
+
+use super::async_spawner::AsyncSpawner;
 use super::transport::{
     Credential, HttpClient, PostOutcome, PostRequest, StreamOutcome, StreamPostError,
 };
@@ -88,16 +91,16 @@ pub(crate) struct GeminiExecutor {
 
 impl GeminiExecutor {
     /// Create an executor targeting the Google AI Studio production endpoint.
-    pub(crate) fn new() -> Self {
-        Self::with_endpoint(ENDPOINT.to_string())
+    pub(crate) fn new(spawner: Arc<dyn AsyncSpawner>) -> Self {
+        Self::with_endpoint(ENDPOINT.to_string(), spawner)
     }
 
     /// Create an executor targeting an explicit `endpoint` base (used by tests
     /// to exercise the full request/response path without a live Google
     /// service; the per-model `generateContent` path is appended by `send`).
-    fn with_endpoint(endpoint: String) -> Self {
+    fn with_endpoint(endpoint: String, spawner: Arc<dyn AsyncSpawner>) -> Self {
         Self {
-            client: HttpClient::new(),
+            client: HttpClient::new(spawner),
             endpoint,
         }
     }
@@ -1036,6 +1039,7 @@ impl std::fmt::Display for GeminiError {
 
 #[cfg(test)]
 mod tests {
+    use super::super::async_spawner::test_spawner;
     use super::*;
 
     fn sample_request() -> AiRequest {
@@ -1358,7 +1362,7 @@ mod tests {
         // disabled API) with 403 PERMISSION_DENIED; it must surface as an
         // authentication problem, not a generic provider failure.
         let (endpoint, _captured, server) = spawn_server(403, "");
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1371,7 +1375,7 @@ mod tests {
     #[test]
     fn executor_maps_failure_to_boundary_failure() {
         let executor = GeminiExecutor {
-            client: HttpClient::new(),
+            client: HttpClient::new(test_spawner()),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
         };
         // The boundary surfaces the classified category (here: network), never a
@@ -1387,7 +1391,7 @@ mod tests {
     #[test]
     fn credential_never_appears_in_returned_error() {
         let executor = GeminiExecutor {
-            client: HttpClient::new(),
+            client: HttpClient::new(test_spawner()),
             endpoint: "http://127.0.0.1:1".to_string(),
         };
         let credential = "sk-secret-example";
@@ -1404,7 +1408,8 @@ mod tests {
 
     #[test]
     fn run_classifies_network_failure() {
-        let executor = GeminiExecutor::with_endpoint("http://127.0.0.1:1".to_string());
+        let executor =
+            GeminiExecutor::with_endpoint("http://127.0.0.1:1".to_string(), test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1416,7 +1421,7 @@ mod tests {
     #[test]
     fn run_classifies_authentication_failure() {
         let (endpoint, _captured, server) = spawn_server(401, "");
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1429,7 +1434,7 @@ mod tests {
     #[test]
     fn run_classifies_invalid_request_failure() {
         let (endpoint, _captured, server) = spawn_server(400, "");
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.run(
             &sample_request(),
             "sk-secret-example",
@@ -1448,7 +1453,7 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
             (429, String::new(), Some("0".to_string())),
         ]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1468,7 +1473,7 @@ mod tests {
             (429, String::new(), None),
             (429, String::new(), None),
         ]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1492,7 +1497,7 @@ mod tests {
                 (status, String::new(), None),
                 (status, String::new(), None),
             ]);
-            let executor = GeminiExecutor::with_endpoint(endpoint);
+            let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
             let result = executor.execute(
                 &sample_request(),
                 "sk-secret-example",
@@ -1509,7 +1514,7 @@ mod tests {
     #[test]
     fn other_client_errors_still_surface_as_failure() {
         let (endpoint, _captured, server) = spawn_server(422, "");
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1524,7 +1529,7 @@ mod tests {
         // Unknown model/route surfaces as invalid request, matching the
         // OpenAI-compatible path.
         let (endpoint, _captured, server) = spawn_server(404, "");
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1538,7 +1543,7 @@ mod tests {
     fn credential_is_sent_in_header_not_body_or_url_and_model_is_selected() {
         let success_body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
         let (endpoint, captured, server) = spawn_server(200, success_body);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         executor
             .run(
                 &sample_request(),
@@ -1591,7 +1596,7 @@ mod tests {
     fn executor_round_trips_through_local_server() {
         let success_body = r#"{"modelVersion":"gemini-3.6-flash","candidates":[{"content":{"parts":[{"text":"pong"}]}}]}"#;
         let (endpoint, _captured, server) = spawn_server(200, success_body);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -1938,7 +1943,7 @@ mod tests {
                 // timeout instead of completing.
             }
         });
-        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let mut request = sample_request();
         request.request_timeout = Some(Duration::from_millis(200));
         let start = std::time::Instant::now();
@@ -2341,7 +2346,7 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
             (200, success, None),
         ]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2363,7 +2368,7 @@ mod tests {
             (503, String::new(), Some("0".to_string())),
             (200, success, None),
         ]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2381,7 +2386,7 @@ mod tests {
     fn retry_400_is_never_retried() {
         use std::sync::atomic::Ordering;
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, String::new(), None)]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2399,7 +2404,7 @@ mod tests {
         // malformed request — and, like every 400, it fires exactly once.
         let body = r#"{"error":{"code":400,"message":"Request exceeds the maximum number of tokens allowed","status":"INVALID_ARGUMENT"}}"#.to_string();
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, body, None)]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2425,7 +2430,7 @@ mod tests {
             (503, String::new(), Some("0".to_string())),
             (503, String::new(), Some("0".to_string())),
         ]);
-        let executor = GeminiExecutor::with_endpoint(endpoint);
+        let executor = GeminiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2437,6 +2442,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn execute_stream_events_emits_gemini_text_thought_and_tool_calls() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -2496,7 +2502,8 @@ mod tests {
             stream.write_all(resp.as_bytes()).expect("write");
         });
 
-        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}/v1beta"));
+        let executor =
+            GeminiExecutor::with_endpoint(format!("http://{addr}/v1beta"), test_spawner());
         let mut req = sample_request();
         req.model = "gemini-3.1-pro-preview".to_string();
         req.model_config = Some(
@@ -2599,7 +2606,8 @@ mod tests {
             stream.flush().expect("flush");
         });
 
-        let executor = GeminiExecutor::with_endpoint(format!("http://{addr}/v1beta"));
+        let executor =
+            GeminiExecutor::with_endpoint(format!("http://{addr}/v1beta"), test_spawner());
         let mut req = sample_request();
         req.model = "gemini-3.1-pro-preview".to_string();
         let events = std::sync::Mutex::new(Vec::new());

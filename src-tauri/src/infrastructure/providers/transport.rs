@@ -26,21 +26,24 @@
 //!
 //! The calling thread (agent run thread, or the runtime blocking pool for
 //! plain chat) never blocks inside an async context: each attempt is spawned
-//! onto the Tauri async runtime via [`tauri::async_runtime::spawn`] and the
-//! driver waits on an `std::sync::mpsc` channel with short `recv_timeout`
-//! polls against the token. On cancellation the spawned task is aborted via
-//! the runtime join handle — dropping the in-flight request future aborts
+//! through the injected [`AsyncSpawner`] and the driver waits on an
+//! `std::sync::mpsc` channel with short `recv_timeout` polls against the
+//! token. On cancellation the spawned task is aborted via its [`AbortHandle`]
+//! — dropping the in-flight request future aborts
 //! the socket — and [`ExecutorError::Cancelled`] is returned immediately.
 //! Retry-backoff waits sleep in small slices against the token for the same
 //! reason. `unsafe_code = "forbid"` holds: no raw wakers are constructed.
 
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nexora_core::provider::{
     is_retryable_status, retry_delay, CancellationToken, ExecutorError, MAX_RETRY_DELAY_SECS,
     MAX_SEND_ATTEMPTS,
 };
+
+use super::async_spawner::AsyncSpawner;
 
 /// Upper bound on an error body kept for `Retry-After` extraction (bytes).
 /// Provider diagnostics are small; the cap bounds memory against a hostile
@@ -278,19 +281,21 @@ impl SseParser {
 pub(crate) struct HttpClient {
     inner: reqwest::Client,
     stream_attempts: u32,
+    spawner: Arc<dyn AsyncSpawner>,
 }
 
 impl HttpClient {
-    /// Build the shared client (rustls, connection pooling).
-    pub(crate) fn new() -> Self {
+    /// Build the shared client (rustls, connection pooling) over `spawner`.
+    pub(crate) fn new(spawner: Arc<dyn AsyncSpawner>) -> Self {
         Self {
             inner: reqwest::Client::new(),
             stream_attempts: MAX_SEND_ATTEMPTS,
+            spawner,
         }
     }
 
     /// Fix the set of hosts to which a subscription bearer can be sent.
-    pub(crate) fn single_stream_attempt() -> Option<Self> {
+    pub(crate) fn single_stream_attempt(spawner: Arc<dyn AsyncSpawner>) -> Option<Self> {
         reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -298,6 +303,7 @@ impl HttpClient {
             .map(|inner| Self {
                 inner,
                 stream_attempts: 1,
+                spawner,
             })
     }
 
@@ -369,7 +375,8 @@ impl HttpClient {
         let body: Vec<u8> = request.body.to_vec();
         let timeout = request.timeout;
         let (tx, rx) = mpsc::channel();
-        let handle = tauri::async_runtime::spawn(async move {
+        let spawner = Arc::clone(&self.spawner);
+        let handle = spawner.spawn(Box::pin(async move {
             let outcome = attempt_once(
                 &client,
                 &url,
@@ -381,7 +388,7 @@ impl HttpClient {
             )
             .await;
             let _ = tx.send(outcome);
-        });
+        }));
         loop {
             match rx.recv_timeout(FLIGHT_POLL_INTERVAL) {
                 Ok(outcome) => {
@@ -437,7 +444,8 @@ impl HttpClient {
         let extra = extra_headers.to_vec();
         let extra_owned = extra_headers_owned.to_vec();
         let (tx, rx) = mpsc::channel();
-        let handle = tauri::async_runtime::spawn(async move {
+        let spawner = Arc::clone(&self.spawner);
+        let handle = spawner.spawn(Box::pin(async move {
             let outcome = get_once(
                 &client,
                 &url_owned,
@@ -448,7 +456,7 @@ impl HttpClient {
             )
             .await;
             let _ = tx.send(outcome);
-        });
+        }));
         loop {
             match rx.recv_timeout(FLIGHT_POLL_INTERVAL) {
                 Ok(outcome) => {
@@ -566,7 +574,8 @@ impl HttpClient {
         let body: Vec<u8> = request.body.to_vec();
         let timeout = request.timeout;
         let (tx, rx) = mpsc::channel();
-        let handle = tauri::async_runtime::spawn(async move {
+        let spawner = Arc::clone(&self.spawner);
+        let handle = spawner.spawn(Box::pin(async move {
             stream_attempt_task(
                 &client,
                 &url,
@@ -578,7 +587,7 @@ impl HttpClient {
                 &tx,
             )
             .await;
-        });
+        }));
 
         let mut parser = SseParser::new();
         let mut started = false;
@@ -658,12 +667,6 @@ impl HttpClient {
                 }
             }
         }
-    }
-}
-
-impl Default for HttpClient {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -1223,7 +1226,7 @@ mod tests {
 
     #[test]
     fn retry_after_header_and_body_are_honored_and_capped() {
-        let client = HttpClient::new();
+        let client = HttpClient::new(Arc::new(crate::async_spawner::TauriSpawner));
 
         // Header `2` is honored verbatim: two backoffs of exactly 2 s across
         // the three bounded attempts (~4 s total, well under any wall clock).
@@ -1326,7 +1329,7 @@ mod tests {
 
     #[test]
     fn non_retryable_snapshot_returns_without_retry() {
-        let client = HttpClient::new();
+        let client = HttpClient::new(Arc::new(crate::async_spawner::TauriSpawner));
         let (endpoint, count, server) = spawn_scripted(vec![(400, b"{}".to_vec(), None)]);
         let outcome = client
             .post(&idle_token(), &post_to(endpoint, b"{}"))
@@ -1345,7 +1348,7 @@ mod tests {
         // context-length classification — and, like every non-retryable
         // status, fires exactly once (no elapsed assert: this is a
         // classification proof, not a timing proof).
-        let client = HttpClient::new();
+        let client = HttpClient::new(Arc::new(crate::async_spawner::TauriSpawner));
         let body = br#"{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 128000 tokens."}}"#.to_vec();
         let (endpoint, count, server) = spawn_scripted(vec![(400, body, None)]);
         let outcome = client
@@ -1418,7 +1421,7 @@ mod tests {
 
     #[test]
     fn cancelled_token_aborts_before_any_attempt() {
-        let client = HttpClient::new();
+        let client = HttpClient::new(Arc::new(crate::async_spawner::TauriSpawner));
         let (endpoint, count, server) = spawn_scripted(vec![(200, b"{}".to_vec(), None)]);
         let token = CancellationToken::new();
         token.cancel();
@@ -1678,7 +1681,7 @@ mod tests {
             }
         });
 
-        let client = HttpClient::new();
+        let client = HttpClient::new(Arc::new(crate::async_spawner::TauriSpawner));
         let token = CancellationToken::new();
         let token_cancel = token.clone();
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));

@@ -12,6 +12,7 @@
 //! process-wide resolver installed by the composition root.
 
 pub mod anthropic;
+pub mod async_spawner;
 pub mod catalog;
 pub mod chatgpt_oauth;
 pub mod chatgpt_plan;

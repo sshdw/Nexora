@@ -21,6 +21,7 @@ use nexora_core::provider::{
 };
 
 use super::anthropic::{AnthropicExecutor, PROVIDER_NAME as ANTHROPIC_PROVIDER_NAME};
+use super::async_spawner::AsyncSpawner;
 use super::catalog::openai::OPENAI_COMPAT_PRESETS;
 use super::chatgpt_plan::{ChatGptPlanExecutor, PROVIDER_NAME as CHATGPT_PLAN_PROVIDER};
 use super::credentials::CredentialStore;
@@ -31,6 +32,7 @@ use super::openai::{CompatConfig, OpenAiExecutor, COMPAT_NAME, PROVIDER_NAME};
 /// provider registry plus the user-configured-endpoint executor builder.
 pub(crate) struct NexoraProviderExecutors {
     registry: ExecutorRegistry,
+    spawner: Arc<dyn AsyncSpawner>,
 }
 
 impl NexoraProviderExecutors {
@@ -39,31 +41,42 @@ impl NexoraProviderExecutors {
     /// Native (`openai`, `anthropic`, `gemini`) and all curated presets in
     /// [`OPENAI_COMPAT_PRESETS`] are registered here under their internal
     /// provider names.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(spawner: Arc<dyn AsyncSpawner>) -> Self {
         let mut registry = ExecutorRegistry::new()
-            .with_executor(PROVIDER_NAME, Arc::new(OpenAiExecutor::new()))
-            .with_executor(CHATGPT_PLAN_PROVIDER, Arc::new(ChatGptPlanExecutor::new()))
-            .with_executor(ANTHROPIC_PROVIDER_NAME, Arc::new(AnthropicExecutor::new()))
-            .with_executor(GEMINI_PROVIDER_NAME, Arc::new(GeminiExecutor::new()));
+            .with_executor(
+                PROVIDER_NAME,
+                Arc::new(OpenAiExecutor::new(Arc::clone(&spawner))),
+            )
+            .with_executor(
+                CHATGPT_PLAN_PROVIDER,
+                Arc::new(ChatGptPlanExecutor::new(Arc::clone(&spawner))),
+            )
+            .with_executor(
+                ANTHROPIC_PROVIDER_NAME,
+                Arc::new(AnthropicExecutor::new(Arc::clone(&spawner))),
+            )
+            .with_executor(
+                GEMINI_PROVIDER_NAME,
+                Arc::new(GeminiExecutor::new(Arc::clone(&spawner))),
+            );
         for preset in OPENAI_COMPAT_PRESETS {
             let executor = if preset.extra_headers.is_empty() {
-                OpenAiExecutor::compatible(preset.name, preset.endpoint.to_string())
+                OpenAiExecutor::compatible(
+                    preset.name,
+                    preset.endpoint.to_string(),
+                    Arc::clone(&spawner),
+                )
             } else {
                 OpenAiExecutor::compatible_with_headers(
                     preset.name,
                     preset.endpoint.to_string(),
                     preset.extra_headers,
+                    Arc::clone(&spawner),
                 )
             };
             registry = registry.with_executor(preset.name, Arc::new(executor));
         }
-        Self { registry }
-    }
-}
-
-impl Default for NexoraProviderExecutors {
-    fn default() -> Self {
-        Self::new()
+        Self { registry, spawner }
     }
 }
 
@@ -85,7 +98,11 @@ impl ProviderExecutorResolver for NexoraProviderExecutors {
             headers: config.headers.clone(),
             supports_tools: config.supports_tools,
         };
-        Arc::new(OpenAiExecutor::compatible_with_config(COMPAT_NAME, &shim))
+        Arc::new(OpenAiExecutor::compatible_with_config(
+            COMPAT_NAME,
+            &shim,
+            Arc::clone(&self.spawner),
+        ))
     }
 }
 
@@ -93,8 +110,10 @@ impl ProviderExecutorResolver for NexoraProviderExecutors {
 /// registry). Used by seams that only need name resolution (e.g. the e2e
 /// smoke path); the composition root uses [`execution_sources`] to install
 /// the full pair.
-pub(crate) fn provider_executors() -> Arc<dyn ProviderExecutorResolver> {
-    Arc::new(NexoraProviderExecutors::new())
+pub(crate) fn provider_executors(
+    spawner: Arc<dyn AsyncSpawner>,
+) -> Arc<dyn ProviderExecutorResolver> {
+    Arc::new(NexoraProviderExecutors::new(spawner))
 }
 
 /// Build the process-wide execution sources for the composition root: the
@@ -103,17 +122,19 @@ pub(crate) fn provider_executors() -> Arc<dyn ProviderExecutorResolver> {
 /// Returned as trait objects so the caller (`lib.rs` setup) installs them
 /// into the application layer without the application ever naming a concrete
 /// provider or the keyring store.
-pub(crate) fn execution_sources() -> (Arc<dyn ProviderExecutorResolver>, Arc<dyn CredentialSource>)
-{
-    (provider_executors(), Arc::new(CredentialStore))
+pub(crate) fn execution_sources(
+    spawner: Arc<dyn AsyncSpawner>,
+) -> (Arc<dyn ProviderExecutorResolver>, Arc<dyn CredentialSource>) {
+    (provider_executors(spawner), Arc::new(CredentialStore))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::async_spawner::test_spawner;
     use super::*;
 
     fn registry() -> Arc<dyn ProviderExecutorResolver> {
-        Arc::new(NexoraProviderExecutors::new())
+        Arc::new(NexoraProviderExecutors::new(test_spawner()))
     }
 
     #[test]

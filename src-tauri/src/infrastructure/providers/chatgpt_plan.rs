@@ -8,6 +8,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::chatgpt_oauth;
+use std::sync::Arc;
+
+use super::async_spawner::AsyncSpawner;
 use super::transport::{Credential, HttpClient, PostRequest, StreamOutcome, StreamPostError};
 
 pub(crate) const PROVIDER_NAME: &str = "chatgpt_subscription";
@@ -21,9 +24,9 @@ pub(crate) struct ChatGptPlanExecutor {
 }
 
 impl ChatGptPlanExecutor {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(spawner: Arc<dyn AsyncSpawner>) -> Self {
         Self {
-            http: HttpClient::single_stream_attempt(),
+            http: HttpClient::single_stream_attempt(spawner),
         }
     }
 
@@ -380,6 +383,7 @@ impl CompletedTurn {
 
 #[cfg(test)]
 mod tests {
+    use super::super::async_spawner::test_spawner;
     use super::*;
     use nexora_core::provider::AiMessage;
     use std::fmt::Write as _;
@@ -468,7 +472,7 @@ mod tests {
         });
         let (url, server) = fixture_sse(vec![delta.clone(), terminal]);
         let events = Mutex::new(Vec::new());
-        let executor = ChatGptPlanExecutor::new();
+        let executor = ChatGptPlanExecutor::new(test_spawner());
         let result = executor
             .send(
                 &url,
@@ -584,7 +588,7 @@ mod tests {
             request_timeout: Some(Duration::from_secs(5)),
         };
 
-        let executor = ChatGptPlanExecutor::new();
+        let executor = ChatGptPlanExecutor::new(test_spawner());
         let response = executor
             .send(
                 &url,

@@ -13,6 +13,9 @@ use nexora_core::provider::{CancellationToken, ExecutorError};
 use serde::{Deserialize, Serialize};
 
 use super::catalog::openai::find_preset;
+use std::sync::Arc;
+
+use super::async_spawner::AsyncSpawner;
 use super::transport::{Credential, HttpClient, PostOutcome};
 
 const METADATA_TIMEOUT: Duration = Duration::from_secs(10);
@@ -55,8 +58,9 @@ pub(crate) fn fetch_connection_metadata(
     credential: &str,
     compat_chat_url: Option<&str>,
     compat_headers: &[(String, String)],
+    spawner: Arc<dyn AsyncSpawner>,
 ) -> Result<Vec<ApiModelMetadata>, ExecutorError> {
-    let client = HttpClient::new();
+    let client = HttpClient::new(spawner);
     let token = CancellationToken::new();
     match connection_id {
         "anthropic" => {

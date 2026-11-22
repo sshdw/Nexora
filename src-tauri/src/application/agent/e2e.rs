@@ -1835,6 +1835,8 @@ fn e2e_restart_sweep_and_rehydration() {
 #[ignore = "env-gated real provider smoke; requires NEXORA_E2E_REAL_PROVIDER=1"]
 #[allow(clippy::too_many_lines)]
 fn e2e_real_provider_smoke() {
+    use crate::infrastructure::providers::async_spawner::test_spawner;
+
     // Only run when explicitly enabled.
     let enabled = std::env::var("NEXORA_E2E_REAL_PROVIDER").ok();
     if enabled.as_deref() != Some("1") {
@@ -1882,8 +1884,8 @@ fn e2e_real_provider_smoke() {
     );
 
     // Resolve executor via production registry
-    let executor =
-        crate::infrastructure::providers::registry::provider_executors().resolve(provider_guess);
+    let executor = crate::infrastructure::providers::registry::provider_executors(test_spawner())
+        .resolve(provider_guess);
     if executor.is_none() {
         // Unknown provider: clean classified error, no panic.
         return;
@@ -2046,6 +2048,7 @@ fn spawn_hanging_provider_server() -> (
 
 #[test]
 fn e2e_cancel_during_provider_request_aborts_promptly() {
+    use crate::infrastructure::providers::async_spawner::test_spawner;
     use crate::infrastructure::providers::openai::OpenAiExecutor;
     use std::sync::atomic::Ordering;
 
@@ -2062,7 +2065,7 @@ fn e2e_cancel_during_provider_request_aborts_promptly() {
         db: db.clone(),
     });
     let executor: Arc<dyn ProviderExecutor + Send + Sync> =
-        Arc::new(OpenAiExecutor::with_endpoint(endpoint));
+        Arc::new(OpenAiExecutor::with_endpoint(endpoint, test_spawner()));
     let run_id = start_run(
         &db,
         Arc::clone(&registry),

@@ -43,6 +43,9 @@ use nexora_core::provider::{
 #[cfg(test)]
 use nexora_core::provider::{AiAttachment, AiToolResult, ToolDefinition};
 
+use std::sync::Arc;
+
+use super::async_spawner::AsyncSpawner;
 use super::transport::{
     Credential, HttpClient, PostOutcome, PostRequest, StreamOutcome, StreamPostError,
 };
@@ -486,22 +489,26 @@ pub(crate) struct OpenAiExecutor {
 
 impl OpenAiExecutor {
     /// Create an executor targeting the OpenAI production endpoint.
-    pub(crate) fn new() -> Self {
-        Self::with_endpoint(ENDPOINT.to_string())
+    pub(crate) fn new(spawner: Arc<dyn AsyncSpawner>) -> Self {
+        Self::with_endpoint(ENDPOINT.to_string(), spawner)
     }
 
     /// Create an executor targeting an explicit `endpoint` (used by tests,
     /// including the command-layer threading regression test, to exercise
     /// the full request/response path without a live OpenAI service).
-    pub(crate) fn with_endpoint(endpoint: String) -> Self {
-        Self::compatible(PROVIDER_NAME, endpoint)
+    pub(crate) fn with_endpoint(endpoint: String, spawner: Arc<dyn AsyncSpawner>) -> Self {
+        Self::compatible(PROVIDER_NAME, endpoint, spawner)
     }
 
     /// Create an OpenAI-compatible executor with a distinct provider identity
     /// at `endpoint` (no extra headers).
-    pub(crate) fn compatible(name: &'static str, endpoint: String) -> Self {
+    pub(crate) fn compatible(
+        name: &'static str,
+        endpoint: String,
+        spawner: Arc<dyn AsyncSpawner>,
+    ) -> Self {
         Self {
-            client: HttpClient::new(),
+            client: HttpClient::new(spawner),
             endpoint,
             name,
             extra_headers: Vec::new(),
@@ -517,9 +524,10 @@ impl OpenAiExecutor {
         name: &'static str,
         endpoint: String,
         headers: &[(&'static str, &'static str)],
+        spawner: Arc<dyn AsyncSpawner>,
     ) -> Self {
         Self {
-            client: HttpClient::new(),
+            client: HttpClient::new(spawner),
             endpoint,
             name,
             extra_headers: headers.to_vec(),
@@ -536,9 +544,13 @@ impl OpenAiExecutor {
     /// unvalidated config can never send to a surprising target. The API key
     /// is not part of the config — it arrives per call as `credential` from
     /// the keyring.
-    pub(crate) fn compatible_with_config(name: &'static str, config: &CompatConfig) -> Self {
+    pub(crate) fn compatible_with_config(
+        name: &'static str,
+        config: &CompatConfig,
+        spawner: Arc<dyn AsyncSpawner>,
+    ) -> Self {
         Self {
-            client: HttpClient::new(),
+            client: HttpClient::new(spawner),
             endpoint: config.normalized_endpoint(),
             name,
             extra_headers: Vec::new(),
@@ -1388,6 +1400,7 @@ impl std::fmt::Display for OpenAiError {
 }
 #[cfg(test)]
 mod tests {
+    use super::super::async_spawner::test_spawner;
     use super::*;
 
     fn sample_request() -> AiRequest {
@@ -1609,7 +1622,7 @@ mod tests {
     #[test]
     fn executor_maps_every_classified_failure_to_boundary_failure() {
         let executor = OpenAiExecutor {
-            client: HttpClient::new(),
+            client: HttpClient::new(test_spawner()),
             endpoint: "http://127.0.0.1:1".to_string(), // unreachable -> network failure
             name: PROVIDER_NAME,
             extra_headers: Vec::new(),
@@ -1750,7 +1763,7 @@ mod tests {
             stream.flush().expect("flush response");
         });
 
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -1776,7 +1789,7 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
             (429, String::new(), Some("0".to_string())),
         ]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1796,7 +1809,7 @@ mod tests {
             (429, String::new(), None),
             (429, String::new(), None),
         ]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1820,7 +1833,7 @@ mod tests {
                 (status, String::new(), None),
                 (status, String::new(), None),
             ]);
-            let executor = OpenAiExecutor::with_endpoint(endpoint);
+            let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
             let result = executor.execute(
                 &sample_request(),
                 "sk-secret-example",
@@ -1860,7 +1873,7 @@ mod tests {
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         });
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -1896,7 +1909,7 @@ mod tests {
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         });
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let err = executor
             .execute(
                 &sample_request(),
@@ -1940,7 +1953,7 @@ mod tests {
             let _ = stream.write_all(response.as_bytes());
             let _ = stream.flush();
         });
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2231,7 +2244,7 @@ mod tests {
                 // timeout instead of completing.
             }
         });
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let mut request = sample_request();
         request.request_timeout = Some(Duration::from_millis(200));
         let start = std::time::Instant::now();
@@ -2268,7 +2281,7 @@ mod tests {
         for status in [400u16, 401, 403, 404] {
             let (endpoint, count, server) =
                 spawn_sequence_server(vec![(status, String::new(), None)]);
-            let executor = OpenAiExecutor::with_endpoint(endpoint);
+            let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
             let result = executor.execute(
                 &sample_request(),
                 "sk-secret-example",
@@ -2305,7 +2318,7 @@ mod tests {
         let closed = TcpListener::bind("127.0.0.1:0").expect("bind probe listener");
         let addr = closed.local_addr().expect("local address");
         drop(closed);
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let start = std::time::Instant::now();
         let result = executor.execute(
             &sample_request(),
@@ -2353,7 +2366,7 @@ mod tests {
 
         // Case 1: 401 with a secret-carrying body.
         let (endpoint, _count, server) = spawn_sequence_server(vec![(401, secret_body, None)]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2383,7 +2396,7 @@ mod tests {
             (429, sneaky.clone(), None),
             (429, sneaky, None),
         ]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2452,7 +2465,7 @@ mod tests {
             let _ = stream.flush();
         });
 
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"));
+        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}"), test_spawner());
         let token = CancellationToken::new();
         let canceller = token.clone();
         let driver = std::thread::spawn(move || {
@@ -2556,7 +2569,8 @@ mod tests {
             stream.flush().expect("flush response");
         });
 
-        let executor = OpenAiExecutor::compatible(XKIRO_NAME, format!("http://{addr}"));
+        let executor =
+            OpenAiExecutor::compatible(XKIRO_NAME, format!("http://{addr}"), test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2570,6 +2584,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn compatible_openrouter_sends_referer_headers() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
@@ -2632,6 +2647,7 @@ mod tests {
                 ("HTTP-Referer", "https://github.com/sshdw/Nexora"),
                 ("X-Title", "Nexora"),
             ],
+            test_spawner(),
         );
         let ai = executor
             .execute(
@@ -2747,7 +2763,7 @@ mod tests {
             (429, String::new(), Some("0".to_string())),
             (200, success, None),
         ]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2770,7 +2786,7 @@ mod tests {
             (503, String::new(), Some("0".to_string())),
             (200, success, None),
         ]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -2788,7 +2804,7 @@ mod tests {
     fn retry_400_is_never_retried() {
         use std::sync::atomic::Ordering;
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, String::new(), None)]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2806,7 +2822,7 @@ mod tests {
         // malformed request — and, like every 400, it fires exactly once.
         let body = r#"{"error":{"message":"This model's maximum context length is 128000 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}"#.to_string();
         let (endpoint, count, server) = spawn_sequence_server(vec![(400, body, None)]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -2832,7 +2848,7 @@ mod tests {
             (503, String::new(), Some("0".to_string())),
             (503, String::new(), Some("0".to_string())),
         ]);
-        let executor = OpenAiExecutor::with_endpoint(endpoint);
+        let executor = OpenAiExecutor::with_endpoint(endpoint, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -3196,7 +3212,7 @@ mod tests {
             supports_tools: true,
         };
         assert!(config.validate().is_ok());
-        let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config);
+        let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config, test_spawner());
         let ai = executor
             .execute(
                 &sample_request(),
@@ -3242,7 +3258,7 @@ mod tests {
             base_url: "ftp://proxy.example.com/v1".to_string(),
             ..valid_compat_config()
         };
-        let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config);
+        let executor = OpenAiExecutor::compatible_with_config(COMPAT_NAME, &config, test_spawner());
         let result = executor.execute(
             &sample_request(),
             "sk-secret-example",
@@ -3342,7 +3358,10 @@ mod tests {
             stream.write_all(resp.as_bytes()).expect("write");
         });
 
-        let executor = OpenAiExecutor::with_endpoint(format!("http://{addr}/v1/chat/completions"));
+        let executor = OpenAiExecutor::with_endpoint(
+            format!("http://{addr}/v1/chat/completions"),
+            test_spawner(),
+        );
         let mut req = sample_request();
         req.model_config =
             Some(ModelConfig::new("gpt-5.6-terra").with_effort(Some("high".to_string())));
@@ -3468,9 +3487,10 @@ mod tests {
                         headers: Vec::new(),
                         supports_tools: true,
                     },
+                    test_spawner(),
                 )
             } else {
-                OpenAiExecutor::compatible("deepseek", endpoint)
+                OpenAiExecutor::compatible("deepseek", endpoint, test_spawner())
             };
             let mut req = sample_request();
             req.provider = if is_custom_compat {
