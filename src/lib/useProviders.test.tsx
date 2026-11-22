@@ -58,9 +58,13 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       has_refresh_token: false,
       expires_at: null as number | null,
       connected_at: null as number | null,
-      auth_mode: "none",
-      problem: null,
-      models: [],
+      auth_mode: "none" as "oauth" | "none",
+      problem: null as
+        | "cleanup_required"
+        | "other_instance"
+        | "reauthorization_required"
+        | null,
+      models: [] as { slug: string; display_name: string }[],
     },
     refreshedByConnection: new Map<
       string,
@@ -658,6 +662,59 @@ describe("useProviders — connect / disconnect (credential lifecycle)", () => {
       problem: "cleanup_required" as const,
     });
     expect(result.current.providers[0]).toMatchObject({ available: true });
+  });
+
+  it("rejects stale persisted ChatGPT subscription slugs and exposes returned display names", async () => {
+    state.supported.push({
+      name: "chatgpt_subscription",
+      display_name: "ChatGPT subscription",
+      models: [],
+    });
+    state.configured.push({
+      id: 99,
+      name: "chatgpt_subscription",
+      display_name: "ChatGPT subscription",
+    });
+    state.chatgptOAuth = {
+      connected: true,
+      has_refresh_token: true,
+      expires_at: 1_900_000_000,
+      connected_at: 1_899_996_400,
+      auth_mode: "oauth",
+      problem: null,
+      models: [{ slug: "gpt-5.4-plan", display_name: "GPT-5.4" }],
+    };
+    state.settings.set("provider.selected", "chatgpt_subscription");
+    state.settings.set("provider.model", "stale-retired-slug");
+
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.selectedProvider).toBe("chatgpt_subscription");
+    // Stale persisted slug not in the live visible catalog must be rejected.
+    expect(result.current.selectedModel).toBeNull();
+    const planProvider = result.current.providers.find(
+      (p) => p.supported.name === "chatgpt_subscription"
+    );
+    expect(planProvider?.supported.models).toEqual(["gpt-5.4-plan"]);
+    expect(planProvider?.modelLabels).toEqual({ "gpt-5.4-plan": "GPT-5.4" });
+
+    // Attempting to select a slug outside the visible catalog is rejected.
+    mockInvoke.mockClear();
+    await act(async () => {
+      await result.current.selectModel("unlisted-capability-slug");
+    });
+    expect(result.current.selectedModel).toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalledWith("set_setting", {
+      key: "provider.model",
+      value: "unlisted-capability-slug",
+    });
+
+    // Selecting a slug present in the visible catalog succeeds.
+    await act(async () => {
+      await result.current.selectModel("gpt-5.4-plan");
+    });
+    expect(result.current.selectedModel).toBe("gpt-5.4-plan");
   });
 });
 

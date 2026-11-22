@@ -40,6 +40,7 @@ import { useStrings } from "../lib/useLocale";
 import type { AppearanceStore, Theme } from "../lib/useAppearance";
 import { AUTONOMY_KEY, isAutonomyMode, type AutonomyStore } from "../lib/useAutonomy";
 import {
+  CHATGPT_PLAN_PROVIDER,
   isCustomModelId,
   mergeConnectionModels,
   type ProvidersStore,
@@ -182,11 +183,6 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
     group: "credentials",
     title: "ChatGPT Plus / Pro OAuth",
     keywords: ["chatgpt", "oauth", "pkce", "plus", "pro", "openai", "sign in"],
-  },
-  {
-    group: "credentials",
-    title: "External CLI adapters",
-    keywords: ["cli", "codex", "claude", "external", "adapter", "subprocess"],
   },
   {
     group: "data",
@@ -444,6 +440,8 @@ export default function SettingsView({
       )
     : [];
 
+  const isPlanProvider = selectedDefinition?.name === CHATGPT_PLAN_PROVIDER;
+
   /** The model to display: the persisted selection, or the provider default. */
   const effectiveModel =
     activeSelectedModel && selectedModels.includes(activeSelectedModel)
@@ -452,7 +450,9 @@ export default function SettingsView({
 
   /** A persisted custom model ID (valid but outside the shortlist). */
   const persistedCustom =
-    activeSelectedModel && !selectedModels.includes(activeSelectedModel)
+    !isPlanProvider &&
+    activeSelectedModel &&
+    !selectedModels.includes(activeSelectedModel)
       ? activeSelectedModel
       : null;
   /** Local custom draft; non-null means the Custom… option is active. */
@@ -586,10 +586,13 @@ export default function SettingsView({
   };
 
   const handleProviderChange = async (name: string) => {
-    // A custom model ID is provider-independent: keep it across the switch.
-    const keepCustom = activeSelectedModel
-      ? isCustomModelId(activeSelectedModel)
-      : false;
+    // A custom model ID is provider-independent on non-plan providers;
+    // ChatGPT subscription only accepts models from its live account catalog.
+    const isPlanTarget = name === CHATGPT_PLAN_PROVIDER;
+    const keepCustom =
+      !isPlanTarget && activeSelectedModel
+        ? isCustomModelId(activeSelectedModel)
+        : false;
     setCustomDraft(null);
     setScopedSaveError(null);
     if (saveScope === "project") {

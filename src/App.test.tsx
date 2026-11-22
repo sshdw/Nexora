@@ -361,6 +361,49 @@ describe("App — buildConnectionGroups & mergeConnectionModels", () => {
       ])
     ).toEqual(["a", "b"]);
   });
+
+  it("keeps the visible ChatGPT account catalog authoritative without merging capability-only slugs and passes display names", () => {
+    const providers: ProviderStatus[] = [
+      {
+        supported: {
+          name: "chatgpt_subscription",
+          display_name: "ChatGPT subscription",
+          models: ["gpt-5.4-visible"],
+        },
+        modelLabels: { "gpt-5.4-visible": "GPT-5.4" },
+        configured: true,
+        credentialed: true,
+        available: true,
+      },
+    ];
+    const capabilities: ConnectionModelCapabilities[] = [
+      makeCap("chatgpt_subscription", "gpt-5.4-visible", "built_in_catalog"),
+      makeCap("chatgpt_subscription", "stale-capability-only-slug", "manual_override"),
+    ];
+
+    expect(
+      mergeConnectionModels(
+        ["gpt-5.4-visible"],
+        "chatgpt_subscription",
+        capabilities,
+        "extra-stale-slug"
+      )
+    ).toEqual(["gpt-5.4-visible"]);
+
+    const groups = buildConnectionGroups(
+      providers,
+      capabilities,
+      "chatgpt_subscription"
+    );
+    expect(groups).toEqual([
+      {
+        connectionId: "chatgpt_subscription",
+        connectionName: "ChatGPT subscription",
+        models: ["gpt-5.4-visible"],
+        modelLabels: { "gpt-5.4-visible": "GPT-5.4" },
+      },
+    ]);
+  });
 });
 
 describe("App — ModelPicker connectionGroups & selectConnectionModel integration", () => {

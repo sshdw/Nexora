@@ -115,80 +115,108 @@ impl ProviderExecutor for ChatGptPlanExecutor {
         if token.is_cancelled() {
             return Err(ExecutorError::Cancelled);
         }
-        let call = chatgpt_oauth::authorize_call(credential, &request.model, token)
-            .map_err(|_| ExecutorError::Authentication)?;
+        let call =
+            chatgpt_oauth::authorize_call(credential, &request.model, token).map_err(|err| {
+                match err {
+                    chatgpt_oauth::ChatGptOAuthError::TokenRefreshTransient => {
+                        ExecutorError::ProviderUnavailable
+                    }
+                    _ => ExecutorError::Authentication,
+                }
+            })?;
         self.send(ENDPOINT, request, &call.access_token, token, on_event)
     }
+}
+
+fn push_tool_calls(input: &mut Vec<Value>, calls: &[ToolCall]) {
+    for call in calls {
+        input.push(json!({
+            "type": "function_call",
+            "namespace": TOOL_NAMESPACE,
+            "call_id": call.id,
+            "name": call.name,
+            "arguments": call.arguments,
+        }));
+    }
+}
+
+fn encode_input_message(
+    input: &mut Vec<Value>,
+    message: &nexora_core::provider::AiMessage,
+) -> Result<(), ExecutorError> {
+    let role = match message.role {
+        AiRole::System => "developer",
+        AiRole::User => "user",
+        AiRole::Assistant => {
+            if message
+                .attachments
+                .iter()
+                .any(|attachment| matches!(attachment.payload, AiAttachmentPayload::Base64(_)))
+            {
+                return Err(ExecutorError::InvalidRequest);
+            }
+            let text = message.composed_content();
+            if !text.is_empty() {
+                input.push(json!({ "role": "assistant", "content": text }));
+            }
+            push_tool_calls(input, &message.tool_calls);
+            return Ok(());
+        }
+        AiRole::Tool => {
+            let result = message
+                .tool_result
+                .as_ref()
+                .ok_or(ExecutorError::InvalidRequest)?;
+            input.push(json!({
+                "type": "function_call_output",
+                "call_id": result.call_id,
+                "output": result.content,
+            }));
+            return Ok(());
+        }
+    };
+    let mut content = Vec::new();
+    let text = message.composed_content();
+    if !text.is_empty() {
+        content.push(json!({ "type": "input_text", "text": text }));
+    }
+    for attachment in &message.attachments {
+        if let AiAttachmentPayload::Base64(data) = &attachment.payload {
+            if message.role != AiRole::User {
+                return Err(ExecutorError::InvalidRequest);
+            }
+            let mime = attachment
+                .mime_type
+                .as_deref()
+                .ok_or(ExecutorError::InvalidRequest)?;
+            let data_url = format!("data:{mime};base64,{data}");
+            if matches!(
+                mime,
+                "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+            ) {
+                content.push(json!({ "type": "input_image", "image_url": data_url }));
+            } else if mime == "application/pdf" {
+                content.push(json!({
+                    "type": "input_file",
+                    "filename": attachment.file_name,
+                    "file_data": data_url,
+                }));
+            } else {
+                return Err(ExecutorError::InvalidRequest);
+            }
+        }
+    }
+    if !content.is_empty() {
+        input.push(json!({ "role": role, "content": content }));
+    }
+    push_tool_calls(input, &message.tool_calls);
+    Ok(())
 }
 
 fn request_body(request: &AiRequest) -> Result<Value, ExecutorError> {
     let mut input = Vec::new();
     for message in request.messages.iter() {
-        let role = match message.role {
-            AiRole::System => "developer",
-            AiRole::User => "user",
-            AiRole::Assistant => "assistant",
-            AiRole::Tool => {
-                let result = message
-                    .tool_result
-                    .as_ref()
-                    .ok_or(ExecutorError::InvalidRequest)?;
-                input.push(json!({
-                    "type": "function_call_output",
-                    "call_id": result.call_id,
-                    "output": result.content,
-                }));
-                continue;
-            }
-        };
-        let mut content = Vec::new();
-        let text = message.composed_content();
-        if !text.is_empty() {
-            let kind = if message.role == AiRole::Assistant {
-                "output_text"
-            } else {
-                "input_text"
-            };
-            content.push(json!({ "type": kind, "text": text }));
-        }
-        for attachment in &message.attachments {
-            if let AiAttachmentPayload::Base64(data) = &attachment.payload {
-                if message.role != AiRole::User {
-                    return Err(ExecutorError::InvalidRequest);
-                }
-                let mime = attachment
-                    .mime_type
-                    .as_deref()
-                    .ok_or(ExecutorError::InvalidRequest)?;
-                let data_url = format!("data:{mime};base64,{data}");
-                if matches!(
-                    mime,
-                    "image/png" | "image/jpeg" | "image/webp" | "image/gif"
-                ) {
-                    content.push(json!({ "type": "input_image", "image_url": data_url }));
-                } else if mime == "application/pdf" {
-                    content.push(json!({
-                        "type": "input_file",
-                        "filename": attachment.file_name,
-                        "file_data": data_url,
-                    }));
-                } else {
-                    return Err(ExecutorError::InvalidRequest);
-                }
-            }
-        }
-        if !content.is_empty() {
-            input.push(json!({ "role": role, "content": content }));
-        }
-        for call in &message.tool_calls {
-            input.push(json!({
-                "type": "function_call",
-                "namespace": TOOL_NAMESPACE,
-                "call_id": call.id,
-                "name": call.name,
-                "arguments": call.arguments,
-            }));
-        }
+        encode_input_message(&mut input, message)?;
     }
     let mut payload =
         json!({ "model": request.model, "input": input, "store": false, "stream": true });
@@ -469,5 +497,140 @@ mod tests {
             Err(ExecutorError::UnexpectedResponse)
         ));
         server.join().unwrap();
+    }
+
+    fn capture_wire_sse(
+        reply: &str,
+    ) -> (
+        String,
+        Arc<Mutex<Option<Value>>>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let captured = Arc::new(Mutex::new(None::<Value>));
+        let captured_srv = Arc::clone(&captured);
+        let reply = reply.to_owned();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(&mut socket);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert_eq!(line.trim(), "POST /v1/responses HTTP/1.1");
+            let mut header = String::new();
+            let mut body_length = 0;
+            loop {
+                header.clear();
+                assert!(reader.read_line(&mut header).unwrap() > 0);
+                if header.trim().is_empty() {
+                    break;
+                }
+                let (name, value) = header.split_once(':').unwrap();
+                if name.eq_ignore_ascii_case("content-length") {
+                    body_length = value.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0; body_length];
+            reader.read_exact(&mut body).unwrap();
+            *captured_srv.lock().unwrap() = Some(serde_json::from_slice(&body).unwrap());
+            let terminal = json!({
+                "type": "response.completed",
+                "response": {
+                    "model": "fixture-model",
+                    "output": [{
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": reply}]
+                    }]
+                }
+            });
+            let wire = format!("data: {terminal}\n\n");
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{wire}",
+                wire.len(),
+            )
+            .unwrap();
+        });
+        (format!("http://{address}/v1/responses"), captured, server)
+    }
+
+    fn text_message(role: AiRole, content: &str) -> AiMessage {
+        AiMessage {
+            role,
+            content: content.to_owned(),
+            attachments: vec![],
+            tool_calls: vec![],
+            tool_result: None,
+        }
+    }
+
+    #[test]
+    fn second_turn_encodes_assistant_history_as_string_not_output_text_parts() {
+        let (url, captured, server) = capture_wire_sse("Second turn reply");
+        let second_turn = AiRequest {
+            provider: PROVIDER_NAME.to_owned(),
+            model: "fixture-model".to_owned(),
+            messages: Arc::new(vec![
+                text_message(AiRole::System, "System instruction"),
+                text_message(AiRole::User, "First question"),
+                text_message(AiRole::Assistant, "First assistant reply"),
+                text_message(AiRole::User, "Follow-up question"),
+            ]),
+            tools: Arc::new(vec![]),
+            model_config: None,
+            request_timeout: Some(Duration::from_secs(5)),
+        };
+
+        let executor = ChatGptPlanExecutor::new();
+        let response = executor
+            .send(
+                &url,
+                &second_turn,
+                "fixture-plan-bearer",
+                &CancellationToken::new(),
+                &|_| {},
+            )
+            .expect("second turn succeeds");
+        server.join().unwrap();
+        assert_eq!(response.content, "Second turn reply");
+
+        let wire_body = captured.lock().unwrap().take().expect("captured payload");
+        let input = wire_body["input"].as_array().expect("input array");
+        assert_eq!(input.len(), 4);
+        assert_eq!(
+            input[0],
+            json!({
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "System instruction"}]
+            })
+        );
+        assert_eq!(
+            input[1],
+            json!({
+                "role": "user",
+                "content": [{"type": "input_text", "text": "First question"}]
+            })
+        );
+        assert_eq!(
+            input[2],
+            json!({
+                "role": "assistant",
+                "content": "First assistant reply"
+            })
+        );
+        assert!(
+            input[2]["content"].is_string(),
+            "assistant history inside easy input message must be a string, not output_text parts"
+        );
+        assert_eq!(
+            input[3],
+            json!({
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Follow-up question"}]
+            })
+        );
     }
 }

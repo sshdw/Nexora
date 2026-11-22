@@ -5,13 +5,16 @@
 
 import { useState } from "react";
 
-import type { SupportedProvider } from "../../lib/tauri";
+import { openExternalUrl, type SupportedProvider } from "../../lib/tauri";
 import {
   CHATGPT_PLAN_PROVIDER,
   type ProvidersStore,
 } from "../../lib/useProviders";
 import { useStrings } from "../../lib/useLocale";
 import Button from "../Button";
+import { ChatGptMarkIcon } from "../icons";
+
+const CHATGPT_MANAGE_USAGE_URL = "https://chatgpt.com/#settings";
 
 export interface CredentialsSectionProps {
   store: ProvidersStore;
@@ -37,6 +40,8 @@ export default function CredentialsSection({
   const oauthConnected = Boolean(store.chatgptOAuth?.connected);
   const oauthCleanupRequired =
     store.chatgptOAuth?.problem === "cleanup_required";
+  const oauthReauthRequired =
+    store.chatgptOAuth?.problem === "reauthorization_required";
   const oauthOtherInstance = store.chatgptOAuth?.problem === "other_instance";
   const oauthHasRefresh = Boolean(store.chatgptOAuth?.has_refresh_token);
   const oauthBusy = Boolean(store.chatgptOAuthWorking) || store.working;
@@ -143,9 +148,11 @@ export default function CredentialsSection({
                 ? t("settings.chatgptOAuthOtherInstance")
                 : oauthCleanupRequired
                   ? t("settings.chatgptOAuthCleanupRequired")
-                  : oauthConnected
-                    ? t("settings.chatgptOAuthConnected")
-                    : t("settings.chatgptOAuthNotConnected")}
+                  : oauthReauthRequired
+                    ? t("settings.chatgptOAuthReauthRequired")
+                    : oauthConnected
+                      ? t("settings.chatgptOAuthConnected")
+                      : t("settings.chatgptOAuthNotConnected")}
             </span>
           </div>
           <p className="nex-optin-notice" role="note">
@@ -153,11 +160,28 @@ export default function CredentialsSection({
           </p>
           {oauthConnected ? (
             <p className="nex-settings-hint">
-              {t("settings.chatgptOAuthActiveHint")}
+              {t("settings.chatgptOAuthActiveHint")}{" "}
+              <a
+                href={CHATGPT_MANAGE_USAGE_URL}
+                rel="noreferrer noopener"
+                className="nex-optin-link"
+                onClick={(event) => {
+                  event.preventDefault();
+                  void openExternalUrl(CHATGPT_MANAGE_USAGE_URL).catch(
+                    () => {}
+                  );
+                }}
+              >
+                {t("settings.chatgptOAuthManageUsage")}
+              </a>
             </p>
           ) : oauthCleanupRequired ? (
             <p className="nex-settings-hint" role="status">
               {t("settings.chatgptOAuthCleanupHint")}
+            </p>
+          ) : oauthReauthRequired ? (
+            <p className="nex-settings-hint" role="status">
+              {t("settings.chatgptOAuthReauthHint")}
             </p>
           ) : oauthOtherInstance ? null : (
             <label className="nex-capabilities-check">
@@ -181,52 +205,56 @@ export default function CredentialsSection({
             </Button>
           ) : (
             <div className="nex-optin-actions">
-              {!oauthConnected && !oauthCleanupRequired ? (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={oauthBusy || !oauthOptInAck}
+              {(!oauthConnected && !oauthCleanupRequired) ||
+              oauthReauthRequired ? (
+                <button
+                  type="button"
+                  className="nex-siwc-btn"
+                  disabled={oauthBusy || (!oauthReauthRequired && !oauthOptInAck)}
                   onClick={() => {
                     setOauthOptInAck(false);
                     void store.startChatGptOAuth?.();
                   }}
                 >
+                  <ChatGptMarkIcon size={16} />
                   {store.chatgptOAuthWorking ? (
-                    <span role="status">
+                    <span className="nex-siwc-label" role="status">
                       {t("settings.chatgptOAuthSigningIn")}
                     </span>
                   ) : (
-                    t("settings.chatgptOAuthSignIn")
+                    <span className="nex-siwc-label">
+                      {t("settings.chatgptOAuthSignIn")}
+                    </span>
                   )}
-                </Button>
-              ) : (
-                <>
-                  {oauthConnected &&
-                    oauthHasRefresh &&
-                    store.refreshChatGptOAuth && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={oauthBusy}
-                        onClick={() => void store.refreshChatGptOAuth?.()}
-                      >
-                        {t("settings.chatgptOAuthRefresh")}
-                      </Button>
-                    )}
-                  {store.disconnectChatGptOAuth && (
-                    <Button
-                      variant="quiet"
-                      className="nex-provider-remove"
-                      disabled={oauthBusy}
-                      onClick={() => void store.disconnectChatGptOAuth?.()}
-                    >
-                      {oauthCleanupRequired
-                        ? t("settings.chatgptOAuthRetryCleanup")
-                        : t("settings.chatgptOAuthDisconnect")}
-                    </Button>
-                  )}
-                </>
-              )}
+                </button>
+              ) : null}
+              {oauthConnected &&
+                oauthHasRefresh &&
+                store.refreshChatGptOAuth && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={oauthBusy}
+                    onClick={() => void store.refreshChatGptOAuth?.()}
+                  >
+                    {t("settings.chatgptOAuthRefresh")}
+                  </Button>
+                )}
+              {(oauthConnected ||
+                oauthCleanupRequired ||
+                oauthReauthRequired) &&
+                store.disconnectChatGptOAuth && (
+                  <Button
+                    variant="quiet"
+                    className="nex-provider-remove"
+                    disabled={oauthBusy}
+                    onClick={() => void store.disconnectChatGptOAuth?.()}
+                  >
+                    {oauthCleanupRequired
+                      ? t("settings.chatgptOAuthRetryCleanup")
+                      : t("settings.chatgptOAuthDisconnect")}
+                  </Button>
+                )}
             </div>
           )}
         </section>

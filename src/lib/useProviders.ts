@@ -123,7 +123,10 @@ function isValidPort(port: string): boolean {
   return parsed >= 1 && parsed <= 65535;
 }
 
-/** Merge static provider models with metadata-discovered capability models. */
+/** Merge static provider models with metadata-discovered capability models.
+ *  For `chatgpt_subscription`, the visible account catalog returned by the
+ *  backend is the single source of truth — stale or capability-only slugs are
+ *  never merged because the executor rejects them. */
 export function mergeConnectionModels(
   staticModels: readonly string[],
   connectionId: string,
@@ -141,6 +144,9 @@ export function mergeConnectionModels(
     }
   };
   for (const model of staticModels) pushUnique(model);
+  if (connectionId === CHATGPT_PLAN_PROVIDER) {
+    return merged;
+  }
   pushUnique(extraModel);
   for (const cap of capabilities) {
     if (cap.connection_id === connectionId) pushUnique(cap.model_id);
@@ -164,6 +170,8 @@ export function isCustomModelId(value: string): boolean {
 export interface ProviderStatus {
   /** Build-supported provider definition. */
   supported: SupportedProvider;
+  /** Optional display labels keyed by model slug (e.g. ChatGPT account catalog). */
+  modelLabels?: Readonly<Record<string, string>>;
   /** Whether a `providers` row exists for this provider. */
   configured: boolean;
   /** Whether the OS keyring holds a credential for this provider. */
@@ -318,8 +326,8 @@ export function useProviders(): ProvidersStore {
       );
 
       // Credential presence is checked per API provider (values never leave the
-      // keyring; only presence is reported). External CLI adapters do not store
-      // API keys in Nexora.
+      // keyring; only presence is reported). ChatGPT subscription credentials
+      // are managed through OAuth status above.
       const credentialed = new Set<string>();
       await Promise.all(
         defs.map(async (provider) => {
@@ -333,19 +341,28 @@ export function useProviders(): ProvidersStore {
       // FR-012: a persisted selection only becomes active state if it still
       // belongs to the supported provider/model domains; anything else (a
       // stale or hand-edited value) falls back to the default (no selection).
-      // A valid custom model ID persists like a listed one.
+      // For `chatgpt_subscription`, ONLY models present in the live visible
+      // account catalog are valid; custom/stale slugs are rejected.
       const validProvider = defs.some(
         (provider) => provider.name === providerSetting
       )
         ? providerSetting
         : null;
+      const planCatalogSlugs =
+        oauthStatus && oauthStatus.connected && Array.isArray(oauthStatus.models)
+          ? oauthStatus.models.map((model) => model.slug)
+          : [];
       const validModel =
         modelSetting === null
           ? null
-          : defs.some((provider) => provider.models.includes(modelSetting)) ||
-              isCustomModelId(modelSetting)
-            ? modelSetting
-            : null;
+          : validProvider === CHATGPT_PLAN_PROVIDER
+            ? planCatalogSlugs.includes(modelSetting)
+              ? modelSetting
+              : null
+            : defs.some((provider) => provider.models.includes(modelSetting)) ||
+                isCustomModelId(modelSetting)
+              ? modelSetting
+              : null;
       const validEffort =
         effortSetting !== null &&
         VALID_EFFORTS.includes(effortSetting as (typeof VALID_EFFORTS)[number])
@@ -387,18 +404,32 @@ export function useProviders(): ProvidersStore {
     }
   }, [selectedProvider, loadCompatState]);
 
+  const planCatalogSlugs = useMemo(
+    () =>
+      chatgptOAuth?.connected
+        ? (chatgptOAuth.models ?? []).map((model) => model.slug)
+        : [],
+    [chatgptOAuth]
+  );
+
   const selectProvider = useCallback(
     async (name: string): Promise<void> => {
       setError(null);
       try {
         // Keep the persisted model valid: clear it when the newly selected
         // provider does not support the previously selected model — except a
-        // valid custom model ID, which is provider-independent and kept.
+        // valid custom model ID on non-plan providers. For ChatGPT
+        // subscription, only the visible account catalog is authoritative.
         const def = supported.find((provider) => provider.name === name);
+        const allowedModels =
+          name === CHATGPT_PLAN_PROVIDER
+            ? planCatalogSlugs
+            : (def?.models ?? []);
         const nextModel =
           def &&
           selectedModel &&
-          (def.models.includes(selectedModel) || isCustomModelId(selectedModel))
+          (allowedModels.includes(selectedModel) ||
+            (name !== CHATGPT_PLAN_PROVIDER && isCustomModelId(selectedModel)))
             ? selectedModel
             : null;
         if (nextModel !== selectedModel) {
@@ -411,7 +442,7 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [supported, selectedModel]
+    [supported, selectedModel, planCatalogSlugs]
   );
 
   const loadModelCapabilitiesIfMissing = useCallback(
@@ -445,9 +476,15 @@ export function useProviders(): ProvidersStore {
     async (model: string, providerId?: string): Promise<void> => {
       setError(null);
       try {
+        const targetProvider = providerId ?? selectedProvider;
+        if (
+          targetProvider === CHATGPT_PLAN_PROVIDER &&
+          !planCatalogSlugs.includes(model)
+        ) {
+          return;
+        }
         await setSetting(SELECTED_MODEL_KEY, model);
         setSelectedModel(model);
-        const targetProvider = providerId ?? selectedProvider;
         if (targetProvider) {
           await loadModelCapabilitiesIfMissing(targetProvider, model);
         }
@@ -455,13 +492,19 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [selectedProvider, loadModelCapabilitiesIfMissing]
+    [selectedProvider, planCatalogSlugs, loadModelCapabilitiesIfMissing]
   );
 
   const selectProviderAndModel = useCallback(
     async (providerId: string, model: string): Promise<void> => {
       setError(null);
       try {
+        if (
+          providerId === CHATGPT_PLAN_PROVIDER &&
+          !planCatalogSlugs.includes(model)
+        ) {
+          return;
+        }
         if (providerId !== selectedProvider) {
           await setSetting(SELECTED_PROVIDER_KEY, providerId);
           setSelectedProvider(providerId);
@@ -473,7 +516,7 @@ export function useProviders(): ProvidersStore {
         setError(toCommandError(e));
       }
     },
-    [selectedProvider, loadModelCapabilitiesIfMissing]
+    [selectedProvider, planCatalogSlugs, loadModelCapabilitiesIfMissing]
   );
 
   const selectEffort = useCallback(
@@ -720,15 +763,30 @@ export function useProviders(): ProvidersStore {
           definition.name === CHATGPT_PLAN_PROVIDER
             ? Boolean(chatgptOAuth?.connected)
             : credentialedNames.has(definition.name);
+        const visiblePlanModels =
+          definition.name === CHATGPT_PLAN_PROVIDER && chatgptOAuth?.connected
+            ? (chatgptOAuth.models ?? [])
+            : [];
         const models =
           definition.name === CHATGPT_PLAN_PROVIDER
-            ? (chatgptOAuth?.models ?? []).map((model) => model.slug)
+            ? visiblePlanModels.map((model) => model.slug)
             : definition.models;
+        const modelLabels =
+          definition.name === CHATGPT_PLAN_PROVIDER &&
+          visiblePlanModels.length > 0
+            ? Object.fromEntries(
+                visiblePlanModels.map((model) => [
+                  model.slug,
+                  model.display_name,
+                ])
+              )
+            : undefined;
         return {
           supported:
             definition.name === CHATGPT_PLAN_PROVIDER
               ? { ...definition, models }
               : definition,
+          modelLabels,
           configured: isConfigured,
           credentialed,
           available:

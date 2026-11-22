@@ -159,7 +159,11 @@ export interface ChatGptOAuthStatus {
   expires_at: number | null;
   connected_at: number | null;
   auth_mode: "oauth" | "none";
-  problem: "cleanup_required" | "other_instance" | null;
+  problem:
+    | "cleanup_required"
+    | "other_instance"
+    | "reauthorization_required"
+    | null;
   models: { slug: string; display_name: string }[];
 }
 

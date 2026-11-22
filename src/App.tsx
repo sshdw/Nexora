@@ -83,6 +83,7 @@ export function buildConnectionGroups(
         entry.supported.name,
         capabilities
       ),
+      ...(entry.modelLabels ? { modelLabels: entry.modelLabels } : {}),
     }));
 }
 

@@ -94,8 +94,10 @@ describe("CredentialsSection & ProviderSection — ChatGPT subscription", () => 
       })
     ).toBeTruthy();
     const signInBtn = screen.getByRole("button", {
-      name: "Continue with ChatGPT",
+      name: "Sign in with ChatGPT",
     }) as HTMLButtonElement;
+    expect(signInBtn.className).toContain("nex-siwc-btn");
+    expect(signInBtn.querySelector("svg")).not.toBeNull();
     expect(signInBtn.disabled).toBe(true);
 
     fireEvent.click(
@@ -152,9 +154,43 @@ describe("CredentialsSection & ProviderSection — ChatGPT subscription", () => 
     expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
 
     expect(screen.getByText("OAuth connected")).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Manage usage in ChatGPT" })
+    ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Refresh token" }));
     expect(store.refreshChatGptOAuth).toHaveBeenCalledTimes(1);
 
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect OAuth" }));
+    expect(store.disconnectChatGptOAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers direct reauthorization with the preserved registration when reauthorization is required", () => {
+    const base = makeStore();
+    const store = makeStore({
+      chatgptOAuth: {
+        ...base.chatgptOAuth!,
+        connected: false,
+        problem: "reauthorization_required",
+      },
+    });
+    render(
+      <LocaleProvider>
+        <CredentialsSection
+          store={store}
+          draftKeys={{}}
+          onDraftChange={vi.fn()}
+          onConnect={vi.fn()}
+          onDisconnect={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+    expect(screen.getByText("Reauthorization required")).toBeTruthy();
+    const signInBtn = screen.getByRole("button", {
+      name: "Sign in with ChatGPT",
+    }) as HTMLButtonElement;
+    expect(signInBtn.disabled).toBe(false);
+    fireEvent.click(signInBtn);
+    expect(store.startChatGptOAuth).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Disconnect OAuth" }));
     expect(store.disconnectChatGptOAuth).toHaveBeenCalledTimes(1);
   });
@@ -176,7 +212,7 @@ describe("CredentialsSection & ProviderSection — ChatGPT subscription", () => 
       </LocaleProvider>
     );
     expect(
-      screen.queryByRole("button", { name: "Continue with ChatGPT" })
+      screen.queryByRole("button", { name: "Sign in with ChatGPT" })
     ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry cleanup" }));
     expect(store.disconnectChatGptOAuth).toHaveBeenCalledTimes(1);
@@ -199,7 +235,7 @@ describe("CredentialsSection & ProviderSection — ChatGPT subscription", () => 
       </LocaleProvider>
     );
     expect(
-      screen.queryByRole("button", { name: "Continue with ChatGPT" })
+      screen.queryByRole("button", { name: "Sign in with ChatGPT" })
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Retry cleanup" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));

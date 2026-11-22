@@ -239,6 +239,8 @@ export const en = {
   "conv.hintSend": "Enter to send · Shift+Enter for a new line",
   "conv.hintSetup": "Choose a provider and model in Settings to send messages.",
   "conv.openSettings": "Open Settings",
+  "conv.chatgptPlanUsage": "Using your ChatGPT plan",
+  "conv.chatgptPlanManageUsage": "Manage usage",
   "conv.autonomyLabel": "Autonomy",
   "conv.autonomyAria": "Autonomy mode",
   "conv.autonomySupervised": "Supervised",
@@ -664,7 +666,7 @@ export const en = {
   "settings.chatgptOAuthNotConnected": "Not connected",
   "settings.chatgptOAuthActiveHint":
     "Select ChatGPT subscription as the provider to use your plan allowance.",
-  "settings.chatgptOAuthSignIn": "Continue with ChatGPT",
+  "settings.chatgptOAuthSignIn": "Sign in with ChatGPT",
   "settings.chatgptOAuthSigningIn": "Waiting for browser…",
   "settings.chatgptOAuthRefresh": "Refresh token",
   "settings.chatgptOAuthDisconnect": "Disconnect OAuth",
@@ -677,6 +679,10 @@ export const en = {
   "settings.chatgptOAuthCleanupHint":
     "Nexora cannot use the stored connection. Retry cleanup to reconnect.",
   "settings.chatgptOAuthRetryCleanup": "Retry cleanup",
+  "settings.chatgptOAuthReauthRequired": "Reauthorization required",
+  "settings.chatgptOAuthReauthHint":
+    "Your ChatGPT authorization expired or was revoked. Sign in again to reconnect, or disconnect.",
+  "settings.chatgptOAuthManageUsage": "Manage usage in ChatGPT",
   "settings.dataHint":
     "All application data lives in a single local SQLite database on this device. Nothing is synchronized anywhere. Individual conversations and prompts are managed from the sidebar and Prompt Library.",
   "settings.transfer": "Conversation transfer",

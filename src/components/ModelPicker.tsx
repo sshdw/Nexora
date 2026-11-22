@@ -30,6 +30,8 @@ export interface ModelConnectionGroup {
   connectionId: string;
   connectionName: string;
   models: readonly string[];
+  /** Optional display labels keyed by model slug (e.g. ChatGPT account catalog). */
+  modelLabels?: Readonly<Record<string, string>>;
 }
 
 export interface ModelPickerProps {
@@ -37,6 +39,8 @@ export interface ModelPickerProps {
   selectedModel: string | null;
   /** Models offered by the selected provider. */
   models: readonly string[];
+  /** Optional display labels keyed by model slug for flat mode. */
+  modelLabels?: Readonly<Record<string, string>>;
   /** Persist a model choice. The provider store owns the result. */
   onSelectModel: (model: string) => void;
   /** Optional connection-grouped model catalog. */
@@ -62,6 +66,7 @@ export interface ModelPickerProps {
 interface PickerEntry {
   key: string;
   model: string;
+  label: string;
   connectionId: string | null;
   connectionName: string | null;
 }
@@ -69,6 +74,7 @@ interface PickerEntry {
 export default function ModelPicker({
   selectedModel,
   models,
+  modelLabels,
   onSelectModel,
   connectionGroups,
   selectedConnectionId = null,
@@ -100,6 +106,7 @@ export default function ModelPicker({
           out.push({
             key: `${group.connectionId}::${model}`,
             model,
+            label: group.modelLabels?.[model] ?? modelLabels?.[model] ?? model,
             connectionId: group.connectionId,
             connectionName: group.connectionName,
           });
@@ -110,16 +117,31 @@ export default function ModelPicker({
     return models.map((model) => ({
       key: model,
       model,
+      label: modelLabels?.[model] ?? model,
       connectionId: selectedConnectionId,
       connectionName: null,
     }));
-  }, [groupedMode, connectionGroups, models, selectedConnectionId]);
+  }, [groupedMode, connectionGroups, models, modelLabels, selectedConnectionId]);
+
+  const selectedModelLabel = useMemo(() => {
+    if (selectedModel === null) return null;
+    const matched = entries.find(
+      (entry) =>
+        entry.model === selectedModel &&
+        (!groupedMode ||
+          !selectedConnectionId ||
+          entry.connectionId === selectedConnectionId)
+    );
+    if (matched) return matched.label;
+    return modelLabels?.[selectedModel] ?? selectedModel;
+  }, [entries, groupedMode, modelLabels, selectedConnectionId, selectedModel]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (needle === "") return entries;
     return entries.filter(
       (entry) =>
+        entry.label.toLowerCase().includes(needle) ||
         entry.model.toLowerCase().includes(needle) ||
         (entry.connectionName !== null &&
           entry.connectionName.toLowerCase().includes(needle))
@@ -269,7 +291,7 @@ export default function ModelPicker({
           /* `shrink` is load-bearing, not decorative: see Composer.test.tsx. */
           className="nex-composer-model-trigger shrink"
           aria-label={t("conv.modePickerAria")}
-          title={selectedModel ?? t("conv.modelTagTitle")}
+          title={selectedModelLabel ?? t("conv.modelTagTitle")}
         >
           <span
             className={
@@ -278,7 +300,7 @@ export default function ModelPicker({
                 : "nex-composer-model-name"
             }
           >
-            {selectedModel ?? t("conv.modelNone")}
+            {selectedModelLabel ?? t("conv.modelNone")}
           </span>
           {effectiveEffort && (
             <span className="nex-composer-model-effort-pill" aria-hidden="true">
@@ -378,9 +400,9 @@ export default function ModelPicker({
                   >
                     <span
                       className="nex-composer-model-option-name"
-                      title={entry.model}
+                      title={entry.label}
                     >
-                      {entry.model}
+                      {entry.label}
                     </span>
                     {selected && (
                       <CheckIcon

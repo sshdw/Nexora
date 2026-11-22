@@ -362,16 +362,23 @@ fn exists_with_dyn(
 impl CredentialSource for CredentialStore {
     fn exists(&self, provider: &str) -> Result<bool, CredentialError> {
         if provider == super::chatgpt_plan::PROVIDER_NAME {
-            super::chatgpt_oauth::ensure_desktop_lease()
+            let scope = super::chatgpt_oauth::ensure_desktop_lease()
                 .map_err(|_| CredentialError::StorageUnavailable)?;
+            return super::chatgpt_oauth::ChatGptOAuthStore::is_connected_with_scope(
+                &KeyringBackend,
+                &scope,
+            )
+            .map_err(|_| CredentialError::StorageUnavailable);
         }
         provider_credential_exists_with(&KeyringBackend, &KeyringBackend, provider)
     }
 
     fn read(&self, provider: &str) -> Result<Option<String>, CredentialError> {
         if provider == super::chatgpt_plan::PROVIDER_NAME {
-            super::chatgpt_oauth::ensure_desktop_lease()
+            let scope = super::chatgpt_oauth::ensure_desktop_lease()
                 .map_err(|_| CredentialError::StorageUnavailable)?;
+            return super::chatgpt_oauth::session_reference_with_scope(&KeyringBackend, &scope)
+                .map_err(|_| CredentialError::StorageUnavailable);
         }
         resolve_provider_credential_with(&KeyringBackend, &KeyringBackend, provider)
     }
@@ -722,10 +729,10 @@ mod tests {
     }
 
     #[test]
-    fn keyring_namespaces_isolate_all_eighteen_providers() {
+    fn keyring_namespaces_isolate_all_seventeen_providers() {
         let backend = InMemoryBackend::new();
         let providers = crate::infrastructure::providers::supported_providers();
-        assert_eq!(providers.len(), 18);
+        assert_eq!(providers.len(), 17);
 
         for (idx, provider) in providers.iter().enumerate() {
             let secret = format!("sk-isolated-{idx}-{}", provider.name);
@@ -772,6 +779,7 @@ mod tests {
             scope: Some("chatgpt.tokens.use.direct".into()),
             connected_at: 1234,
             identity: None,
+            reauthorization_required: false,
         };
         ChatGptOAuthStore::save_with(&oauth_backend, &tokens).unwrap();
         assert_eq!(

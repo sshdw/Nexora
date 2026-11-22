@@ -334,4 +334,37 @@ describe("ModelPicker — connection grouping and effort capabilities", () => {
     fireEvent.click(screen.getByRole("option", { name: "grok-3-mini" }));
     expect(onSelectConnectionModel).toHaveBeenCalledWith("xai", "grok-3-mini");
   });
+
+  it("renders returned display names in trigger and options while dispatching the underlying model slug", () => {
+    const onSelectConnectionModel = vi.fn();
+    renderPicker({
+      selectedModel: "gpt-5.4-plan",
+      selectedConnectionId: "chatgpt_subscription",
+      models: ["gpt-5.4-plan", "gpt-5.4-mini-plan"],
+      connectionGroups: [
+        {
+          connectionId: "chatgpt_subscription",
+          connectionName: "ChatGPT subscription",
+          models: ["gpt-5.4-plan", "gpt-5.4-mini-plan"],
+          modelLabels: {
+            "gpt-5.4-plan": "GPT-5.4",
+            "gpt-5.4-mini-plan": "GPT-5.4 Mini",
+          },
+        },
+      ],
+      onSelectConnectionModel,
+    });
+
+    const trigger = screen.getByRole("button", { name: "Agent mode and model" });
+    expect(trigger).toHaveTextContent("GPT-5.4");
+
+    openPicker();
+    expect(screen.getByRole("option", { name: "GPT-5.4" })).toBeInTheDocument();
+    const miniOption = screen.getByRole("option", { name: "GPT-5.4 Mini" });
+    fireEvent.click(miniOption);
+    expect(onSelectConnectionModel).toHaveBeenCalledWith(
+      "chatgpt_subscription",
+      "gpt-5.4-mini-plan"
+    );
+  });
 });

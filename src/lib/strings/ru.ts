@@ -221,6 +221,8 @@ export const ru: Record<StringKey, string> = {
   "conv.hintSetup":
     "Чтобы отправлять сообщения, выберите провайдера и модель в настройках.",
   "conv.openSettings": "Открыть настройки",
+  "conv.chatgptPlanUsage": "Используется ваша подписка ChatGPT",
+  "conv.chatgptPlanManageUsage": "Управление лимитами",
   "conv.autonomyLabel": "Автономность",
   "conv.autonomyAria": "Режим автономности",
   "conv.autonomySupervised": "Под присмотром",
@@ -616,7 +618,7 @@ export const ru: Record<StringKey, string> = {
   "settings.chatgptOAuthNotConnected": "Не подключён",
   "settings.chatgptOAuthActiveHint":
     "Выберите подписку ChatGPT в списке провайдеров, чтобы использовать лимит подписки.",
-  "settings.chatgptOAuthSignIn": "Продолжить с ChatGPT",
+  "settings.chatgptOAuthSignIn": "Войти через ChatGPT",
   "settings.chatgptOAuthSigningIn": "Ожидание браузера…",
   "settings.chatgptOAuthRefresh": "Обновить токен",
   "settings.chatgptOAuthDisconnect": "Отключить OAuth",
@@ -629,6 +631,10 @@ export const ru: Record<StringKey, string> = {
   "settings.chatgptOAuthCleanupHint":
     "Nexora не может использовать сохранённый доступ. Повторите очистку, чтобы подключиться заново.",
   "settings.chatgptOAuthRetryCleanup": "Повторить очистку",
+  "settings.chatgptOAuthReauthRequired": "Требуется повторный вход",
+  "settings.chatgptOAuthReauthHint":
+    "Срок действия доступа ChatGPT истёк или он был отозван. Войдите снова для переподключения или отключите интеграцию.",
+  "settings.chatgptOAuthManageUsage": "Управление лимитами в ChatGPT",
   "settings.dataHint":
     "Все данные приложения живут в одной локальной SQLite-базе на этом устройстве. Ничего никуда не синхронизируется. Отдельные разговоры и промпты управляются из боковой панели и библиотеки промптов.",
   "settings.transfer": "Перенос разговоров",

@@ -19,8 +19,9 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -86,32 +87,103 @@ const MAX_KEYRING_CHUNKS: usize = 32;
 // Serialize the keyring transaction, refresh, and disconnect. The epoch also
 // invalidates any sign-in that is waiting outside the lock for its browser.
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
-// The OS keyring is shared by desktop instances. Keep one owner of this
-// OAuth feature for the entire process lifetime; a crashed owner releases it.
-static DESKTOP_LEASE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+// Bind the process lease and OS keyring scope to the same canonical app-data
+// directory so processes with distinct database roots never contend for the
+// same keyring slots, host identity, or disconnect markers.
+static DESKTOP_LEASE: Mutex<Option<DesktopLease>> = Mutex::new(None);
 static BROWSER_SIGN_IN: Mutex<()> = Mutex::new(());
+static ACTIVE_SIGN_IN_CANCEL: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 static DISCONNECT_REQUIRED: AtomicBool = AtomicBool::new(false);
 static SESSION_EPOCH: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_CALLS: Mutex<Vec<(Uuid, CancellationToken)>> = Mutex::new(Vec::new());
 const DISCONNECT_PENDING: &str = "disconnect-pending";
 
-pub(crate) fn ensure_desktop_lease() -> Result<(), ChatGptOAuthError> {
+/// Deterministic keyring namespace bound to a relocatable app-data directory.
+///
+/// Production always acquires a [`KeyringScope`] alongside the directory lease
+/// via [`ensure_desktop_lease`]; unit tests without a filesystem directory may
+/// use [`KeyringScope::unscoped`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyringScope {
+    id: Option<String>,
+}
+
+impl KeyringScope {
+    #[must_use]
+    pub(crate) const fn unscoped() -> Self {
+        Self { id: None }
+    }
+
+    /// Derive a stable, collision-resistant keyring scope from a canonical
+    /// app-data directory path.
+    pub(crate) fn for_directory(directory: &Path) -> Result<Self, ChatGptOAuthError> {
+        let canonical =
+            std::fs::canonicalize(directory).map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
+        #[cfg(windows)]
+        let normalized = canonical
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .into_bytes();
+        #[cfg(not(windows))]
+        let normalized = canonical.as_os_str().as_encoded_bytes().to_vec();
+        let digest = Sha256::digest(&normalized);
+        let mut id = String::with_capacity(32);
+        for byte in &digest[..16] {
+            use std::fmt::Write as _;
+            let _ = write!(&mut id, "{byte:02x}");
+        }
+        Ok(Self { id: Some(id) })
+    }
+
+    #[must_use]
+    fn root_key(&self) -> String {
+        match &self.id {
+            Some(id) => format!("{CHATGPT_OAUTH_KEYRING_KEY}.{id}"),
+            None => CHATGPT_OAUTH_KEYRING_KEY.to_owned(),
+        }
+    }
+
+    #[must_use]
+    fn chunk_key(&self, slot: u8, index: usize) -> String {
+        format!("{}.s{slot}.{index}", self.root_key())
+    }
+
+    #[must_use]
+    fn host_id_key(&self) -> String {
+        match &self.id {
+            Some(id) => format!("{HOST_ID_KEY}.{id}"),
+            None => HOST_ID_KEY.to_owned(),
+        }
+    }
+}
+
+struct DesktopLease {
+    _lock: std::fs::File,
+    scope: KeyringScope,
+}
+
+pub(crate) fn ensure_desktop_lease() -> Result<KeyringScope, ChatGptOAuthError> {
     let mut lease = DESKTOP_LEASE
         .lock()
         .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
-    if lease.is_some() {
-        return Ok(());
+    if let Some(existing) = lease.as_ref() {
+        return Ok(existing.scope.clone());
     }
     let database = nexora_core::storage::app_data::database_path()
         .ok_or(ChatGptOAuthError::KeyringUnavailable)?;
     let directory = database
         .parent()
         .ok_or(ChatGptOAuthError::KeyringUnavailable)?;
-    *lease = Some(acquire_desktop_lease(directory)?);
-    Ok(())
+    let lock = acquire_desktop_lease(directory)?;
+    let scope = KeyringScope::for_directory(directory)?;
+    *lease = Some(DesktopLease {
+        _lock: lock,
+        scope: scope.clone(),
+    });
+    Ok(scope)
 }
 
-fn acquire_desktop_lease(directory: &std::path::Path) -> Result<std::fs::File, ChatGptOAuthError> {
+fn acquire_desktop_lease(directory: &Path) -> Result<std::fs::File, ChatGptOAuthError> {
     let failure = ChatGptOAuthError::KeyringUnavailable;
     let directory =
         Dir::open_ambient_dir(directory, cap_std::ambient_authority()).map_err(|_| failure)?;
@@ -149,8 +221,49 @@ fn require_no_pending_disconnect() -> Result<(), ChatGptOAuthError> {
     Ok(())
 }
 
+struct SignInCancelGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl SignInCancelGuard {
+    fn register() -> Result<Self, ChatGptOAuthError> {
+        let flag = Arc::new(AtomicBool::new(false));
+        let mut slot = ACTIVE_SIGN_IN_CANCEL
+            .lock()
+            .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
+        *slot = Some(Arc::clone(&flag));
+        Ok(Self { flag })
+    }
+
+    fn signal(&self) -> &AtomicBool {
+        &self.flag
+    }
+}
+
+impl Drop for SignInCancelGuard {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = ACTIVE_SIGN_IN_CANCEL.lock() {
+            if slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.flag))
+            {
+                *slot = None;
+            }
+        }
+    }
+}
+
+fn cancel_active_sign_in() {
+    if let Ok(slot) = ACTIVE_SIGN_IN_CANCEL.lock() {
+        if let Some(flag) = slot.as_ref() {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 fn invalidate_session() -> Result<(), ChatGptOAuthError> {
     SESSION_EPOCH.fetch_add(1, Ordering::SeqCst);
+    cancel_active_sign_in();
     let mut active = ACTIVE_CALLS
         .lock()
         .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
@@ -199,6 +312,12 @@ pub(crate) enum ChatGptOAuthError {
     TokenExchangeFailed,
     /// Refreshing the stored OAuth token failed or no refresh token is stored.
     TokenRefreshFailed,
+    /// Refreshing the stored OAuth token failed transiently (network/5xx/rate limit);
+    /// the stored grant remains intact for retry.
+    TokenRefreshTransient,
+    /// The stored OAuth grant was terminally rejected or revoked and requires
+    /// interactive reauthorization (the verified client registration is preserved).
+    ReauthorizationRequired,
     /// Token endpoint response exceeded the safety size limit.
     ResponseTooLarge,
     /// No ChatGPT OAuth session is currently stored in the keyring.
@@ -246,6 +365,18 @@ impl std::fmt::Display for ChatGptOAuthError {
                 write!(
                     f,
                     "ChatGPT OAuth token refresh failed; please sign in again"
+                )
+            }
+            Self::TokenRefreshTransient => {
+                write!(
+                    f,
+                    "ChatGPT OAuth token refresh failed temporarily; please try again"
+                )
+            }
+            Self::ReauthorizationRequired => {
+                write!(
+                    f,
+                    "ChatGPT OAuth authorization expired or was revoked; please sign in again"
                 )
             }
             Self::ResponseTooLarge => {
@@ -358,6 +489,7 @@ pub(crate) struct ChatGptOAuthStatus {
 pub(crate) enum ChatGptOAuthProblem {
     CleanupRequired,
     OtherInstance,
+    ReauthorizationRequired,
 }
 
 impl ChatGptOAuthStatus {
@@ -393,6 +525,8 @@ pub(crate) struct StoredChatGptOAuthTokens {
     pub connected_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<PlanIdentity>,
+    #[serde(default)]
+    pub reauthorization_required: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -440,27 +574,56 @@ impl std::fmt::Debug for StoredChatGptOAuthTokens {
 
 impl StoredChatGptOAuthTokens {
     #[must_use]
+    pub(crate) fn reauthorization_required(mut identity: PlanIdentity) -> Self {
+        identity.models.clear();
+        Self {
+            access_token: String::new(),
+            refresh_token: None,
+            expires_at: None,
+            token_type: None,
+            scope: None,
+            connected_at: 0,
+            identity: Some(identity),
+            reauthorization_required: true,
+        }
+    }
+
+    #[must_use]
     pub(crate) fn status(&self) -> ChatGptOAuthStatus {
-        let connected = self
+        let has_verified_identity = self
             .identity
             .as_ref()
-            .is_some_and(|identity| is_issued_client(&identity.client_id))
+            .is_some_and(|identity| is_issued_client(&identity.client_id));
+        let has_refresh = self
+            .refresh_token
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        let expired_without_refresh =
+            !has_refresh && self.expires_at.is_some_and(|exp| now_unix_secs() >= exp);
+        let reauth_required =
+            has_verified_identity && (self.reauthorization_required || expired_without_refresh);
+        let connected = has_verified_identity
+            && !reauth_required
             && has_plan_scope(self.scope.as_deref())
             && !self.access_token.trim().is_empty();
+        let problem = if connected {
+            None
+        } else if reauth_required {
+            Some(ChatGptOAuthProblem::ReauthorizationRequired)
+        } else {
+            Some(ChatGptOAuthProblem::CleanupRequired)
+        };
         ChatGptOAuthStatus {
             connected,
-            has_refresh_token: self
-                .refresh_token
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty()),
-            expires_at: self.expires_at,
+            has_refresh_token: connected && has_refresh,
+            expires_at: if connected { self.expires_at } else { None },
             connected_at: if connected && self.connected_at > 0 {
                 Some(self.connected_at)
             } else {
                 None
             },
             auth_mode: if connected { "oauth" } else { "none" },
-            problem: (!connected).then_some(ChatGptOAuthProblem::CleanupRequired),
+            problem,
             models: self
                 .identity
                 .as_ref()
@@ -484,8 +647,9 @@ struct KeyringChunkManifest {
     cleanup_pending: bool,
 }
 
+#[cfg(test)]
 fn chunk_entry_key(slot: u8, index: usize) -> String {
-    format!("{CHATGPT_OAUTH_KEYRING_KEY}.s{slot}.{index}")
+    KeyringScope::unscoped().chunk_key(slot, index)
 }
 
 fn split_into_keyring_chunks(payload: &str) -> Result<Vec<String>, ChatGptOAuthError> {
@@ -518,30 +682,44 @@ fn split_into_keyring_chunks(payload: &str) -> Result<Vec<String>, ChatGptOAuthE
 pub(crate) struct ChatGptOAuthStore;
 
 impl ChatGptOAuthStore {
+    #[cfg(test)]
     pub(crate) fn save_with(
         backend: &dyn CredentialBackend,
+        tokens: &StoredChatGptOAuthTokens,
+    ) -> Result<(), ChatGptOAuthError> {
+        Self::save_with_scope(backend, &KeyringScope::unscoped(), tokens)
+    }
+
+    pub(crate) fn save_with_scope(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
         tokens: &StoredChatGptOAuthTokens,
     ) -> Result<(), ChatGptOAuthError> {
         let payload =
             serde_json::to_string(tokens).map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
         let chunks = split_into_keyring_chunks(&payload)?;
 
-        let previous = Self::read_root(backend)?;
-        let previous_manifest = previous
+        let previous = Self::read_root(backend, scope)?;
+        let mut previous_manifest = previous
             .as_deref()
             .map(Self::parse_root)
             .transpose()?
             .flatten();
+        // If a prior commit crashed or failed while deleting its stale slot,
+        // finish deleting that stale slot first without touching the active slot.
+        if let Some(prev) = previous_manifest.as_mut() {
+            Self::finish_pending_cleanup(backend, scope, prev)?;
+        }
         let next_slot = previous_manifest.map_or(0, |manifest| 1 - manifest.slot);
-        Self::delete_slot(backend, next_slot, MAX_KEYRING_CHUNKS)?;
+        Self::delete_slot(backend, scope, next_slot, MAX_KEYRING_CHUNKS)?;
 
         for (index, chunk) in chunks.iter().enumerate() {
-            let key = chunk_entry_key(next_slot, index);
+            let key = scope.chunk_key(next_slot, index);
             if backend
                 .set_password(CHATGPT_OAUTH_KEYRING_SERVICE, &key, chunk)
                 .is_err()
             {
-                let _ = Self::delete_slot(backend, next_slot, index + 1);
+                let _ = Self::delete_slot(backend, scope, next_slot, index + 1);
                 return Err(ChatGptOAuthError::KeyringUnavailable);
             }
         }
@@ -551,20 +729,19 @@ impl ChatGptOAuthStore {
             chunks: chunks.len(),
             cleanup_pending: previous_manifest.is_some(),
         };
-        if let Err(err) = Self::write_manifest(backend, &manifest) {
-            let _ = Self::delete_slot(backend, next_slot, chunks.len());
+        if let Err(err) = Self::write_manifest(backend, scope, &manifest) {
+            let _ = Self::delete_slot(backend, scope, next_slot, chunks.len());
             return Err(err);
         }
-        if let Some(previous_manifest) = previous_manifest {
-            Self::delete_slot(backend, previous_manifest.slot, MAX_KEYRING_CHUNKS)?;
-            manifest.cleanup_pending = false;
-            Self::write_manifest(backend, &manifest)?;
-        }
+        Self::finish_pending_cleanup(backend, scope, &mut manifest)?;
         Ok(())
     }
 
-    fn read_root(backend: &dyn CredentialBackend) -> Result<Option<String>, ChatGptOAuthError> {
-        match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY) {
+    fn read_root(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<Option<String>, ChatGptOAuthError> {
+        match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, &scope.root_key()) {
             Ok(raw) => Ok(Some(raw)),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(_) => Err(ChatGptOAuthError::KeyringUnavailable),
@@ -572,13 +749,12 @@ impl ChatGptOAuthStore {
     }
 
     // Old builds could store a compact bundle in the root. Only a valid root
-    // can be used to decide which slot it is safe to overwrite.
+    // can be used to decide which slot it is safe to overwrite. A manifest with
+    // `cleanup_pending == true` points at an already-committed active slot and
+    // is recovered by finishing deletion of the stale opposite slot.
     fn parse_root(raw: &str) -> Result<Option<KeyringChunkManifest>, ChatGptOAuthError> {
         if let Ok(manifest) = serde_json::from_str::<KeyringChunkManifest>(raw) {
-            if manifest.slot > 1
-                || !(1..=MAX_KEYRING_CHUNKS).contains(&manifest.chunks)
-                || manifest.cleanup_pending
-            {
+            if manifest.slot > 1 || !(1..=MAX_KEYRING_CHUNKS).contains(&manifest.chunks) {
                 return Err(ChatGptOAuthError::KeyringUnavailable);
             }
             return Ok(Some(manifest));
@@ -588,18 +764,29 @@ impl ChatGptOAuthStore {
             .map_err(|_| ChatGptOAuthError::KeyringUnavailable)
     }
 
+    fn finish_pending_cleanup(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+        manifest: &mut KeyringChunkManifest,
+    ) -> Result<(), ChatGptOAuthError> {
+        if !manifest.cleanup_pending {
+            return Ok(());
+        }
+        let stale_slot = 1 - manifest.slot;
+        Self::delete_slot(backend, scope, stale_slot, MAX_KEYRING_CHUNKS)?;
+        manifest.cleanup_pending = false;
+        Self::write_manifest(backend, scope, manifest)
+    }
+
     fn write_manifest(
         backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
         manifest: &KeyringChunkManifest,
     ) -> Result<(), ChatGptOAuthError> {
         let raw =
             serde_json::to_string(manifest).map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
         backend
-            .set_password(
-                CHATGPT_OAUTH_KEYRING_SERVICE,
-                CHATGPT_OAUTH_KEYRING_KEY,
-                &raw,
-            )
+            .set_password(CHATGPT_OAUTH_KEYRING_SERVICE, &scope.root_key(), &raw)
             .map_err(|_| ChatGptOAuthError::KeyringUnavailable)
     }
 
@@ -612,31 +799,41 @@ impl ChatGptOAuthStore {
 
     fn delete_slot(
         backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
         slot: u8,
         chunks: usize,
     ) -> Result<(), ChatGptOAuthError> {
         let mut result = Ok(());
         for index in 0..chunks {
-            if let Err(err) = Self::delete_entry(backend, &chunk_entry_key(slot, index)) {
+            if let Err(err) = Self::delete_entry(backend, &scope.chunk_key(slot, index)) {
                 result = Err(err);
             }
         }
         result
     }
 
+    #[cfg(test)]
     pub(crate) fn load_with(
         backend: &dyn CredentialBackend,
     ) -> Result<Option<StoredChatGptOAuthTokens>, ChatGptOAuthError> {
-        let Some(raw) = Self::read_root(backend)? else {
+        Self::load_with_scope(backend, &KeyringScope::unscoped())
+    }
+
+    pub(crate) fn load_with_scope(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<Option<StoredChatGptOAuthTokens>, ChatGptOAuthError> {
+        let Some(raw) = Self::read_root(backend, scope)? else {
             return Ok(None);
         };
-        if let Some(manifest) = Self::parse_root(&raw)? {
+        if let Some(mut manifest) = Self::parse_root(&raw)? {
+            Self::finish_pending_cleanup(backend, scope, &mut manifest)?;
             let mut assembled = String::with_capacity(manifest.chunks * MAX_KEYRING_CHUNK_CHARS);
             for idx in 0..manifest.chunks {
                 let chunk = backend
                     .get_password(
                         CHATGPT_OAUTH_KEYRING_SERVICE,
-                        &chunk_entry_key(manifest.slot, idx),
+                        &scope.chunk_key(manifest.slot, idx),
                     )
                     .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
                 assembled.push_str(&chunk);
@@ -653,65 +850,95 @@ impl ChatGptOAuthStore {
 
     /// Delete stored ChatGPT OAuth tokens from the OS keyring (idempotent).
     pub(crate) fn clear() -> Result<(), ChatGptOAuthError> {
-        ensure_desktop_lease()?;
+        let scope = ensure_desktop_lease()?;
         let _guard = session_lock()?;
         DISCONNECT_REQUIRED.store(true, Ordering::SeqCst);
         invalidate_session()?;
-        let tokens = Self::load_with(&KeyringBackend);
-        Self::mark_disconnect_pending(&KeyringBackend)?;
+        let tokens = Self::load_with_scope(&KeyringBackend, &scope);
+        Self::mark_disconnect_pending(&KeyringBackend, &scope)?;
         let revocation = match tokens {
             Ok(Some(tokens)) => revoke_session(&ChatGptOAuthConfig::default(), &tokens),
             Ok(None) => Ok(()),
             Err(_) => Err(ChatGptOAuthError::RevocationUnconfirmed),
         };
-        Self::clear_chunks(&KeyringBackend)?;
+        Self::clear_chunks(&KeyringBackend, &scope)?;
         DISCONNECT_REQUIRED.store(false, Ordering::SeqCst);
         revocation
     }
 
     #[cfg(test)]
     pub(crate) fn clear_with(backend: &dyn CredentialBackend) -> Result<(), ChatGptOAuthError> {
-        Self::mark_disconnect_pending(backend)?;
-        Self::clear_chunks(backend)
+        Self::clear_with_scope(backend, &KeyringScope::unscoped())
     }
 
-    fn mark_disconnect_pending(backend: &dyn CredentialBackend) -> Result<(), ChatGptOAuthError> {
+    #[cfg(test)]
+    pub(crate) fn clear_with_scope(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<(), ChatGptOAuthError> {
+        Self::mark_disconnect_pending(backend, scope)?;
+        Self::clear_chunks(backend, scope)
+    }
+
+    fn mark_disconnect_pending(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<(), ChatGptOAuthError> {
         // Publish a durable deny marker before touching any chunks. A partial
         // delete stays recoverable after restart and cannot be used to infer.
         backend
             .set_password(
                 CHATGPT_OAUTH_KEYRING_SERVICE,
-                CHATGPT_OAUTH_KEYRING_KEY,
+                &scope.root_key(),
                 DISCONNECT_PENDING,
             )
             .map_err(|_| ChatGptOAuthError::KeyringUnavailable)
     }
 
-    fn clear_chunks(backend: &dyn CredentialBackend) -> Result<(), ChatGptOAuthError> {
-        let first = Self::delete_slot(backend, 0, MAX_KEYRING_CHUNKS);
-        let second = Self::delete_slot(backend, 1, MAX_KEYRING_CHUNKS);
+    fn clear_chunks(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<(), ChatGptOAuthError> {
+        let first = Self::delete_slot(backend, scope, 0, MAX_KEYRING_CHUNKS);
+        let second = Self::delete_slot(backend, scope, 1, MAX_KEYRING_CHUNKS);
         first.and(second)?;
-        Self::delete_entry(backend, CHATGPT_OAUTH_KEYRING_KEY)
+        Self::delete_entry(backend, &scope.root_key())
     }
 
     /// Report secret-free connection status from the OS keyring.
     pub(crate) fn status() -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
-        ensure_desktop_lease()?;
-        Self::status_with(&KeyringBackend)
+        let scope = ensure_desktop_lease()?;
+        Self::status_with_scope(&KeyringBackend, &scope)
     }
 
+    #[cfg(test)]
     pub(crate) fn status_with(
         backend: &dyn CredentialBackend,
     ) -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
+        Self::status_with_scope(backend, &KeyringScope::unscoped())
+    }
+
+    pub(crate) fn status_with_scope(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
         let _guard = session_lock()?;
         require_no_pending_disconnect()?;
-        Ok(Self::load_with(backend)?.map_or_else(ChatGptOAuthStatus::disconnected, |t| t.status()))
+        Ok(Self::load_with_scope(backend, scope)?
+            .map_or_else(ChatGptOAuthStatus::disconnected, |t| t.status()))
     }
 
     pub(crate) fn is_connected_with(
         backend: &dyn CredentialBackend,
     ) -> Result<bool, ChatGptOAuthError> {
-        Ok(Self::status_with(backend)?.connected)
+        Self::is_connected_with_scope(backend, &KeyringScope::unscoped())
+    }
+
+    pub(crate) fn is_connected_with_scope(
+        backend: &dyn CredentialBackend,
+        scope: &KeyringScope,
+    ) -> Result<bool, ChatGptOAuthError> {
+        Ok(Self::status_with_scope(backend, scope)?.connected)
     }
 }
 
@@ -900,15 +1127,32 @@ impl LoopbackCallbackServer {
     /// Returns [`ChatGptOAuthError::CallbackTimeout`],
     /// [`ChatGptOAuthError::AuthorizationDenied`],
     /// [`ChatGptOAuthError::MissingCode`], or [`ChatGptOAuthError::Cancelled`].
+    #[cfg(test)]
     pub(crate) fn wait_for_code(
         &self,
         expected_state: &str,
         timeout: Duration,
         cancel: Option<&AtomicBool>,
     ) -> Result<AuthorizationCallback, ChatGptOAuthError> {
+        self.wait_for_code_with_signals(expected_state, timeout, cancel, None, None)
+    }
+
+    fn wait_for_code_with_signals(
+        &self,
+        expected_state: &str,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+        session_cancel: Option<&AtomicBool>,
+        expected_epoch: Option<u64>,
+    ) -> Result<AuthorizationCallback, ChatGptOAuthError> {
+        let is_cancelled = || {
+            cancel.is_some_and(|flag| flag.load(Ordering::SeqCst))
+                || session_cancel.is_some_and(|flag| flag.load(Ordering::SeqCst))
+                || expected_epoch.is_some_and(|epoch| SESSION_EPOCH.load(Ordering::SeqCst) != epoch)
+        };
         let deadline = Instant::now() + timeout;
         loop {
-            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            if is_cancelled() {
                 return Err(ChatGptOAuthError::Cancelled);
             }
             if Instant::now() >= deadline {
@@ -916,9 +1160,12 @@ impl LoopbackCallbackServer {
             }
             match self.listener.accept() {
                 Ok((mut stream, _peer)) => {
-                    if let Some(outcome) =
-                        handle_callback_connection(&mut stream, expected_state, deadline, cancel)
-                    {
+                    if let Some(outcome) = handle_callback_connection(
+                        &mut stream,
+                        expected_state,
+                        deadline,
+                        &is_cancelled,
+                    ) {
                         return outcome;
                     }
                 }
@@ -935,7 +1182,7 @@ fn handle_callback_connection(
     stream: &mut TcpStream,
     expected_state: &str,
     deadline: Instant,
-    cancel: Option<&AtomicBool>,
+    is_cancelled: &dyn Fn() -> bool,
 ) -> Option<Result<AuthorizationCallback, ChatGptOAuthError>> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
@@ -943,7 +1190,7 @@ fn handle_callback_connection(
     let mut buf = [0u8; MAX_CALLBACK_REQUEST_BYTES];
     let mut filled = 0usize;
     while filled < MAX_CALLBACK_REQUEST_BYTES {
-        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+        if is_cancelled() {
             return Some(Err(ChatGptOAuthError::Cancelled));
         }
         let now = Instant::now();
@@ -952,7 +1199,7 @@ fn handle_callback_connection(
         }
         let read_timeout = deadline
             .saturating_duration_since(now)
-            .min(Duration::from_secs(1))
+            .min(Duration::from_millis(50))
             .max(Duration::from_millis(1));
         let _ = stream.set_read_timeout(Some(read_timeout));
         match stream.read(&mut buf[filled..]) {
@@ -965,7 +1212,13 @@ fn handle_callback_connection(
                     break;
                 }
             }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                ) => {}
             Err(_) => break,
         }
     }
@@ -1091,13 +1344,110 @@ fn now_unix_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// Machine-readable OAuth 2.0 token endpoint error codes (RFC 6749 §5.2).
+///
+/// Only the standard machine-readable `error` code is classified; raw
+/// `error_description` strings and response bodies are never retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OAuthTokenErrorCode {
+    InvalidRequest,
+    InvalidClient,
+    InvalidGrant,
+    UnauthorizedClient,
+    UnsupportedGrantType,
+    InvalidScope,
+    AccessDenied,
+    TemporarilyUnavailable,
+    ServerError,
+    Unknown,
+}
+
+impl OAuthTokenErrorCode {
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "invalid_request" => Self::InvalidRequest,
+            "invalid_client" => Self::InvalidClient,
+            "invalid_grant" => Self::InvalidGrant,
+            "unauthorized_client" => Self::UnauthorizedClient,
+            "unsupported_grant_type" => Self::UnsupportedGrantType,
+            "invalid_scope" => Self::InvalidScope,
+            "access_denied" => Self::AccessDenied,
+            "temporarily_unavailable" => Self::TemporarilyUnavailable,
+            "server_error" => Self::ServerError,
+            _ => Self::Unknown,
+        }
+    }
+
+    const fn is_terminal_grant_failure(self) -> bool {
+        matches!(
+            self,
+            Self::InvalidGrant | Self::UnauthorizedClient | Self::InvalidScope | Self::AccessDenied
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenEndpointError {
+    Transport,
+    ResponseTooLarge,
+    InvalidPayload,
+    Http {
+        status: u16,
+        code: OAuthTokenErrorCode,
+    },
+}
+
+impl TokenEndpointError {
+    const fn is_transient(self) -> bool {
+        match self {
+            Self::Transport => true,
+            Self::Http { status, code } => {
+                status == 429
+                    || status >= 500
+                    || matches!(
+                        code,
+                        OAuthTokenErrorCode::TemporarilyUnavailable
+                            | OAuthTokenErrorCode::ServerError
+                    )
+            }
+            Self::ResponseTooLarge | Self::InvalidPayload => false,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct OAuthErrorBody {
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn classify_token_http_error(status: reqwest::StatusCode, body: &[u8]) -> TokenEndpointError {
+    let parsed_code = serde_json::from_slice::<OAuthErrorBody>(body)
+        .ok()
+        .and_then(|payload| payload.error)
+        .map(|code| OAuthTokenErrorCode::parse(&code));
+    let code = parsed_code.unwrap_or_else(|| {
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            OAuthTokenErrorCode::TemporarilyUnavailable
+        } else if status.is_server_error() {
+            OAuthTokenErrorCode::ServerError
+        } else {
+            OAuthTokenErrorCode::Unknown
+        }
+    });
+    TokenEndpointError::Http {
+        status: status.as_u16(),
+        code,
+    }
+}
+
 fn post_token_form(
     token_url: Url,
     form: &[(&str, &str)],
     timeout: Duration,
-    failure_kind: ChatGptOAuthError,
-) -> Result<RawTokenResponse, ChatGptOAuthError> {
-    let client = oauth_client(timeout, failure_kind)?;
+) -> Result<RawTokenResponse, TokenEndpointError> {
+    let client = oauth_client(timeout, ChatGptOAuthError::TokenExchangeFailed)
+        .map_err(|_| TokenEndpointError::Transport)?;
     let encoded_form: String = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(form.iter().copied())
         .finish();
@@ -1107,8 +1457,21 @@ fn post_token_form(
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(encoded_form)
         .send()
-        .map_err(|_| failure_kind)?;
-    read_oauth_json(response, failure_kind)
+        .map_err(|_| TokenEndpointError::Transport)?;
+
+    let status = response.status();
+    let mut body = Vec::new();
+    response
+        .take(MAX_TOKEN_RESPONSE_BYTES as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|_| TokenEndpointError::Transport)?;
+    if body.len() > MAX_TOKEN_RESPONSE_BYTES {
+        return Err(TokenEndpointError::ResponseTooLarge);
+    }
+    if !status.is_success() {
+        return Err(classify_token_http_error(status, &body));
+    }
+    serde_json::from_slice(&body).map_err(|_| TokenEndpointError::InvalidPayload)
 }
 
 fn oauth_client(
@@ -1222,6 +1585,7 @@ fn make_record(
         scope: raw.scope,
         connected_at: now,
         identity: Some(identity),
+        reauthorization_required: false,
     })
 }
 
@@ -1330,8 +1694,17 @@ fn verify_id_token(
     Ok(claims.sub)
 }
 
+#[cfg(test)]
 fn host_id(backend: &dyn CredentialBackend) -> Result<String, ChatGptOAuthError> {
-    match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, HOST_ID_KEY) {
+    host_id_with_scope(backend, &KeyringScope::unscoped())
+}
+
+fn host_id_with_scope(
+    backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
+) -> Result<String, ChatGptOAuthError> {
+    let key = scope.host_id_key();
+    match backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, &key) {
         Ok(host) => {
             host.strip_prefix("urn:uuid:")
                 .and_then(|uuid| Uuid::parse_str(uuid).ok())
@@ -1341,7 +1714,7 @@ fn host_id(backend: &dyn CredentialBackend) -> Result<String, ChatGptOAuthError>
         Err(keyring::Error::NoEntry) => {
             let host = format!("urn:uuid:{}", Uuid::new_v4());
             backend
-                .set_password(CHATGPT_OAUTH_KEYRING_SERVICE, HOST_ID_KEY, &host)
+                .set_password(CHATGPT_OAUTH_KEYRING_SERVICE, &key, &host)
                 .map_err(|_| ChatGptOAuthError::KeyringUnavailable)?;
             Ok(host)
         }
@@ -1401,6 +1774,20 @@ fn list_plan_models(
     Ok(models)
 }
 
+struct ExchangeError {
+    error: ChatGptOAuthError,
+    verified_identity: Option<PlanIdentity>,
+}
+
+impl From<ChatGptOAuthError> for ExchangeError {
+    fn from(error: ChatGptOAuthError) -> Self {
+        Self {
+            error,
+            verified_identity: None,
+        }
+    }
+}
+
 fn exchange_code(
     config: &ChatGptOAuthConfig,
     callback: AuthorizationCallback,
@@ -1409,7 +1796,7 @@ fn exchange_code(
     nonce: &str,
     previous: Option<&PlanIdentity>,
     timeout: Duration,
-) -> Result<StoredChatGptOAuthTokens, ChatGptOAuthError> {
+) -> Result<StoredChatGptOAuthTokens, ExchangeError> {
     let failure = ChatGptOAuthError::TokenExchangeFailed;
     let client_id = match previous {
         Some(identity) => {
@@ -1418,7 +1805,7 @@ fn exchange_code(
                 .as_ref()
                 .is_some_and(|id| id != &identity.client_id)
             {
-                return Err(failure);
+                return Err(failure.into());
             }
             identity.client_id.clone()
         }
@@ -1435,59 +1822,129 @@ fn exchange_code(
         ("code_verifier", code_verifier),
         ("resource", PLAN_RESOURCE),
     ];
-    let mut raw = post_token_form(config.token_endpoint()?, &form, timeout, failure)?;
+    let mut raw = post_token_form(config.token_endpoint()?, &form, timeout).map_err(|err| {
+        let mapped = match err {
+            TokenEndpointError::ResponseTooLarge => ChatGptOAuthError::ResponseTooLarge,
+            TokenEndpointError::Http {
+                code: OAuthTokenErrorCode::AccessDenied | OAuthTokenErrorCode::InvalidScope,
+                ..
+            } => ChatGptOAuthError::AuthorizationDenied,
+            _ => failure,
+        };
+        ExchangeError::from(mapped)
+    })?;
     let id_token = raw.id_token.take().ok_or(failure)?;
     let subject = verify_id_token(config, &id_token, &client_id, nonce, timeout)?;
     if previous.is_some_and(|previous| previous.subject != subject) {
-        return Err(failure);
+        return Err(failure.into());
     }
+    let verified_identity = PlanIdentity {
+        client_id,
+        subject,
+        id_token,
+        models: Vec::new(),
+    };
     if !has_plan_scope(raw.scope.as_deref()) {
-        return Err(ChatGptOAuthError::AuthorizationDenied);
+        return Err(ExchangeError {
+            error: ChatGptOAuthError::AuthorizationDenied,
+            verified_identity: Some(verified_identity),
+        });
     }
-    let mut record = make_record(
-        raw,
-        PlanIdentity {
-            client_id,
-            subject,
-            id_token,
-            models: Vec::new(),
-        },
-        failure,
-    )?;
-    let models = list_plan_models(config, &record.access_token, timeout)?;
+    let mut record = match make_record(raw, verified_identity.clone(), failure) {
+        Ok(record) => record,
+        Err(error) => {
+            return Err(ExchangeError {
+                error,
+                verified_identity: Some(verified_identity),
+            });
+        }
+    };
+    let models = match list_plan_models(config, &record.access_token, timeout) {
+        Ok(models) => models,
+        Err(error) => {
+            return Err(ExchangeError {
+                error,
+                verified_identity: Some(verified_identity),
+            });
+        }
+    };
     if let Some(identity) = record.identity.as_mut() {
         identity.models = models;
     }
     Ok(record)
 }
 
+fn mark_reauthorization_required_locked(
+    backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
+    identity: PlanIdentity,
+) -> Result<(), ChatGptOAuthError> {
+    let unusable = StoredChatGptOAuthTokens::reauthorization_required(identity);
+    ChatGptOAuthStore::save_with_scope(backend, scope, &unusable)?;
+    invalidate_session()
+}
+
 fn refresh_tokens_locked(
     backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
     config: &ChatGptOAuthConfig,
     timeout: Duration,
 ) -> Result<StoredChatGptOAuthTokens, ChatGptOAuthError> {
-    let existing = ChatGptOAuthStore::load_with(backend)?.ok_or(ChatGptOAuthError::NotConnected)?;
-    let refresh = existing
-        .refresh_token
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or(ChatGptOAuthError::TokenRefreshFailed)?;
-
-    let failure = ChatGptOAuthError::TokenRefreshFailed;
+    let existing = ChatGptOAuthStore::load_with_scope(backend, scope)?
+        .ok_or(ChatGptOAuthError::NotConnected)?;
+    if existing.reauthorization_required {
+        return Err(ChatGptOAuthError::ReauthorizationRequired);
+    }
     let identity = existing
         .identity
         .clone()
         .filter(|identity| is_issued_client(&identity.client_id))
         .ok_or(ChatGptOAuthError::NotConnected)?;
+    let Some(refresh) = existing
+        .refresh_token
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    else {
+        mark_reauthorization_required_locked(backend, scope, identity)?;
+        return Err(ChatGptOAuthError::TokenRefreshFailed);
+    };
+
+    let failure = ChatGptOAuthError::TokenRefreshFailed;
     let form = [
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh),
         ("client_id", identity.client_id.as_str()),
         ("resource", PLAN_RESOURCE),
     ];
-    let mut raw = post_token_form(config.token_endpoint()?, &form, timeout, failure)?;
+    let mut raw = match post_token_form(config.token_endpoint()?, &form, timeout) {
+        Ok(raw) => raw,
+        Err(TokenEndpointError::ResponseTooLarge) => {
+            return Err(ChatGptOAuthError::ResponseTooLarge);
+        }
+        Err(TokenEndpointError::Http { code, .. }) if code.is_terminal_grant_failure() => {
+            mark_reauthorization_required_locked(backend, scope, identity)?;
+            return Err(ChatGptOAuthError::ReauthorizationRequired);
+        }
+        Err(TokenEndpointError::Http {
+            code: OAuthTokenErrorCode::InvalidClient,
+            ..
+        }) => {
+            ChatGptOAuthStore::mark_disconnect_pending(backend, scope)?;
+            ChatGptOAuthStore::clear_chunks(backend, scope)?;
+            invalidate_session()?;
+            return Err(ChatGptOAuthError::TokenRefreshFailed);
+        }
+        Err(err) if err.is_transient() => {
+            return Err(ChatGptOAuthError::TokenRefreshTransient);
+        }
+        Err(_) => return Err(failure),
+    };
     if raw.scope.is_none() {
         raw.scope.clone_from(&existing.scope);
+    }
+    if !has_plan_scope(raw.scope.as_deref()) {
+        mark_reauthorization_required_locked(backend, scope, identity)?;
+        return Err(ChatGptOAuthError::AuthorizationDenied);
     }
     let mut updated = make_record(raw, identity, failure)?;
     // Preserve previous refresh token and initial connected_at timestamp if not rotated.
@@ -1497,7 +1954,7 @@ fn refresh_tokens_locked(
     if existing.connected_at > 0 {
         updated.connected_at = existing.connected_at;
     }
-    ChatGptOAuthStore::save_with(backend, &updated)?;
+    ChatGptOAuthStore::save_with_scope(backend, scope, &updated)?;
     Ok(updated)
 }
 
@@ -1510,14 +1967,24 @@ fn refresh_tokens_locked(
 ///
 /// # Errors
 /// Returns a secret-free [`ChatGptOAuthError`].
+#[cfg(test)]
 pub(crate) fn refresh_tokens_with(
     backend: &dyn CredentialBackend,
     config: &ChatGptOAuthConfig,
     timeout: Duration,
 ) -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
+    refresh_tokens_with_scope(backend, &KeyringScope::unscoped(), config, timeout)
+}
+
+pub(crate) fn refresh_tokens_with_scope(
+    backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
+    config: &ChatGptOAuthConfig,
+    timeout: Duration,
+) -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
     let _guard = session_lock()?;
     require_no_pending_disconnect()?;
-    let updated = refresh_tokens_locked(backend, config, timeout)?;
+    let updated = refresh_tokens_locked(backend, scope, config, timeout)?;
     if updated.status().connected {
         Ok(updated.status())
     } else {
@@ -1531,9 +1998,10 @@ pub(crate) fn refresh_tokens_with(
 /// # Errors
 /// Returns a secret-free [`ChatGptOAuthError`].
 pub(crate) fn refresh_tokens() -> Result<ChatGptOAuthStatus, ChatGptOAuthError> {
-    ensure_desktop_lease()?;
-    refresh_tokens_with(
+    let scope = ensure_desktop_lease()?;
+    refresh_tokens_with_scope(
         &KeyringBackend,
+        &scope,
         &ChatGptOAuthConfig::default(),
         DEFAULT_OAUTH_HTTP_TIMEOUT,
     )
@@ -1544,9 +2012,16 @@ pub(crate) fn refresh_tokens() -> Result<ChatGptOAuthStatus, ChatGptOAuthError> 
 pub(crate) fn session_reference_with(
     backend: &dyn CredentialBackend,
 ) -> Result<Option<String>, ChatGptOAuthError> {
+    session_reference_with_scope(backend, &KeyringScope::unscoped())
+}
+
+pub(crate) fn session_reference_with_scope(
+    backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
+) -> Result<Option<String>, ChatGptOAuthError> {
     let _guard = session_lock()?;
     require_no_pending_disconnect()?;
-    Ok(ChatGptOAuthStore::load_with(backend)?
+    Ok(ChatGptOAuthStore::load_with_scope(backend, scope)?
         .filter(|record| record.status().connected)
         .map(|_| SESSION_EPOCH.load(Ordering::SeqCst).to_string()))
 }
@@ -1556,15 +2031,16 @@ pub(crate) fn authorize_call(
     model: &str,
     token: &CancellationToken,
 ) -> Result<ActivePlanCall, ChatGptOAuthError> {
-    ensure_desktop_lease()?;
+    let scope = ensure_desktop_lease()?;
     let _guard = session_lock()?;
     require_no_pending_disconnect()?;
     if session.parse::<u64>().ok() != Some(SESSION_EPOCH.load(Ordering::SeqCst)) {
         return Err(ChatGptOAuthError::NotConnected);
     }
     let config = ChatGptOAuthConfig::default();
-    let record = resolve_record_locked(&KeyringBackend, &config, DEFAULT_OAUTH_HTTP_TIMEOUT)?
-        .ok_or(ChatGptOAuthError::NotConnected)?;
+    let record =
+        resolve_record_locked(&KeyringBackend, &scope, &config, DEFAULT_OAUTH_HTTP_TIMEOUT)?
+            .ok_or(ChatGptOAuthError::NotConnected)?;
     if !record
         .identity
         .as_ref()
@@ -1588,25 +2064,36 @@ fn resolve_access_token_with(
     timeout: Duration,
 ) -> Result<Option<String>, ChatGptOAuthError> {
     let _guard = session_lock()?;
-    Ok(resolve_record_locked(backend, config, timeout)?.map(|record| record.access_token))
+    Ok(
+        resolve_record_locked(backend, &KeyringScope::unscoped(), config, timeout)?
+            .map(|record| record.access_token),
+    )
 }
 
 fn resolve_record_locked(
     backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
     config: &ChatGptOAuthConfig,
     timeout: Duration,
 ) -> Result<Option<StoredChatGptOAuthTokens>, ChatGptOAuthError> {
-    let Some(current) = ChatGptOAuthStore::load_with(backend)? else {
+    let Some(current) = ChatGptOAuthStore::load_with_scope(backend, scope)? else {
         return Ok(None);
     };
-    if !current.status().connected {
+    if current.reauthorization_required {
+        return Err(ChatGptOAuthError::ReauthorizationRequired);
+    }
+    let status = current.status();
+    if status.problem == Some(ChatGptOAuthProblem::ReauthorizationRequired) {
+        return refresh_tokens_locked(backend, scope, config, timeout).map(Some);
+    }
+    if !status.connected {
         return Ok(None);
     }
     if !current.needs_refresh(now_unix_secs()) {
         return Ok(Some(current));
     }
 
-    let refreshed = refresh_tokens_locked(backend, config, timeout)?;
+    let refreshed = refresh_tokens_locked(backend, scope, config, timeout)?;
     if refreshed.status().connected {
         Ok(Some(refreshed))
     } else {
@@ -1619,8 +2106,32 @@ fn resolve_record_locked(
 ///
 /// # Errors
 /// Returns a secret-free [`ChatGptOAuthError`].
+#[cfg(test)]
 pub(crate) fn run_oauth_login_flow_with<F>(
     backend: &dyn CredentialBackend,
+    config: &ChatGptOAuthConfig,
+    open_browser: F,
+    callback_timeout: Duration,
+    http_timeout: Duration,
+    cancel: Option<&AtomicBool>,
+) -> Result<ChatGptOAuthStatus, ChatGptOAuthError>
+where
+    F: FnOnce(&str) -> Result<(), ChatGptOAuthError>,
+{
+    run_oauth_login_flow_with_scope(
+        backend,
+        &KeyringScope::unscoped(),
+        config,
+        open_browser,
+        callback_timeout,
+        http_timeout,
+        cancel,
+    )
+}
+
+pub(crate) fn run_oauth_login_flow_with_scope<F>(
+    backend: &dyn CredentialBackend,
+    scope: &KeyringScope,
     config: &ChatGptOAuthConfig,
     open_browser: F,
     callback_timeout: Duration,
@@ -1633,6 +2144,7 @@ where
     let _sign_in = BROWSER_SIGN_IN
         .try_lock()
         .map_err(|_| ChatGptOAuthError::Cancelled)?;
+    let sign_in_cancel = SignInCancelGuard::register()?;
     // Validate endpoints up front before binding sockets or opening the browser.
     let _ = config.authorize_endpoint()?;
     let _ = config.token_endpoint()?;
@@ -1640,13 +2152,13 @@ where
     let (epoch, previous, host) = {
         let _guard = session_lock()?;
         require_no_pending_disconnect()?;
-        let previous = ChatGptOAuthStore::load_with(backend)?
+        let previous = ChatGptOAuthStore::load_with_scope(backend, scope)?
             .and_then(|record| record.identity)
             .filter(|identity| is_issued_client(&identity.client_id));
         (
             SESSION_EPOCH.load(Ordering::SeqCst),
             previous,
-            host_id(backend)?,
+            host_id_with_scope(backend, scope)?,
         )
     };
     let server = LoopbackCallbackServer::bind(&config.callback_ports)?;
@@ -1665,12 +2177,18 @@ where
     )?;
 
     open_browser(&auth_url)?;
-    let callback = server.wait_for_code(&state, callback_timeout, cancel)?;
+    let callback = server.wait_for_code_with_signals(
+        &state,
+        callback_timeout,
+        cancel,
+        Some(sign_in_cancel.signal()),
+        Some(epoch),
+    )?;
     let _guard = session_lock()?;
     if epoch != SESSION_EPOCH.load(Ordering::SeqCst) {
         return Err(ChatGptOAuthError::Cancelled);
     }
-    let record = exchange_code(
+    let record = match exchange_code(
         config,
         callback,
         &redirect_uri,
@@ -1678,8 +2196,19 @@ where
         &nonce,
         previous.as_ref(),
         http_timeout,
-    )?;
-    ChatGptOAuthStore::save_with(backend, &record)?;
+    ) {
+        Ok(record) => record,
+        Err(ExchangeError {
+            error,
+            verified_identity,
+        }) => {
+            if let Some(identity) = verified_identity {
+                let _ = mark_reauthorization_required_locked(backend, scope, identity);
+            }
+            return Err(error);
+        }
+    };
+    ChatGptOAuthStore::save_with_scope(backend, scope, &record)?;
     invalidate_session()?;
     Ok(record.status())
 }
@@ -1695,9 +2224,10 @@ pub(crate) fn run_oauth_login_flow<F>(
 where
     F: FnOnce(&str) -> Result<(), ChatGptOAuthError>,
 {
-    ensure_desktop_lease()?;
-    run_oauth_login_flow_with(
+    let scope = ensure_desktop_lease()?;
+    run_oauth_login_flow_with_scope(
         &KeyringBackend,
+        &scope,
         &ChatGptOAuthConfig::default(),
         open_browser,
         callback_timeout,
@@ -1721,6 +2251,15 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    /// Serialize tests that mutate process-global `SESSION_EPOCH` or hold `BROWSER_SIGN_IN`.
+    static TEST_SESSION_FLOW_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_session_flow_test() -> std::sync::MutexGuard<'static, ()> {
+        TEST_SESSION_FLOW_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[derive(Default)]
     struct MemoryKeyring {
@@ -1776,6 +2315,7 @@ mod tests {
             scope: Some(DEFAULT_SCOPES.to_owned()),
             connected_at: now_unix_secs(),
             identity: Some(fixture_plan_identity()),
+            reauthorization_required: false,
         }
     }
 
@@ -1960,6 +2500,7 @@ mod tests {
 
     #[test]
     fn expired_token_without_usable_refresh_token_fails_closed() {
+        let _flow_guard = lock_session_flow_test();
         let keyring = MemoryKeyring::default();
         let config = ChatGptOAuthConfig {
             issuer: "http://127.0.0.1:9".to_string(),
@@ -1979,6 +2520,7 @@ mod tests {
                 scope: Some(DEFAULT_SCOPES.to_string()),
                 connected_at: 1_700_000_000,
                 identity: Some(fixture_plan_identity()),
+                reauthorization_required: false,
             },
         )
         .expect("save expired token without refresh_token");
@@ -1998,6 +2540,7 @@ mod tests {
                 scope: Some(DEFAULT_SCOPES.to_string()),
                 connected_at: 1_700_000_000,
                 identity: Some(fixture_plan_identity()),
+                reauthorization_required: false,
             },
         )
         .expect("save near-expiry token with whitespace refresh_token");
@@ -2071,6 +2614,7 @@ mod tests {
                 scope: Some(DEFAULT_SCOPES.to_string()),
                 connected_at: 1_700_000_000,
                 identity: Some(fixture_plan_identity()),
+                reauthorization_required: false,
             },
         )
         .expect("seed near-expiry token");
@@ -2273,6 +2817,7 @@ mod tests {
 
     #[test]
     fn full_oauth_flow_exchanges_refreshes_and_keeps_tokens_in_keyring_only() {
+        let _flow_guard = lock_session_flow_test();
         let (port, send_nonce, server_thread) = oauth_fixture();
         let keyring = MemoryKeyring::default();
         let config = ChatGptOAuthConfig {
@@ -2397,9 +2942,13 @@ mod tests {
             ChatGptOAuthError::MissingCode,
             ChatGptOAuthError::TokenExchangeFailed,
             ChatGptOAuthError::TokenRefreshFailed,
+            ChatGptOAuthError::TokenRefreshTransient,
+            ChatGptOAuthError::ReauthorizationRequired,
             ChatGptOAuthError::ResponseTooLarge,
             ChatGptOAuthError::NotConnected,
             ChatGptOAuthError::Cancelled,
+            ChatGptOAuthError::RevocationUnconfirmed,
+            ChatGptOAuthError::OtherInstance,
         ];
         for err in all {
             let text = err.to_string().to_lowercase();
@@ -2490,6 +3039,7 @@ mod tests {
             scope: Some(DEFAULT_SCOPES.to_string()),
             connected_at: 1_899_996_400,
             identity: Some(fixture_plan_identity()),
+            reauthorization_required: false,
         };
 
         ChatGptOAuthStore::save_with(&keyring, &initial)
@@ -2529,6 +3079,7 @@ mod tests {
             scope: Some(DEFAULT_SCOPES.to_string()),
             connected_at: 1_899_996_400,
             identity: Some(fixture_plan_identity()),
+            reauthorization_required: false,
         };
         let err = ChatGptOAuthStore::save_with(&keyring, &failed_update)
             .expect_err("mid-save failure must surface error");
@@ -2552,6 +3103,7 @@ mod tests {
             scope: Some(DEFAULT_SCOPES.to_string()),
             connected_at: 1_899_996_400,
             identity: Some(fixture_plan_identity()),
+            reauthorization_required: false,
         };
         ChatGptOAuthStore::save_with(&keyring, &compact_update).expect("compact update succeeds");
         {
@@ -2567,6 +3119,267 @@ mod tests {
         assert!(
             keyring.entries.lock().expect("lock").is_empty(),
             "clear_with must remove manifest and all chunk entries"
+        );
+    }
+
+    #[test]
+    fn distinct_app_data_roots_isolate_leases_and_keyring_scopes() {
+        let dir_a = std::env::temp_dir().join(format!("nexora-oauth-scope-a-{}", Uuid::new_v4()));
+        let dir_b = std::env::temp_dir().join(format!("nexora-oauth-scope-b-{}", Uuid::new_v4()));
+        std::fs::create_dir(&dir_a).unwrap();
+        std::fs::create_dir(&dir_b).unwrap();
+
+        let lease_a = acquire_desktop_lease(&dir_a).unwrap();
+        let lease_b = acquire_desktop_lease(&dir_b).unwrap();
+        let scope_a = KeyringScope::for_directory(&dir_a).unwrap();
+        let scope_b = KeyringScope::for_directory(&dir_b).unwrap();
+        assert_ne!(scope_a, scope_b);
+        assert_eq!(
+            scope_a,
+            KeyringScope::for_directory(&dir_a.join(".")).unwrap()
+        );
+
+        let shared_keyring = MemoryKeyring::default();
+        let mut record_a = fixture_record();
+        record_a.access_token = "scope-a-access".to_owned();
+        let mut record_b = fixture_record();
+        record_b.access_token = "scope-b-access".to_owned();
+
+        ChatGptOAuthStore::save_with_scope(&shared_keyring, &scope_a, &record_a).unwrap();
+        ChatGptOAuthStore::save_with_scope(&shared_keyring, &scope_b, &record_b).unwrap();
+        let host_a = host_id_with_scope(&shared_keyring, &scope_a).unwrap();
+        let host_b = host_id_with_scope(&shared_keyring, &scope_b).unwrap();
+        assert_ne!(host_a, host_b);
+
+        // Disconnecting root A must not affect root B's tokens on the same OS keyring.
+        ChatGptOAuthStore::clear_with_scope(&shared_keyring, &scope_a).unwrap();
+        assert!(
+            ChatGptOAuthStore::load_with_scope(&shared_keyring, &scope_a)
+                .unwrap()
+                .is_none()
+        );
+        let loaded_b = ChatGptOAuthStore::load_with_scope(&shared_keyring, &scope_b)
+            .unwrap()
+            .expect("root B grant remains intact");
+        assert_eq!(loaded_b.access_token, "scope-b-access");
+
+        drop(lease_a);
+        drop(lease_b);
+        let _ = std::fs::remove_file(dir_a.join("chatgpt-oauth.lock"));
+        let _ = std::fs::remove_file(dir_b.join("chatgpt-oauth.lock"));
+        let _ = std::fs::remove_dir(&dir_a);
+        let _ = std::fs::remove_dir(&dir_b);
+    }
+
+    #[test]
+    fn cleanup_pending_recovers_stale_slot_without_losing_active_rotated_grant() {
+        let backend = MemoryKeyring::default();
+        let initial = fixture_record();
+        ChatGptOAuthStore::save_with(&backend, &initial).unwrap();
+
+        // Fail stale-slot (slot 0) deletion after slot 1 + cleanup_pending manifest are committed.
+        *backend.fail_delete_key.lock().unwrap() = Some(chunk_entry_key(0, 0));
+        let mut rotated = fixture_record();
+        rotated.access_token = "rotated-active-access".to_owned();
+        rotated.refresh_token = Some("rotated-active-refresh".to_owned());
+        assert_eq!(
+            ChatGptOAuthStore::save_with(&backend, &rotated),
+            Err(ChatGptOAuthError::KeyringUnavailable)
+        );
+
+        let raw_manifest = backend
+            .get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY)
+            .unwrap();
+        let manifest: KeyringChunkManifest = serde_json::from_str(&raw_manifest).unwrap();
+        assert_eq!(manifest.slot, 1);
+        assert!(manifest.cleanup_pending);
+
+        // Once the keyring delete error clears, loading finishes stale-slot deletion
+        // and recovers the active rotated grant without losing it.
+        *backend.fail_delete_key.lock().unwrap() = None;
+        let recovered = ChatGptOAuthStore::load_with(&backend)
+            .expect("recovery load succeeds")
+            .expect("active rotated grant preserved");
+        assert_eq!(recovered.access_token, "rotated-active-access");
+        assert_eq!(
+            recovered.refresh_token.as_deref(),
+            Some("rotated-active-refresh")
+        );
+        assert!(matches!(
+            backend.get_password(CHATGPT_OAUTH_KEYRING_SERVICE, &chunk_entry_key(0, 0)),
+            Err(keyring::Error::NoEntry)
+        ));
+        let clean_manifest: KeyringChunkManifest = serde_json::from_str(
+            &backend
+                .get_password(CHATGPT_OAUTH_KEYRING_SERVICE, CHATGPT_OAUTH_KEYRING_KEY)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(clean_manifest.slot, 1);
+        assert!(!clean_manifest.cleanup_pending);
+
+        // Also verify a direct save recovers from cleanup_pending without discarding the grant.
+        *backend.fail_delete_key.lock().unwrap() = Some(chunk_entry_key(1, 0));
+        let mut rotated_again = fixture_record();
+        rotated_again.access_token = "second-rotated-access".to_owned();
+        assert_eq!(
+            ChatGptOAuthStore::save_with(&backend, &rotated_again),
+            Err(ChatGptOAuthError::KeyringUnavailable)
+        );
+        *backend.fail_delete_key.lock().unwrap() = None;
+        let mut third = fixture_record();
+        third.access_token = "third-rotated-access".to_owned();
+        ChatGptOAuthStore::save_with(&backend, &third).expect("save recovers from cleanup_pending");
+        let final_loaded = ChatGptOAuthStore::load_with(&backend).unwrap().unwrap();
+        assert_eq!(final_loaded.access_token, "third-rotated-access");
+    }
+
+    fn spawn_scripted_token_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted token server");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn refresh_distinguishes_terminal_and_transient_errors_and_preserves_verified_client_id() {
+        let _flow_guard = lock_session_flow_test();
+        let (port, server) = spawn_scripted_token_server(vec![
+            (
+                "503 Service Unavailable",
+                r#"{"error":"temporarily_unavailable","error_description":"upstream busy"}"#,
+            ),
+            (
+                "400 Bad Request",
+                r#"{"error":"invalid_grant","error_description":"refresh token revoked"}"#,
+            ),
+        ]);
+        let keyring = MemoryKeyring::default();
+        let config = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+        let mut seeded = fixture_record();
+        seeded.expires_at = Some(now_unix_secs() + 10); // triggers refresh
+        ChatGptOAuthStore::save_with(&keyring, &seeded).unwrap();
+
+        // 1. Transient error (503 / temporarily_unavailable) preserves grant for retry.
+        let transient = refresh_tokens_with(&keyring, &config, Duration::from_secs(5));
+        assert_eq!(transient, Err(ChatGptOAuthError::TokenRefreshTransient));
+        let after_transient = ChatGptOAuthStore::status_with(&keyring).unwrap();
+        assert!(after_transient.connected);
+        assert!(after_transient.has_refresh_token);
+
+        // 2. Terminal error (400 / invalid_grant) marks grant unusable and NOT connected,
+        //    while preserving verified client_id / id_token_hint for reauthorization.
+        let terminal = refresh_tokens_with(&keyring, &config, Duration::from_secs(5));
+        assert_eq!(terminal, Err(ChatGptOAuthError::ReauthorizationRequired));
+        let after_terminal = ChatGptOAuthStore::status_with(&keyring).unwrap();
+        assert!(!after_terminal.connected);
+        assert!(!after_terminal.has_refresh_token);
+        assert_eq!(
+            after_terminal.problem,
+            Some(ChatGptOAuthProblem::ReauthorizationRequired)
+        );
+        assert!(session_reference_with(&keyring).unwrap().is_none());
+        assert_eq!(
+            resolve_access_token_with(&keyring, &config, Duration::from_secs(5)),
+            Err(ChatGptOAuthError::ReauthorizationRequired)
+        );
+
+        // 3. Subsequent authorization attempt automatically reuses the saved verified client_id.
+        let cancel = AtomicBool::new(true);
+        let mut captured_auth_url = String::new();
+        let err = run_oauth_login_flow_with(
+            &keyring,
+            &config,
+            |auth_url| {
+                captured_auth_url = auth_url.to_owned();
+                Ok(())
+            },
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Some(&cancel),
+        )
+        .expect_err("pre-cancelled flow exits after generating auth url");
+        assert_eq!(err, ChatGptOAuthError::Cancelled);
+        let parsed = Url::parse(&captured_auth_url).expect("valid reauth url");
+        let query: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+        assert_eq!(query["client_id"], "oaiapp_fixture");
+        assert_eq!(query["id_token_hint"], "fixture-id-token");
+        assert!(!query.contains_key("agent_name_hint"));
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn invalidating_session_promptly_cancels_waiting_callback_listener_and_releases_lock() {
+        let _flow_guard = lock_session_flow_test();
+        let keyring = Arc::new(MemoryKeyring::default());
+        let config = ChatGptOAuthConfig {
+            issuer: "https://auth.openai.com".to_string(),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+        let (opened_tx, opened_rx) = std::sync::mpsc::channel::<u16>();
+        let keyring_bg = Arc::clone(&keyring);
+        let config_bg = config.clone();
+        let started = Instant::now();
+        let handle = std::thread::spawn(move || {
+            run_oauth_login_flow_with(
+                keyring_bg.as_ref(),
+                &config_bg,
+                |auth_url| {
+                    let parsed = Url::parse(auth_url).unwrap();
+                    let redirect = parsed
+                        .query_pairs()
+                        .find(|(k, _)| k == "redirect_uri")
+                        .map(|(_, v)| v.into_owned())
+                        .unwrap();
+                    let port = Url::parse(&redirect).unwrap().port().unwrap();
+                    opened_tx.send(port).unwrap();
+                    Ok(())
+                },
+                Duration::from_secs(30),
+                Duration::from_secs(5),
+                None,
+            )
+        });
+
+        let bound_port = opened_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Simulate disconnect / session invalidation while browser wait is active.
+        invalidate_session().unwrap();
+        let outcome = handle.join().expect("waiting sign-in thread exits");
+        assert_eq!(outcome, Err(ChatGptOAuthError::Cancelled));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "cancellation must release listener promptly, not wait for 30s timeout"
+        );
+        // Both the loopback port and BROWSER_SIGN_IN lock are immediately free again.
+        let rebound = TcpListener::bind(("127.0.0.1", bound_port));
+        assert!(
+            rebound.is_ok(),
+            "callback port must be released immediately"
+        );
+        assert!(
+            BROWSER_SIGN_IN.try_lock().is_ok(),
+            "sign-in lock must be released immediately"
         );
     }
 }

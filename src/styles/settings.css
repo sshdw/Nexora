@@ -350,7 +350,7 @@
   background: var(--color-error-container);
 }
 
-/* ---- Opt-in ChatGPT OAuth & External CLI Adapter cards (S11-11) ---- */
+/* ---- Opt-in ChatGPT OAuth card (S11-11) ---- */
 .nex-optin-card {
   display: flex;
   flex-direction: column;
@@ -386,6 +386,53 @@
   align-items: center;
   gap: var(--space-xs);
   flex-wrap: wrap;
+}
+
+.nex-optin-link {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nex-optin-link:hover {
+  color: var(--color-primary);
+}
+
+/* Official Sign in with ChatGPT button format, rendered strictly with
+   Nexora's monochrome tokens (no raw hex or durations). */
+.nex-siwc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  min-height: 40px;
+  padding: 0 var(--space-lg);
+  border-radius: var(--shape-full);
+  border: 1px solid var(--color-outline-variant);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: var(--type-size-label-large);
+  font-weight: var(--type-weight-medium);
+  line-height: 1;
+  transition:
+    background-color var(--nex-sys-motion-duration-hover)
+      var(--motion-easing-standard),
+    border-color var(--nex-sys-motion-duration-hover)
+      var(--motion-easing-standard),
+    transform var(--motion-duration-press) var(--motion-easing-standard);
+}
+
+.nex-siwc-btn:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+.nex-siwc-btn:active:not(:disabled) {
+  background: var(--primary-pressed);
+  transform: scale(var(--motion-scale-press));
+}
+
+.nex-siwc-label {
+  white-space: nowrap;
 }
 
 .nex-cli-list {
@@ -594,8 +641,13 @@
 
 @media (prefers-reduced-motion: reduce) {
   .nex-mcp-form,
-  .nex-mcp-tools-list {
+  .nex-mcp-tools-list,
+  .nex-siwc-btn {
     transition: none;
     animation: none;
+  }
+
+  .nex-siwc-btn:active:not(:disabled) {
+    transform: none;
   }
 }

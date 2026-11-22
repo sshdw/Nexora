@@ -625,6 +625,8 @@ impl From<ChatGptOAuthError> for CommandError {
             | ChatGptOAuthError::MissingCode
             | ChatGptOAuthError::TokenExchangeFailed
             | ChatGptOAuthError::TokenRefreshFailed
+            | ChatGptOAuthError::TokenRefreshTransient
+            | ChatGptOAuthError::ReauthorizationRequired
             | ChatGptOAuthError::ResponseTooLarge
             | ChatGptOAuthError::NotConnected
             | ChatGptOAuthError::OtherInstance
@@ -714,6 +716,8 @@ mod tests {
             ChatGptOAuthError::CallbackTimeout,
             ChatGptOAuthError::TokenExchangeFailed,
             ChatGptOAuthError::TokenRefreshFailed,
+            ChatGptOAuthError::TokenRefreshTransient,
+            ChatGptOAuthError::ReauthorizationRequired,
         ] {
             let mapped = CommandError::from(req_err);
             assert_eq!(mapped.kind, ErrorKind::Request);

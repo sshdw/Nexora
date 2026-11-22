@@ -1110,6 +1110,35 @@
   color: var(--muted-foreground);
 }
 
+.nex-composer-plan-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  padding: 0 2px;
+  font-size: var(--type-size-label-medium);
+  color: var(--muted-foreground);
+}
+
+.nex-composer-plan-icon {
+  flex-shrink: 0;
+  color: var(--foreground);
+}
+
+.nex-composer-plan-text {
+  color: var(--muted-foreground);
+}
+
+.nex-composer-plan-link {
+  color: var(--foreground);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.nex-composer-plan-link:hover {
+  color: var(--primary);
+}
+
 /* ---- Context panel: the budget slider (#220) --------------------------
    The one control the composer's context view owns. Its own
    small block, painted from the same shadcn tokens as the
