@@ -206,7 +206,9 @@ fn no_fabricated_backend_data_in_shipped_binary() {
     );
 
     // Source-level proof: scripted projection types are behind `#[cfg(test)]`.
-    let sources = include_str!("../src/tui/sources.rs");
+    // Normalize CRLF from Windows checkouts: the multi-line marker below uses
+    // `\n`, and `include_str!` preserves the on-disk line endings verbatim.
+    let sources = include_str!("../src/tui/sources.rs").replace("\r\n", "\n");
     for scripted in [
         "ScriptedSessionSource",
         "ScriptedDiffSource",
