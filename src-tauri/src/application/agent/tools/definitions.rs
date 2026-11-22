@@ -139,7 +139,7 @@ impl ToolRegistry {
 fn execute_command_definition() -> ToolDefinition {
     ToolDefinition {
         name: "execute_command".to_string(),
-        description: "Run a shell command with a 30s timeout, capturing stdout and stderr. Executes inside the workspace. Output is truncated to 20KB.".to_string(),
+        description: "Run a finite shell command with a 30s timeout, capturing stdout and stderr. Executes inside the workspace. Output is truncated to 20KB. Do not launch interactive dev servers or watch loops (such as 'npm run dev', 'npm run tauri dev', 'vite', or 'cargo watch'); use finite one-shot commands instead.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {

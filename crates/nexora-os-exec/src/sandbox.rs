@@ -137,7 +137,7 @@ impl SandboxPolicy {
         let root = canonicalize_clean(workspace_root.as_ref())
             .unwrap_or_else(|_| workspace_root.as_ref().to_path_buf());
         let mut deny_write_paths = Vec::new();
-        for protected in [".nexora", ".git/hooks"] {
+        for protected in [".nexora", ".git", ".git/hooks"] {
             let candidate = root.join(protected);
             if candidate.exists() {
                 deny_write_paths.push(candidate);
@@ -170,21 +170,30 @@ impl SandboxPolicy {
             }
             match std::fs::symlink_metadata(&path) {
                 Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
-                    if let Ok(entries) = std::fs::read_dir(&path) {
-                        for entry in entries {
-                            if let Ok(entry) = entry {
-                                pending.push(entry.path());
-                            } else {
-                                deny_read_paths.push(root.clone());
-                                break;
+                    match std::fs::read_dir(&path) {
+                        Ok(entries) => {
+                            for entry in entries {
+                                if let Ok(entry) = entry {
+                                    pending.push(entry.path());
+                                } else {
+                                    deny_read_paths.push(root.clone());
+                                    break;
+                                }
                             }
                         }
-                    } else {
-                        deny_read_paths.push(root.clone());
-                        break;
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                && is_writable_build_dir(&root, &path) => {}
+                        Err(_) => {
+                            deny_read_paths.push(root.clone());
+                            break;
+                        }
                     }
                 }
                 Ok(_) => {}
+                Err(err)
+                    if err.kind() == io::ErrorKind::NotFound
+                        && is_writable_build_dir(&root, &path) => {}
                 Err(_) => {
                     deny_read_paths.push(root.clone());
                     break;
@@ -575,8 +584,14 @@ pub fn is_sensitive_env_key(key: &str) -> bool {
         || upper.contains("PRIVATE_KEY")
         || upper.ends_with("_TOKEN")
         || upper == "TOKEN"
+        || upper.ends_with("_CREDENTIAL")
+        || upper.ends_with("_CREDENTIALS")
         || upper == "SSH_AUTH_SOCK"
         || upper == "SSH_AGENT_PID"
+        || upper == "GPG_AGENT_INFO"
+        || upper == "KUBECONFIG"
+        || upper == "DOCKER_AUTH_CONFIG"
+        || upper == "GOOGLE_APPLICATION_CREDENTIALS"
         || upper.starts_with("AWS_ACCESS_KEY")
         || upper.starts_with("AWS_SESSION")
         || upper.starts_with("OPENAI_")
@@ -673,6 +688,7 @@ pub(crate) fn spawn_sandboxed_platform(
 /// Reject aliases that could turn a writable workspace inode into an outside file.
 /// Unsupported or excessively large trees fail closed rather than partially scan.
 pub(crate) fn validate_policy(policy: &SandboxPolicy, command: &Command) -> io::Result<()> {
+    validate_command_strings(command)?;
     let root = canonicalize_clean(&policy.workspace_root)?;
     if private_store_path(&root) || root.parent().is_none() || !root.is_dir() {
         return Err(io::Error::other("invalid sandbox workspace"));
@@ -772,6 +788,42 @@ pub fn private_store_path(path: &Path) -> bool {
     }) || parts.contains(&"safari")
 }
 
+fn validate_command_strings(command: &Command) -> io::Result<()> {
+    let has_nul = |value: &std::ffi::OsStr| value.to_string_lossy().contains('\0');
+    if has_nul(command.get_program()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sandbox command program contains NUL byte",
+        ));
+    }
+    for arg in command.get_args() {
+        if has_nul(arg) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sandbox command argument contains NUL byte",
+            ));
+        }
+    }
+    for (key, maybe_val) in command.get_envs() {
+        let key_str = key.to_string_lossy();
+        if key_str.contains('\0') || key_str.contains('=') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "sandbox environment key contains invalid character",
+            ));
+        }
+        if let Some(val) = maybe_val {
+            if has_nul(val) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "sandbox environment value contains NUL byte",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[must_use]
 #[allow(clippy::case_sensitive_file_extension_comparisons)] // Normalized ASCII case.
 pub fn sensitive_write_path(path: &Path) -> bool {
@@ -785,10 +837,74 @@ pub fn sensitive_write_path(path: &Path) -> bool {
             || part.ends_with(".pem")
             || part.ends_with(".key")
             || part.starts_with("id_rsa")
+            || part.starts_with("id_ed25519")
+            || part.starts_with("id_ecdsa")
+            || part.starts_with("id_dsa")
             || *part == ".nexora"
-    }) || parts
-        .windows(2)
-        .any(|pair| matches!(pair, [".git", "hooks" | "config"]))
+            || *part == ".git"
+    })
+}
+
+/// Returns `true` when `path` is a recognized build/cache/artifact directory (or a
+/// descendant inside one) strictly beneath `workspace_root`, excluding all protected
+/// or sensitive paths (`.git`, `.nexora`, `.env*`, private stores, etc.).
+#[must_use]
+pub fn is_writable_build_dir(workspace_root: &Path, path: &Path) -> bool {
+    if private_store_path(path) || sensitive_write_path(path) {
+        return false;
+    }
+    let Ok(rel) = path.strip_prefix(workspace_root) else {
+        return false;
+    };
+    let mut matched_build_component = false;
+    for comp in rel.components() {
+        let std::path::Component::Normal(raw) = comp else {
+            return false;
+        };
+        let name = raw.to_string_lossy().to_ascii_lowercase();
+        if name == ".git"
+            || name == ".nexora"
+            || name.starts_with(".env")
+            || name == "for human do not open tis"
+        {
+            return false;
+        }
+        if matches!(
+            name.as_str(),
+            "target"
+                | "dist"
+                | "build"
+                | "out"
+                | "coverage"
+                | ".vite"
+                | ".cache"
+                | ".turbo"
+                | ".next"
+                | ".nuxt"
+                | ".parcel-cache"
+                | ".svelte-kit"
+                | "__pycache__"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | ".ruff_cache"
+        ) {
+            matched_build_component = true;
+        }
+    }
+    matched_build_component
+}
+
+/// Returns `true` for the top-most build/cache directory root (e.g. `ws/target`,
+/// `ws/dist`, `ws/node_modules/.cache`, `ws/src-tauri/target`), and `false` for
+/// nested subdirectories inside it.
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn is_writable_build_dir_root(workspace_root: &Path, path: &Path) -> bool {
+    if !is_writable_build_dir(workspace_root, path) {
+        return false;
+    }
+    path.parent()
+        .is_none_or(|parent| !is_writable_build_dir(workspace_root, parent))
 }
 
 #[cfg(unix)]

@@ -3403,3 +3403,57 @@ fn mcp_injection_payload_triggers_hold_on_next_read_only_call() {
     );
     let _ = fs::remove_dir_all(&ws);
 }
+
+#[test]
+fn dispatch_blocks_dev_server_and_watch_commands_without_parking() {
+    let ws = temp_workspace();
+    let gate = ApprovalGate::new(AutonomyMode::SemiAutonomous).with_timeout(Duration::from_secs(2));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let fake = FakeExecutor::new(vec![
+        Ok(AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![
+                approval_call(
+                    "dev-1",
+                    "execute_command",
+                    serde_json::json!({"command": "npm run tauri dev", "cwd": "."}),
+                ),
+                approval_call(
+                    "dev-2",
+                    "execute_command",
+                    serde_json::json!({"command": "cargo watch -x test", "cwd": "."}),
+                ),
+            ],
+            usage: None,
+        }),
+        Ok(text_response("handled")),
+    ]);
+    let runner = AgentRunner::new(&fake, &ws)
+        .with_approval_gate(gate)
+        .with_event_sender(tx);
+    let out = runner
+        .run("openai", "m", "cred", "start dev server")
+        .expect("run completes with denial observations");
+    assert_eq!(out, "handled");
+    drop(runner);
+
+    let events: Vec<_> = rx.try_iter().collect();
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentRunEvent::ApprovalRequested { .. })),
+        "blocked dev-server/watch commands must deny deterministically without parking"
+    );
+    let requests = fake.requests.borrow();
+    assert_eq!(requests.len(), 2);
+    let tool_obs: Vec<&str> = requests[1]
+        .messages
+        .iter()
+        .filter_map(|m| m.tool_result.as_ref().map(|r| r.content.as_str()))
+        .collect();
+    assert_eq!(tool_obs.len(), 2);
+    assert!(tool_obs[0].contains("dev-server or watch"));
+    assert!(tool_obs[1].contains("dev-server or watch"));
+    let _ = fs::remove_dir_all(&ws);
+}

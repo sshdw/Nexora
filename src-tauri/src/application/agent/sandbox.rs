@@ -78,15 +78,19 @@ pub(crate) fn status(path: &Path) -> SandboxStatus {
         _ => fallback(&path, "sandbox verification is missing or stale"),
     }
 }
-pub(crate) fn identity(path: &Path) -> String {
-    let path = root(path);
-    let status = status(&path);
-    let revision = entries()
+fn snapshot_identity(path: &Path) -> (PathBuf, String, String) {
+    let workspace = root(path);
+    let fp = fingerprint(&workspace);
+    let map = entries()
         .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&path)
-        .map_or(0, |entry| entry.revision);
-    format!("{}:{}:{revision}", fingerprint(&path), status.posture)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let posture = status_unlocked(&map, &workspace, &fp);
+    let revision = map.get(&workspace).map_or(0, |entry| entry.revision);
+    let id = format!("{fp}:{posture}:{revision}");
+    (workspace, fp, id)
+}
+pub(crate) fn identity(path: &Path) -> String {
+    snapshot_identity(path).2
 }
 fn is_ttl_only_expired(path: &Path) -> bool {
     let fresh = fingerprint(path);
@@ -272,6 +276,7 @@ thread_local! {
 struct TestIdentityReadExpiry {
     reads_to_skip: usize,
     observer: Option<std::sync::mpsc::Sender<()>>,
+    degraded_probe: Option<SandboxVerificationStatus>,
 }
 /// Cross the TTL boundary after the refresh check, without scheduler-dependent sleeps.
 #[cfg(test)]
@@ -283,6 +288,21 @@ pub(crate) fn expire_identity_read_for_test(
         *slot.borrow_mut() = Some(TestIdentityReadExpiry {
             reads_to_skip,
             observer,
+            degraded_probe: None,
+        });
+    });
+}
+/// Cross the TTL boundary while switching the probe outcome deterministically, without sleeps.
+#[cfg(test)]
+pub(crate) fn degrade_identity_read_for_test(
+    reads_to_skip: usize,
+    degraded_probe: SandboxVerificationStatus,
+) {
+    IDENTITY_READ_EXPIRY.with(|slot| {
+        *slot.borrow_mut() = Some(TestIdentityReadExpiry {
+            reads_to_skip,
+            observer: None,
+            degraded_probe: Some(degraded_probe),
         });
     });
 }
@@ -298,6 +318,9 @@ fn expire_identity_read_if_requested(path: &Path) -> Option<std::sync::mpsc::Sen
         slot.take()
     });
     if let Some(expiry) = expiry {
+        if let Some(probe) = expiry.degraded_probe {
+            set_test_probe(path, Some(probe));
+        }
         age_test_status(path, Duration::from_secs(31));
         expiry.observer
     } else {
@@ -442,10 +465,11 @@ pub(crate) fn authorized<T>(path: &Path, sandboxed: bool, action: impl FnOnce() 
             PERMIT.with(|permit| *permit.borrow_mut() = self.0.take());
         }
     }
+    let (workspace, fp, id) = snapshot_identity(path);
     let permit = Permit {
-        workspace: root(path),
-        fingerprint: fingerprint(path),
-        identity: identity(path),
+        workspace,
+        fingerprint: fp,
+        identity: id,
         sandboxed,
     };
     let _restore = Restore(PERMIT.with(|slot| slot.replace(Some(permit))));
@@ -458,10 +482,8 @@ pub(crate) fn spawn_authorized(
     let permit = PERMIT
         .with(|slot| slot.borrow().clone())
         .ok_or(super::tools::ToolError::ConsentInvalidated)?;
-    if permit.workspace != root(path)
-        || permit.fingerprint != fingerprint(path)
-        || permit.identity != identity(path)
-    {
+    let (workspace, fp, current_id) = snapshot_identity(path);
+    if permit.workspace != workspace || permit.fingerprint != fp || permit.identity != current_id {
         return Err(super::tools::ToolError::ConsentInvalidated);
     }
     // Pin posture through the actual OS spawn; refresh/invalidation cannot silently switch this launch.
@@ -733,5 +755,27 @@ mod tests {
 
         clear_test_status(&ws);
         std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    #[test]
+    fn sensitive_write_path_protects_entire_git_tree_and_ssh_keys() {
+        for protected in [
+            ".git",
+            ".git/HEAD",
+            ".git/index",
+            ".git/config",
+            ".git/hooks/pre-commit",
+            ".git/refs/heads/main",
+            ".nexora/policy.json",
+            ".env",
+            ".env.local",
+            "keys/id_ed25519",
+            "keys/id_rsa",
+        ] {
+            assert!(
+                nexora_os_exec::sensitive_write_path(Path::new(protected)),
+                "expected sensitive_write_path=true for {protected}"
+            );
+        }
     }
 }
