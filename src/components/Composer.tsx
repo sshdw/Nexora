@@ -164,8 +164,8 @@ export interface ComposerProps {
   /** Provider + model are configured, so the composer can send. */
   ready: boolean;
   onOpenSettings: () => void;
-  /** Conversation the context ring reads (`conversationContextStats`). */
-  conversationId: number;
+  /** Conversation the context ring reads (`conversationContextStats`), or null in a draft thread. */
+  conversationId: number | null;
   /** Monotonic tick from the pane's run events: the ring refreshes when a
    *  run advances, never on a timer. */
   contextRevision: string;
@@ -729,7 +729,7 @@ export default function Composer({
 
   return (
     <div className="nex-composer">
-      {promptContext && sheet && (
+      {conversationId !== null && promptContext && sheet && (
         <ComposerPromptSheet
           key={sheet.kind === "skill" ? sheet.skill.reference.revision : sheet.kind}
           conversationId={conversationId}
@@ -1275,13 +1275,15 @@ export default function Composer({
                 only reading of the context window, and it reads `n/a` rather
                 than inventing 0%. Inside the trailing group, so the bar still
                 wraps ring+model+Send as one unit in a split pane. */}
-              <ContextRing
-                conversationId={conversationId}
-                revision={contextRevision}
-                selectedConnectionId={selectedConnectionId}
-                selectedModel={selectedModel}
-                onCompacted={onCompacted}
-              />
+              {conversationId !== null && (
+                <ContextRing
+                  conversationId={conversationId}
+                  revision={contextRevision}
+                  selectedConnectionId={selectedConnectionId}
+                  selectedModel={selectedModel}
+                  onCompacted={onCompacted}
+                />
+              )}
 
               {/* Model picker (R6-02). A real searchable listbox now: the
                 segmented primitive's inline-grid root resolved its implicit

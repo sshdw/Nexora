@@ -82,7 +82,7 @@ function DockButton({
       aria-controls={kind === "panel" ? `nex-dock-panel-${panel}` : undefined}
       aria-label={label}
       className={cn(
-        "group/dock-btn relative flex size-11 shrink-0 items-center justify-center rounded-[var(--shape-full)] border border-transparent outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "group/dock-btn relative flex size-11 shrink-0 items-center justify-center rounded-[var(--shape-medium)] border border-transparent outline-none [&_svg]:pointer-events-none [&_svg]:shrink-0",
         /* hover/focus tone — 100 ms, standard easing (transform/opacity only) */
         "transition-[transform,opacity]",
         "[transition-duration:var(--nex-sys-motion-duration-short2)]",
@@ -93,13 +93,19 @@ function DockButton({
         "bg-transparent text-[var(--color-on-surface-variant)]",
         "hover:bg-[var(--state-hover)] hover:text-[var(--color-on-surface)]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:z-10",
-        /* active (10 % white fill + white icon) */
+        /* active (surface raise + hairline border + crisp icon contrast) */
         expanded
-          ? "bg-[var(--state-selected)] text-[var(--color-on-surface)]"
+          ? "bg-[var(--state-selected)] border-[var(--border)] text-[var(--color-on-surface)]"
           : ""
       )}
       onClick={onClick}
     >
+      {expanded && (
+        <span
+          aria-hidden="true"
+          className="absolute -left-[var(--space-xs)] top-1/2 -translate-y-1/2 h-5 w-[2px] rounded-full bg-[var(--tick)]"
+        />
+      )}
       <span
         className="inline-flex items-center justify-center"
         aria-hidden="true"
@@ -145,7 +151,7 @@ function Separator() {
       role="separator"
       aria-orientation="horizontal"
       aria-hidden="true"
-      className="mx-auto w-6 h-[1px] shrink-0 bg-[var(--color-outline-variant)]"
+      className="mx-auto my-[var(--space-xxxs)] w-6 h-[1px] shrink-0 bg-[var(--border)]"
     />
   );
 }
@@ -175,21 +181,18 @@ export default function Dock({
       aria-label={t("dock.aria")}
       className="nex-dock fixed left-0 top-1/2 -translate-y-1/2 z-[var(--nex-sys-z-popover)]"
       style={{
-        // R4-01: left edge flush, vertically centred; right side rounded ~30 px
-        background: "var(--color-surface-elevated)",
-        border: `1px solid var(--color-shell-seam)`,
+        background: "var(--card)",
+        border: "1px solid var(--border)",
         borderLeft: "none",
-        borderRadius: "0 30px 30px 0",
-        paddingTop: "var(--space-2xl)", // 32 px — clears the 30 px top curve
-        paddingBottom: "var(--space-2xl)", // 32 px — clears the 30 px bottom curve
-        paddingLeft: "var(--space-xs)", // 8 px
-        paddingRight: "var(--space-xs)", // 8 px
-        // R4-01: 60 px rail, from the ONE layout token the conversation
-        // stage also reserves (`padding-inline: var(--dock-width)`).
+        borderRadius: "0 var(--shape-large) var(--shape-large) 0",
+        paddingTop: "var(--space-sm)",
+        paddingBottom: "var(--space-sm)",
+        paddingLeft: "var(--space-xs)",
+        paddingRight: "var(--space-xs)",
         width: "var(--dock-width)",
       }}
     >
-      <div className="flex flex-col gap-[5px] items-center">
+      <div className="flex flex-col gap-[var(--space-xxs)] items-center">
         {/* New — command, never active */}
         <DockButton
           id="new"

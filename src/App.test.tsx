@@ -687,7 +687,7 @@ describe("App — Stage5 PR5A shell integration", () => {
     }
   );
 
-  it("keeps the same Split control after closing the last open session", async () => {
+  it("keeps the same Split control and opens a ready draft Composer after closing the last open session", async () => {
     render(<App />);
     await screen.findByRole("textbox", { name: "Message" });
     const split = screen.getByRole("button", { name: "Split" });
@@ -697,7 +697,9 @@ describe("App — Stage5 PR5A shell integration", () => {
     expect(screen.getByRole("button", { name: "Split" })).toBe(split);
     expect(split).toBeDisabled();
     expect(screen.queryAllByRole("tab")).toHaveLength(0);
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    const draftBox = screen.getByRole("textbox", { name: "Message" });
+    expect(draftBox).toBeInTheDocument();
+    expect(document.activeElement).toBe(draftBox);
   });
 
   it("reaches the existing active export command after the palette closes", async () => {

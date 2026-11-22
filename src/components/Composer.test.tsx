@@ -226,7 +226,7 @@ function StatefulComposer({
 }
 
 function ComposerWithContext(props: ComposerProps) {
-  const context = useComposerContext(props.conversationId, props.workspace.root, props.draft, false);
+  const context = useComposerContext(props.conversationId ?? 1, props.workspace.root, props.draft, false);
   return <Composer {...props} promptContext={context} />;
 }
 
