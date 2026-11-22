@@ -27,13 +27,18 @@ import type { Icon, IconProps } from "@phosphor-icons/react";
 import {
   ActivityIcon as PhosphorActivity,
   Archive,
+  ArrowCounterClockwise,
   ArrowDown,
   ArrowUp,
   BookOpen,
   BoxArrowUp,
   CaretDown,
+  CaretRight,
   Check,
   CircleNotch,
+  Code,
+  Eye,
+  FileText,
   FlagPennant,
   FolderSimple,
   GearSix,
@@ -45,6 +50,7 @@ import {
   Plus,
   Record,
   SealCheck,
+  ShieldCheck,
   SlidersHorizontal,
   Square,
   Stack,
@@ -144,6 +150,12 @@ export const SlidersIcon = uiIcon(SlidersHorizontal, "SlidersIcon");
 
 /** Selected row in the model picker (R6-02). */
 export const CheckIcon = uiIcon(Check, "CheckIcon");
+export const ChevronRightIcon = uiIcon(CaretRight, "ChevronRightIcon");
+export const EyeIcon = uiIcon(Eye, "EyeIcon");
+export const ShieldCheckIcon = uiIcon(ShieldCheck, "ShieldCheckIcon");
+export const FileTextIcon = uiIcon(FileText, "FileTextIcon");
+export const CodeIcon = uiIcon(Code, "CodeIcon");
+export const UndoIcon = uiIcon(ArrowCounterClockwise, "UndoIcon");
 
 /* ================================================================== */
 /* custom, not from the library                                       */

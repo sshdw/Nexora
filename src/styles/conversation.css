@@ -756,6 +756,19 @@
   cursor: default;
 }
 
+.nex-agent-disclosure-chevron {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--color-on-surface-faint);
+  transition: transform var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-agent-run-disclosure[aria-expanded="true"] .nex-agent-disclosure-chevron {
+  transform: rotate(90deg);
+}
+
 /* State ink lives on the one line. The word carries the state; the colour
    is a second, never the only, signal. Running and cancelled stay
    achromatic, as they did on the old pills. */
@@ -972,7 +985,7 @@ p.nex-agent-approval-meta {
 .nex-agent-steps {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xs);
+  gap: 2px;
 }
 
 /* A step is a ROW, not a card (D-11: no nested cards). It used to carry its
@@ -994,7 +1007,8 @@ p.nex-agent-approval-meta {
   display: flex;
   align-items: center;
   gap: var(--space-xs);
-  padding: var(--space-xs) var(--space-sm);
+  padding: 4px 6px;
+  border-radius: var(--shape-small);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -1093,11 +1107,10 @@ p.nex-agent-approval-meta {
 .nex-agent-step-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xxs);
-  padding: var(--space-xxs) 0 0 var(--space-sm);
-  border-top: 1px solid var(--color-outline-variant);
+  gap: 2px;
+  padding: 2px 0 2px var(--space-sm);
   border-inline-start: 1px solid var(--color-outline-variant);
-  margin: var(--space-xxs) 0 0 var(--space-xs);
+  margin: 2px 0 2px var(--space-xs);
 }
 
 .nex-agent-step-duration {
@@ -1108,17 +1121,24 @@ p.nex-agent-approval-meta {
 }
 
 .nex-agent-step-chevron {
-  margin-left: var(--space-xs);
+  display: inline-flex;
+  align-items: center;
+  margin-left: var(--space-xxs);
   color: var(--color-on-surface-faint);
   flex-shrink: 0;
+  transition: transform var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
+}
+
+.nex-agent-step-header[aria-expanded="true"] .nex-agent-step-chevron {
+  transform: rotate(90deg);
 }
 
 .nex-agent-step-body {
-  padding: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
-  border-top: 1px solid var(--color-outline-variant);
 }
 
 .nex-agent-step-args {
@@ -2068,9 +2088,28 @@ p.nex-agent-approval-meta {
   color: var(--color-on-surface);
 }
 
+.nex-agent-run .nex-thinking-block {
+  border: none;
+  background: transparent;
+  margin-bottom: 0;
+}
+
+.nex-agent-run .nex-thinking-toggle {
+  width: auto;
+  justify-content: flex-start;
+  padding: var(--space-xxxs) 0;
+}
+
+.nex-agent-run .nex-thinking-body {
+  padding: var(--space-xxs) 0 var(--space-xs) var(--space-sm);
+  border-inline-start: 1px solid var(--color-outline-variant);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .nex-thinking-block,
-  .nex-thinking-chevron {
+  .nex-thinking-chevron,
+  .nex-agent-disclosure-chevron,
+  .nex-agent-step-chevron {
     transition: none;
   }
 

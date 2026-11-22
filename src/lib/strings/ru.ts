@@ -518,6 +518,8 @@ export const ru: Record<StringKey, string> = {
   "ctx.compactFailed": "Не удалось сжать контекст.",
   "ctx.compactedAt": "Сжатий: {count}",
   "ctx.preservedLabel": "Сохранены цель, план, решения и файлы",
+  "ctx.percentFull": "{percent}% занято",
+  "ctx.tokensOfLimit": "~{used} / {limit} токенов",
   "agent.compacting": "Сжатие контекста…",
   "agent.compacted":
     "Контекст сжат (свёрнуто: {summarized}, сохранено: {retained})",

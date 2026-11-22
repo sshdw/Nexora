@@ -851,6 +851,28 @@
   color: var(--muted-foreground);
 }
 
+.nex-composer-context-subheader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.nex-composer-context-percent {
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-semibold);
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.nex-composer-context-tokens {
+  font-family: var(--font-mono);
+  font-size: var(--type-size-label-small);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
 /* The ring's ink lives in the icon layer: the track is the boundary token
    (`--muted-foreground`, ≥5.6:1 on the card in every theme) and the value
    arc is `currentColor`. The trigger therefore owns only the DATA colour;
@@ -1318,44 +1340,102 @@
 .nex-composer-autonomy-menu {
   width: 312px;
   max-width: min(312px, calc(100vw - 2 * var(--space-xl)));
-  padding: 10px;
-  gap: 8px;
+  padding: 6px;
+  gap: 4px;
   border-radius: var(--radius-lg);
   background: var(--popover);
   border: 1px solid var(--border);
 }
 
-.nex-composer-autonomy-menu .nex-composer-autonomy.nex-seg {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  grid-auto-flow: column;
-  width: 100%;
-  align-self: stretch;
-  gap: 2px;
-  padding: 2px;
-  border-radius: var(--radius-lg);
-  background: var(--muted);
+.nex-access-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  min-width: 0;
 }
 
-.nex-composer-autonomy-menu .nex-composer-autonomy.nex-seg button {
+.nex-access-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.nex-access-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
   min-width: 0;
-  min-height: 28px;
-  padding: 4px 8px;
-  justify-content: center;
-  font-size: var(--type-size-label-medium);
-  text-align: center;
-  white-space: nowrap;
+  padding: 6px 8px;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--foreground);
+  text-align: start;
+  cursor: pointer;
+  transition: background-color var(--nex-sys-motion-duration-fast)
+    var(--nex-sys-motion-easing-standard);
 }
 
-/* In the popover the explainer has room to be read, so the one-line clamp
-   it carried in the row is lifted: a sentence cut at "writes still ask
-   first…" explains nothing. */
-.nex-composer-autonomy-menu .nex-autonomy-explain {
-  white-space: normal;
-  overflow: visible;
-  flex: 0 0 auto;
-  padding: 0 2px 2px;
+.nex-access-option:hover:not(:disabled),
+.nex-access-option[aria-checked="true"] {
+  background: var(--accent);
+}
+
+.nex-access-option:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+.nex-access-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nex-access-option-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--muted-foreground);
+}
+
+.nex-access-option[aria-checked="true"] .nex-access-option-icon {
+  color: var(--foreground);
+}
+
+.nex-access-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.nex-access-option-title {
+  font-size: var(--type-size-body-small);
+  font-weight: var(--type-weight-medium);
+  line-height: 1.3;
+  color: var(--foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nex-access-option-desc {
+  font-size: var(--type-size-label-small);
+  line-height: 1.3;
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nex-access-option-check {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--tick);
 }
 
 /* The trailing control group - context ring, autonomy, model, send - as ONE
@@ -1544,9 +1624,9 @@
 }
 
 .nex-composer-trigger-menu {
-  width: 300px;
+  width: 340px;
   max-width: calc(100vw - var(--space-lg));
-  padding: var(--space-xs);
+  padding: 4px;
   background: var(--popover);
   color: var(--popover-foreground);
   border: 1px solid var(--border);
@@ -1556,25 +1636,29 @@
 .nex-composer-trigger-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-xxs);
-  margin: var(--space-xs) 0 0;
+  gap: 2px;
+  margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 240px;
+  max-height: 260px;
   overflow-y: auto;
 }
 
 .nex-composer-trigger-option {
   display: flex;
   align-items: center;
-  gap: var(--space-xs);
+  flex-wrap: nowrap;
+  gap: 8px;
   width: 100%;
-  padding: var(--space-xs) var(--space-sm);
-  border-radius: var(--radius-md);
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--popover-foreground);
   text-align: left;
   font-size: var(--type-size-body-small);
+  white-space: nowrap;
   cursor: pointer;
   transition: background-color var(--nex-sys-motion-duration-fast)
     var(--nex-sys-motion-easing-standard);
@@ -1602,12 +1686,13 @@
   flex: none;
   font-family: var(--font-mono);
   font-size: var(--type-size-body-small);
-  font-weight: var(--type-weight-medium);
+  font-weight: var(--type-weight-semibold);
   color: var(--foreground);
+  white-space: nowrap;
 }
 
 .nex-composer-trigger-desc {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1616,9 +1701,17 @@
   font-size: var(--type-size-label-small);
 }
 
+.nex-composer-trigger-chevron {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+
 .nex-composer-trigger-empty {
-  margin: var(--space-xs) 0 0;
-  padding: var(--space-xs) var(--space-sm);
+  margin: 0;
+  padding: 6px 8px;
   color: var(--muted-foreground);
   font-size: var(--type-size-body-small);
 }

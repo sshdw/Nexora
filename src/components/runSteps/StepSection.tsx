@@ -9,6 +9,7 @@ import type { AgentStepView } from "../../lib/useAgentRun";
 import { tr, type Locale } from "../../lib/strings";
 import { useStrings } from "../../lib/useLocale";
 import Button from "../Button";
+import { ChevronRightIcon } from "../icons";
 import { FILE_TOOLS } from "./grouping";
 import {
   diffCounts,
@@ -374,21 +375,30 @@ export const StepSection = memo(function StepSection({
     onCollapseStep?.(runId, seq);
   }, [onCollapseStep, runId, seq]);
 
+  const formattedDuration =
+    step.duration_ms !== null && step.duration_ms !== undefined
+      ? step.duration_ms >= 1000
+        ? `${Math.round(step.duration_ms / 1000)}s`
+        : `${step.duration_ms}ms`
+      : null;
+
   return (
-    <div className={fade ? `nex-agent-step ${fade}` : "nex-agent-step"}>
+    <div
+      className={fade ? `nex-agent-step ${fade}` : "nex-agent-step"}
+      data-step-seq={step.seq}
+    >
       <button
         type="button"
         className="nex-agent-step-header"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="nex-agent-step-seq">#{step.seq}</span>
         <StepLine step={step} live={live} locale={locale} />
-        {step.duration_ms !== null && step.duration_ms !== undefined && (
-          <span className="nex-agent-step-duration">{step.duration_ms}ms</span>
+        {formattedDuration !== null && (
+          <span className="nex-agent-step-duration">{formattedDuration}</span>
         )}
         <span className="nex-agent-step-chevron" aria-hidden="true">
-          {open ? "▾" : "▸"}
+          <ChevronRightIcon size={16} />
         </span>
       </button>
       {open && (
