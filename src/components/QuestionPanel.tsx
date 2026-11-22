@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 import type { PendingQuestionView } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import { Button } from "./ui/button";
+import { Checkbox } from "./ui/checkbox";
 
 export interface QuestionPanelProps {
   question: PendingQuestionView;
@@ -107,13 +108,21 @@ export default function QuestionPanel({
                     "nex-question-option" + (checked ? " is-selected" : "")
                   }
                 >
-                  <input
-                    type={question.multi_select ? "checkbox" : "radio"}
-                    name={`question-${question.question_id}`}
-                    checked={checked}
-                    disabled={submitting}
-                    onChange={() => toggleOption(option)}
-                  />
+                  {question.multi_select ? (
+                    <Checkbox
+                      checked={checked}
+                      disabled={submitting}
+                      onCheckedChange={() => toggleOption(option)}
+                    />
+                  ) : (
+                    <input
+                      type="radio"
+                      name={`question-${question.question_id}`}
+                      checked={checked}
+                      disabled={submitting}
+                      onChange={() => toggleOption(option)}
+                    />
+                  )}
                   <span className="nex-question-option-label">{option}</span>
                 </label>
               );

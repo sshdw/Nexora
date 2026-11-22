@@ -289,6 +289,16 @@ const { mockInvoke, failNext, confirmFail, state } = vi.hoisted(() => {
         }
         case "get_resolved_settings":
           return buildResolved();
+        case "chatgpt_oauth_status":
+          return {
+            connected: false,
+            has_refresh_token: false,
+            expires_at: null,
+            connected_at: null,
+            auth_mode: "none",
+            problem: null,
+            models: [],
+          };
         case "save_scoped_setting": {
           const { scope, key, value } = args as {
             scope: "personal" | "project";
@@ -628,9 +638,11 @@ describe("SettingsView — 16 provider presets & openai_compat endpoint validati
       expect(screen.getByLabelText("Provider")).toBeInTheDocument()
     );
 
-    const providerSelect = screen.getByLabelText("Provider") as HTMLSelectElement;
+    const providerSelect = screen.getByLabelText("Provider");
+    fireEvent.click(providerSelect);
+    const options = screen.getAllByRole("option");
     // 1 placeholder + 16 connections = 17 options.
-    expect(providerSelect.options.length).toBe(17);
+    expect(options.length).toBe(17);
     for (const label of [
       "DeepSeek",
       "Alibaba / Qwen",
@@ -642,14 +654,16 @@ describe("SettingsView — 16 provider presets & openai_compat endpoint validati
       "Mistral",
       "OpenAI Compatible",
     ]) {
-      expect(
-        Array.from(providerSelect.options).some((opt) =>
-          opt.text.includes(label)
-        )
-      ).toBe(true);
+      expect(options.some((opt) => opt.textContent?.includes(label))).toBe(
+        true
+      );
     }
 
-    fireEvent.change(providerSelect, { target: { value: "openai_compat" } });
+    const compatOption = options.find((opt) =>
+      opt.textContent?.includes("OpenAI Compatible")
+    );
+    expect(compatOption).toBeDefined();
+    fireEvent.click(compatOption!);
     await waitFor(() =>
       expect(
         screen.getByText("Configure a valid URL, model ID, and API key.")
@@ -880,5 +894,36 @@ describe("SettingsView — Stage 4 provenance, scope & capability overrides", ()
     });
     fireEvent.change(search, { target: { value: "External CLI adapters" } });
     expect(screen.getByText(/No settings match/i)).toBeInTheDocument();
+  });
+
+  it("scopes ChatGPT OAuth errors to Credentials and clears them on tab switch", async () => {
+    renderSettings();
+    await waitFor(() =>
+      expect(railButton("Credentials")).toBeInTheDocument()
+    );
+    fireEvent.click(railButton("Credentials"));
+
+    failNext.command = "chatgpt_oauth_start";
+    const ackCheckbox = await screen.findByRole("checkbox");
+    fireEvent.click(ackCheckbox);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Sign in with ChatGPT" })
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.id).toBe("nex-chatgpt-oauth-error");
+    const errText = alert.textContent ?? "";
+    expect(errText.length).toBeGreaterThan(0);
+
+    // Switching to Data management or Advanced must never show the OAuth error.
+    fireEvent.click(railButton("Data management"));
+    expect(screen.queryByText(errText)).toBeNull();
+
+    fireEvent.click(railButton("Advanced"));
+    expect(screen.queryByText(errText)).toBeNull();
+
+    // Returning to Credentials keeps the error cleared after tab switch.
+    fireEvent.click(railButton("Credentials"));
+    expect(screen.queryByText(errText)).toBeNull();
   });
 });

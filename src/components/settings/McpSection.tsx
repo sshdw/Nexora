@@ -10,6 +10,7 @@
 //!   are cleared from component state immediately on save.
 
 import { useCallback, useEffect, useState } from "react";
+import { Checkbox } from "../ui/checkbox";
 
 import type {
   CommandError,
@@ -328,18 +329,14 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
                 <div className="nex-provider-meta">
                   <div className="nex-mcp-badges">
                     <label className="nex-capabilities-check">
-                      <input
-                        type="checkbox"
+                      <Checkbox
                         checked={srv.enabled}
                         disabled={isBusy}
                         aria-label={t("settings.mcpToggleAria", {
                           name: srv.name,
                         })}
-                        onChange={(event) =>
-                          void handleToggleEnabled(
-                            srv.name,
-                            event.target.checked
-                          )
+                        onCheckedChange={(checked) =>
+                          void handleToggleEnabled(srv.name, checked)
                         }
                       />
                       <span className="nex-provider-name">{srv.name}</span>
@@ -587,11 +584,10 @@ export default function McpSection({ resolvedEntry }: McpSectionProps) {
             </div>
 
             <label className="nex-capabilities-check">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={oauthEnabled}
                 disabled={adding}
-                onChange={(event) => setOAuthEnabled(event.target.checked)}
+                onCheckedChange={setOAuthEnabled}
               />
               <span>{t("settings.mcpOAuthToggle")}</span>
             </label>

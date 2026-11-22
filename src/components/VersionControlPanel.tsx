@@ -40,6 +40,7 @@ import { useVcs } from "../lib/useVcs";
 import { DiffView } from "./AgentRunSteps";
 import Button from "./Button";
 import LoadingIndicator from "./LoadingIndicator";
+import { Select } from "./ui/select";
 import { getLocale, tp, tr, type Locale } from "../lib/strings";
 import { useStrings } from "../lib/useLocale";
 
@@ -718,24 +719,22 @@ export default function VersionControlPanel({
                   </h3>
                   {branches.length > 0 && (
                     <div className="nex-vcs-inline-form">
-                      <select
-                        className="nex-vcs-select"
+                      <Select
+                        className="min-w-0 flex-1"
                         aria-label={t("vcs.branchSelectAria")}
                         value={selectedBranch}
                         disabled={acting !== null}
-                        onChange={(event) => {
-                          setSelectedBranch(event.target.value);
+                        options={branches.map((branch) => ({
+                          value: branch.name,
+                          label: branch.is_current
+                            ? `* ${branch.name}`
+                            : branch.name,
+                        }))}
+                        onChange={(nextBranch) => {
+                          setSelectedBranch(nextBranch);
                           vcs.cancelForceDelete();
                         }}
-                      >
-                        {branches.map((branch) => (
-                          <option key={branch.name} value={branch.name}>
-                            {branch.is_current
-                              ? `* ${branch.name}`
-                              : branch.name}
-                          </option>
-                        ))}
-                      </select>
+                      />
                       <Button
                         variant="quiet"
                         size="sm"

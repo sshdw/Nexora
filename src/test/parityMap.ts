@@ -9,6 +9,11 @@
 // re-pointed achromatic — the old dark/hc literals measured OKLCH
 // c=0.0274 / 0.0208, over the c<0.02 pin — so its base literals are the
 // shipped post-fix values, not the base-commit migration values.
+// Exception (PR 4 monochrome purge): `--color-primary*` (all themes) and
+// light-theme neutral surface/ink tokens (`--color-surface-*`,
+// `--color-on-surface*`, `--color-inverse-*`, `--state-inverse-*`) were
+// converted from warm amber/beige M3E literals to pure achromatic monochrome
+// (c < 0.02), so their entries reflect the shipped monochrome values.
 export const PARITY_CASES = [
   {
     old: "--nex-sys-color-error",
@@ -42,14 +47,14 @@ export const PARITY_CASES = [
     old: "--nex-sys-color-inverse-on-surface",
     new: "--color-inverse-on-surface",
     dark: "#27262e",
-    light: "#f7f5f2",
+    light: "#fafafa",
     hc: "#141318",
   },
   {
     old: "--nex-sys-color-inverse-surface",
     new: "--color-inverse-surface",
     dark: "#edeae7",
-    light: "#262420",
+    light: "#18181b",
     hc: "#faf7f1",
   },
   {
@@ -69,16 +74,16 @@ export const PARITY_CASES = [
   {
     old: "--nex-sys-color-on-primary",
     new: "--color-on-primary",
-    dark: "#211c14",
-    light: "#1a1712",
-    hc: "#1c1408",
+    dark: "#141417",
+    light: "#fafafa",
+    hc: "#060507",
   },
   {
     old: "--nex-sys-color-on-primary-container",
     new: "--color-on-primary-container",
-    dark: "#e3c896",
-    light: "#6b5326",
-    hc: "#f0d9a8",
+    dark: "#edeae7",
+    light: "#18181b",
+    hc: "#ffffff",
   },
   {
     old: "--nex-sys-color-on-secondary-container",
@@ -98,29 +103,29 @@ export const PARITY_CASES = [
     old: "--nex-sys-color-on-surface",
     new: "--color-on-surface",
     dark: "#edeae7",
-    light: "#262420",
+    light: "#18181b",
     hc: "#faf7f1",
   },
   {
     old: "--nex-sys-color-on-surface-faint",
     new: "--color-on-surface-faint",
     dark: "#9f988c",
-    light: "#665f55",
+    light: "#63636e",
     hc: "#b3aca0",
   },
-  // D-01: dark/hc re-pointed achromatic (same lightness, family chroma); light was already under the pin.
+  // D-01 + PR 4: achromatic tertiary across all three themes.
   {
     old: "--nex-sys-color-on-surface-tertiary",
     new: "--color-on-surface-tertiary",
     dark: "#a29e97",
-    light: "#615c53",
+    light: "#52525b",
     hc: "#c6c2bb",
   },
   {
     old: "--nex-sys-color-on-surface-variant",
     new: "--color-on-surface-variant",
     dark: "#a19d96",
-    light: "#5f5b54",
+    light: "#52525b",
     hc: "#d8d3c8",
   },
   {
@@ -140,23 +145,23 @@ export const PARITY_CASES = [
   {
     old: "--nex-sys-color-primary",
     new: "--color-primary",
-    dark: "#c9a66b",
-    light: "#a9824a",
-    hc: "#e3c07c",
+    dark: "#edeae7",
+    light: "#18181b",
+    hc: "#ffffff",
   },
   {
     old: "--nex-sys-color-primary-container",
     new: "--color-primary-container",
-    dark: "rgba(201, 166, 107, 0.14)",
-    light: "rgba(169, 130, 74, 0.12)",
-    hc: "rgba(227, 192, 124, 0.22)",
+    dark: "rgba(237, 234, 231, 0.12)",
+    light: "rgba(24, 24, 27, 0.08)",
+    hc: "rgba(255, 255, 255, 0.18)",
   },
   {
     old: "--nex-sys-color-primary-hover",
     new: "--color-primary-hover",
-    dark: "#d6b57e",
-    light: "#97743f",
-    hc: "#f0d09a",
+    dark: "#f5f3ef",
+    light: "#27272a",
+    hc: "#e4e4e7",
   },
   {
     old: "--nex-sys-color-scrim",
@@ -197,14 +202,14 @@ export const PARITY_CASES = [
     old: "--nex-sys-color-surface-canvas",
     new: "--color-surface-canvas",
     dark: "#0e0d11",
-    light: "#fbfaf8",
+    light: "#fafafa",
     hc: "#060507",
   },
   {
     old: "--nex-sys-color-surface-container",
     new: "--color-surface-container",
     dark: "#1e1d24",
-    light: "#f7f5f2",
+    light: "#f4f4f5",
     hc: "#141318",
   },
   {
@@ -218,28 +223,28 @@ export const PARITY_CASES = [
     old: "--nex-sys-color-surface-container-highest",
     new: "--color-surface-container-highest",
     dark: "#302f38",
-    light: "#f3f1ed",
+    light: "#e4e4e7",
     hc: "#2a2933",
   },
   {
     old: "--nex-sys-color-surface-container-low",
     new: "--color-surface-container-low",
     dark: "#1a191f",
-    light: "#e9e7e2",
+    light: "#f4f4f5",
     hc: "#141318",
   },
   {
     old: "--nex-sys-color-surface-container-lowest",
     new: "--color-surface-container-lowest",
     dark: "#0e0d11",
-    light: "#fbfaf8",
+    light: "#fafafa",
     hc: "#060507",
   },
   {
     old: "--nex-sys-color-surface-elevated",
     new: "--color-surface-elevated",
     dark: "#1a191f",
-    light: "#e9e7e2",
+    light: "#f4f4f5",
     hc: "#141318",
   },
   {
@@ -253,7 +258,7 @@ export const PARITY_CASES = [
     old: "--nex-sys-color-surface-nested",
     new: "--color-surface-nested",
     dark: "#1e1d24",
-    light: "#f7f5f2",
+    light: "#f4f4f5",
     hc: "#1e1d24",
   },
   {
@@ -477,14 +482,14 @@ export const PARITY_CASES = [
     old: "--nex-sys-state-inverse-hover",
     new: "--state-inverse-hover",
     dark: "rgba(39, 38, 46, 0.08)",
-    light: "rgba(247, 245, 242, 0.08)",
+    light: "rgba(250, 250, 250, 0.08)",
     hc: "rgba(39, 38, 46, 0.08)",
   },
   {
     old: "--nex-sys-state-inverse-pressed",
     new: "--state-inverse-pressed",
     dark: "rgba(39, 38, 46, 0.12)",
-    light: "rgba(247, 245, 242, 0.12)",
+    light: "rgba(250, 250, 250, 0.12)",
     hc: "rgba(39, 38, 46, 0.12)",
   },
   {

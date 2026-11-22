@@ -395,7 +395,7 @@
 }
 
 .nex-optin-link:hover {
-  color: var(--color-primary);
+  color: var(--primary);
 }
 
 /* Official Sign in with ChatGPT button format, rendered strictly with
@@ -409,8 +409,8 @@
   padding: 0 var(--space-lg);
   border-radius: var(--shape-full);
   border: 1px solid var(--color-outline-variant);
-  background: var(--color-primary);
-  color: var(--color-on-primary);
+  background: var(--primary);
+  color: var(--primary-foreground);
   font-size: var(--type-size-label-large);
   font-weight: var(--type-weight-medium);
   line-height: 1;

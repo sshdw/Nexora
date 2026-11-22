@@ -43,7 +43,7 @@
 
 .nex-onboarding-step.is-current .nex-onboarding-dot {
   width: var(--space-lg);
-  background: var(--color-primary);
+  background: var(--primary);
 }
 
 .nex-onboarding-counter {

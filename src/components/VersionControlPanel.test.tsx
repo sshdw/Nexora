@@ -473,9 +473,8 @@ describe("VersionControlPanel — conflicts, workflow & review (Stage 10)", () =
 
     // Branch delete with unmerged branch shows explicit force-delete confirmation.
     state.failUnmergedDelete = true;
-    fireEvent.change(screen.getByLabelText("Select branch"), {
-      target: { value: "feat/wip" },
-    });
+    fireEvent.click(screen.getByLabelText("Select branch"));
+    fireEvent.click(screen.getByRole("option", { name: "feat/wip" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() =>
       expect(

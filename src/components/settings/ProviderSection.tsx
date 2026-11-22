@@ -18,6 +18,8 @@ import {
 } from "../../lib/useProviders";
 import { useStrings } from "../../lib/useLocale";
 import Button from "../Button";
+import { Checkbox } from "../ui/checkbox";
+import { Select } from "../ui/select";
 import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface ProviderSectionProps {
@@ -223,24 +225,27 @@ export default function ProviderSection({
           </label>
           <SettingSourceBadge entry={resolvedEntries?.["provider.selected"]} />
         </div>
-        <select
+        <Select
           id="provider-select"
-          className="nex-select"
           value={selectedDefinition?.name ?? ""}
-          onChange={(event) => onProviderChange(event.target.value)}
-        >
-          <option value="" disabled>
-            {t("settings.selectProvider")}
-          </option>
-          {store.providers.map(({ supported, available }) => (
-            <option key={supported.name} value={supported.name}>
-              {supported.display_name}
-              {available
-                ? t("settings.readySuffix")
-                : t("settings.notConnectedSuffix")}
-            </option>
-          ))}
-        </select>
+          placeholder={t("settings.selectProvider")}
+          options={[
+            {
+              value: "",
+              label: t("settings.selectProvider"),
+              disabled: true,
+            },
+            ...store.providers.map(({ supported, available }) => ({
+              value: supported.name,
+              label: `${supported.display_name}${
+                available
+                  ? t("settings.readySuffix")
+                  : t("settings.notConnectedSuffix")
+              }`,
+            })),
+          ]}
+          onChange={onProviderChange}
+        />
       </div>
 
       {isPlan && store.chatgptOAuth?.connected && (
@@ -332,13 +337,12 @@ export default function ProviderSection({
 
             <div className="nex-settings-field">
               <label className="nex-capabilities-check">
-                <input
+                <Checkbox
                   id="compat-supports-tools"
-                  type="checkbox"
                   checked={compatSupportsTools}
-                  onChange={(event) => {
+                  onCheckedChange={(checked) => {
                     setCompatDirty(true);
-                    setCompatSupportsTools(event.target.checked);
+                    setCompatSupportsTools(checked);
                   }}
                 />
                 <span>{t("settings.compatSupportsTools")}</span>
@@ -367,36 +371,40 @@ export default function ProviderSection({
           </label>
           <SettingSourceBadge entry={resolvedEntries?.["provider.model"]} />
         </div>
-        <select
+        <Select
           id="model-select"
-          className="nex-select"
           value={
             !isPlan && customActive
               ? "__custom__"
               : (effectiveModel ?? selectedModels[0] ?? "")
           }
           disabled={selectedModels.length === 0}
-          onChange={(event) => onModelSelect(event.target.value)}
-        >
-          {selectedModels.length === 0 && (
-            <option value="">
-              {isCompat
-                ? t("settings.compatNoModelsYet")
-                : t("settings.selectProviderFirst")}
-            </option>
-          )}
-          {selectedModels.map((model) => (
-            <option key={model} value={model}>
-              {(isPlan &&
-                store.chatgptOAuth?.models?.find((item) => item.slug === model)
-                  ?.display_name) ||
-                model}
-            </option>
-          ))}
-          {!isPlan && selectedModels.length > 0 && (
-            <option value="__custom__">{t("settings.customOpt")}</option>
-          )}
-        </select>
+          options={[
+            ...(selectedModels.length === 0
+              ? [
+                  {
+                    value: "",
+                    label: isCompat
+                      ? t("settings.compatNoModelsYet")
+                      : t("settings.selectProviderFirst"),
+                  },
+                ]
+              : []),
+            ...selectedModels.map((model) => ({
+              value: model,
+              label:
+                (isPlan &&
+                  store.chatgptOAuth?.models?.find(
+                    (item) => item.slug === model
+                  )?.display_name) ||
+                model,
+            })),
+            ...(!isPlan && selectedModels.length > 0
+              ? [{ value: "__custom__", label: t("settings.customOpt") }]
+              : []),
+          ]}
+          onChange={onModelSelect}
+        />
         {!isPlan &&
           selectedDefinition &&
           store.refreshModelMetadata &&
@@ -485,10 +493,9 @@ export default function ProviderSection({
               <div className="nex-capabilities-efforts">
                 {(["low", "medium", "high", "xhigh"] as const).map((level) => (
                   <label key={level} className="nex-capabilities-check">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={effortsDraft.includes(level)}
-                      onChange={() => toggleEffort(level)}
+                      onCheckedChange={() => toggleEffort(level)}
                     />
                     <span>{level}</span>
                   </label>
@@ -498,26 +505,23 @@ export default function ProviderSection({
 
             <div className="nex-capabilities-toggles">
               <label className="nex-capabilities-check">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={thinkingDraft}
-                  onChange={(e) => setThinkingDraft(e.target.checked)}
+                  onCheckedChange={setThinkingDraft}
                 />
                 <span>{t("settings.capabilitiesThinking")}</span>
               </label>
               <label className="nex-capabilities-check">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={toolsDraft}
-                  onChange={(e) => setToolsDraft(e.target.checked)}
+                  onCheckedChange={setToolsDraft}
                 />
                 <span>{t("settings.capabilitiesTools")}</span>
               </label>
               <label className="nex-capabilities-check">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={attachmentsDraft}
-                  onChange={(e) => setAttachmentsDraft(e.target.checked)}
+                  onCheckedChange={setAttachmentsDraft}
                 />
                 <span>{t("settings.capabilitiesAttachments")}</span>
               </label>
