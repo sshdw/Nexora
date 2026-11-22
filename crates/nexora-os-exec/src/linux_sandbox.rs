@@ -111,6 +111,16 @@ pub(crate) fn spawn_sandboxed(
     if let Some(bwrap) = find_usable_bwrap() {
         return spawn_via_bwrap(&bwrap, command, policy, cwd, &env);
     }
+    // Availability is probed again here. A CI run that requires bubblewrap
+    // must fail if it became unavailable before launching the actual child.
+    #[cfg(test)]
+    if std::env::var("NEXORA_TEST_LINUX_SANDBOX_MECHANISM").as_deref()
+        == Ok(MECHANISM_BWRAP_SECCOMP)
+    {
+        return Err(io::Error::other(
+            "required test backend bubblewrap unavailable",
+        ));
+    }
     spawn_via_landlock_seccomp(command, policy, cwd, &env)
 }
 

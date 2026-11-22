@@ -442,6 +442,40 @@ jobs:
           if ($msiHeader -ne 'D0CF11E0A1B11AE1' -or $nsisHeader -ne '4D5A') {
             throw 'Windows installers do not have the expected MSI and executable headers'
           }
+
+          $config = Get-Content -LiteralPath ../../../tauri.conf.json -Raw | ConvertFrom-Json
+          $dark = Join-Path $env:WIX 'bin/dark.exe'
+          $sevenZip = Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+          $scratch = [System.IO.Directory]::CreateTempSubdirectory('nexora-package-').FullName
+          try {
+            $msiDir = Join-Path $scratch 'msi'
+            $manifest = Join-Path $scratch 'installer.wxs'
+            & $dark -nologo -x $msiDir $msi[0].FullName -out $manifest
+            if ($LASTEXITCODE -ne 0) { throw 'WiX could not extract the MSI' }
+            [xml]$msiManifest = Get-Content -LiteralPath $manifest -Raw
+            $msiEntry = @($msiManifest.SelectNodes("//*[local-name()='File']") |
+              Where-Object { $_.GetAttribute('Name') -ieq 'nexora.exe' })
+            if ($msiEntry.Count -ne 1 -or $msiEntry[0].Id -notmatch '^[A-Za-z_][A-Za-z0-9_.]*$') {
+              throw 'MSI must declare one Nexora executable'
+            }
+            $msiPayload = Join-Path $msiDir "File/$($msiEntry[0].Id)"
+
+            $nsisDir = Join-Path $scratch 'nsis'
+            & $sevenZip x -tNsis "-o$nsisDir" '-ir!nexora.exe' -y $nsis[0].FullName
+            if ($LASTEXITCODE -ne 0) { throw '7-Zip could not extract the NSIS installer' }
+            $nsisPayload = @(Get-ChildItem -LiteralPath $nsisDir -Recurse -File -Filter 'nexora.exe')
+            if ($nsisPayload.Count -ne 1) { throw 'NSIS must contain one Nexora executable' }
+
+            foreach ($payload in @($msiPayload, $nsisPayload[0].FullName)) {
+              $version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($payload)
+              if ($version.ProductName -cne $config.productName -or $version.ProductVersion -cne $config.version) {
+                throw "Unexpected Nexora product or version in $payload"
+              }
+              Get-FileHash -LiteralPath $payload -Algorithm SHA256
+            }
+          } finally {
+            Remove-Item -LiteralPath $scratch -Recurse -Force
+          }
           $msi[0], $nsis[0] | Get-FileHash -Algorithm SHA256
 
       - name: Verify macOS application and disk image
@@ -460,3 +494,27 @@ jobs:
           test -x "${apps[0]}/Contents/MacOS/$executable"
           file "${apps[0]}/Contents/MacOS/$executable" | grep 'Mach-O'
           hdiutil verify "${dmgs[0]}"
+
+          mount_dir="$(mktemp -d "$RUNNER_TEMP/nexora-dmg.XXXXXX")"
+          mounted=false
+          cleanup() {
+            if [[ "$mounted" == true ]]; then
+              hdiutil detach "$mount_dir" || hdiutil detach -force "$mount_dir" || exit 1
+            fi
+            if [[ -d "$mount_dir" ]]; then
+              rmdir "$mount_dir" || exit 1
+            fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount_dir" "${dmgs[0]}"
+          mounted=true
+          mounted_app="$mount_dir/${apps[0]##*/}"
+          mounted_plist="$mounted_app/Contents/Info.plist"
+          mounted_executable="$mounted_app/Contents/MacOS/$executable"
+          for entry in "$mounted_app" "$mounted_app/Contents" "$mounted_app/Contents/MacOS" "$mounted_plist" "$mounted_executable"; do
+            test ! -L "$entry"
+          done
+          test -f "$mounted_plist"
+          test -f "$mounted_executable" && test -x "$mounted_executable"
+          cmp "$plist" "$mounted_plist"
+          cmp "${apps[0]}/Contents/MacOS/$executable" "$mounted_executable"
