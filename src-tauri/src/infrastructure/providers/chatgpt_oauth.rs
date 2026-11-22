@@ -82,7 +82,10 @@ const MAX_TOKEN_RESPONSE_BYTES: usize = 128 * 1024;
 const MAX_KEYRING_CHUNK_CHARS: usize = 1000;
 
 /// Maximum number of keyring chunks allowed for one OAuth token bundle.
-const MAX_KEYRING_CHUNKS: usize = 32;
+/// 64 chunks * 1000 UTF-16 chars comfortably accommodates large OpenAI JWT
+/// payloads (access_token + id_token + refresh_token + account model catalog)
+/// while keeping every Windows Credential Manager entry below the 1280-char limit.
+const MAX_KEYRING_CHUNKS: usize = 64;
 
 // Serialize the keyring transaction, refresh, and disconnect. The epoch also
 // invalidates any sign-in that is waiting outside the lock for its browser.
@@ -3381,5 +3384,120 @@ mod tests {
             BROWSER_SIGN_IN.try_lock().is_ok(),
             "sign-in lock must be released immediately"
         );
+    }
+
+    fn spawn_owned_scripted_token_server(
+        responses: Vec<(&'static str, String)>,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind scripted token server");
+        let port = listener.local_addr().expect("addr").port();
+        let handle = std::thread::spawn(move || {
+            for (status, body) in responses {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (port, handle)
+    }
+
+    #[test]
+    fn token_endpoint_accepts_large_24kb_jwt_payload_and_rejects_over_limit() {
+        let _flow_guard = lock_session_flow_test();
+
+        // Construct a realistic ~24 KB OAuth token response containing large
+        // access_token, id_token, and refresh_token JWT strings.
+        let large_access = format!("eyJhbGciOiJSUzI1NiJ9.{}.sig", "A".repeat(10_500));
+        let large_id = format!("eyJhbGciOiJSUzI1NiJ9.{}.sig", "I".repeat(10_000));
+        let large_refresh = format!("rt_{}", "R".repeat(4_000));
+        let large_body = serde_json::json!({
+            "access_token": large_access,
+            "id_token": large_id,
+            "refresh_token": large_refresh,
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "scope": DEFAULT_SCOPES,
+        })
+        .to_string();
+        assert!(
+            large_body.len() > 24 * 1024 && large_body.len() < MAX_TOKEN_RESPONSE_BYTES,
+            "expected ~24 KB valid token payload, got {} bytes",
+            large_body.len()
+        );
+
+        // Over-limit payload exceeds MAX_TOKEN_RESPONSE_BYTES (128 KiB).
+        let oversized_body = format!(
+            r#"{{"access_token":"{}"}}"#,
+            "X".repeat(MAX_TOKEN_RESPONSE_BYTES + 1024)
+        );
+        assert!(oversized_body.len() > MAX_TOKEN_RESPONSE_BYTES);
+
+        let (port, server) = spawn_owned_scripted_token_server(vec![
+            ("200 OK", large_body),
+            ("200 OK", oversized_body),
+        ]);
+        let token_url = Url::parse(&format!("http://127.0.0.1:{port}/api/accounts/oauth/token"))
+            .expect("valid loopback token url");
+
+        // 1. ~24 KB token response parses cleanly and round-trips through the chunked keyring store.
+        let parsed = post_token_form(
+            token_url.clone(),
+            &[("grant_type", "refresh_token")],
+            Duration::from_secs(5),
+        )
+        .expect("24 KB OAuth token response must succeed");
+        assert_eq!(parsed.access_token, large_access);
+        assert_eq!(parsed.id_token.as_deref(), Some(large_id.as_str()));
+        assert_eq!(
+            parsed.refresh_token.as_deref(),
+            Some(large_refresh.as_str())
+        );
+
+        let keyring = SizeLimitedKeyring::new(1280);
+        let stored = StoredChatGptOAuthTokens {
+            access_token: parsed.access_token,
+            refresh_token: parsed.refresh_token,
+            expires_at: Some(1_900_000_000),
+            token_type: parsed.token_type,
+            scope: parsed.scope,
+            connected_at: 1_899_996_400,
+            identity: Some(PlanIdentity {
+                client_id: "oaiapp_large_jwt_fixture".to_string(),
+                subject: "sub-large-jwt".to_string(),
+                id_token: large_id.clone(),
+                models: vec![PlanModel {
+                    slug: "gpt-5.4".to_string(),
+                    display_name: "GPT-5.4".to_string(),
+                }],
+            }),
+            reauthorization_required: false,
+        };
+        ChatGptOAuthStore::save_with(&keyring, &stored)
+            .expect("24 KB token bundle saves under 1280-char keyring chunk limit");
+        let loaded = ChatGptOAuthStore::load_with(&keyring)
+            .expect("load 24 KB token bundle")
+            .expect("bundle present");
+        assert_eq!(loaded.access_token, large_access);
+        assert_eq!(
+            loaded.identity.as_ref().map(|id| id.id_token.as_str()),
+            Some(large_id.as_str())
+        );
+
+        // 2. Over-limit (> MAX_TOKEN_RESPONSE_BYTES) response is rejected with ResponseTooLarge.
+        match post_token_form(
+            token_url,
+            &[("grant_type", "refresh_token")],
+            Duration::from_secs(5),
+        ) {
+            Err(err) => assert_eq!(err, TokenEndpointError::ResponseTooLarge),
+            Ok(_) => panic!("over-limit OAuth token response must be rejected"),
+        }
+
+        server.join().unwrap();
     }
 }

@@ -316,6 +316,15 @@ export default function SettingsView({
   useEffect(() => {
     setSection(initialSection);
   }, [initialSection]);
+
+  // Clear scoped ChatGPT OAuth errors whenever switching away from Credentials
+  // or closing Settings so they never leak across tabs.
+  const clearChatGptOAuthError = store.clearChatGptOAuthError;
+  useEffect(() => {
+    if (section !== "credentials") {
+      clearChatGptOAuthError?.();
+    }
+  }, [section, clearChatGptOAuthError]);
   const [query, setQuery] = useState("");
   const [draftKeys, setDraftKeys] = useState<Record<string, string>>({});
   // Clear-all-data state. The confirmation is the native OS prompt raised by
@@ -1058,15 +1067,17 @@ export default function SettingsView({
                   )}
                 </div>
               )}
-            {store.error && (
-              <p
-                id="nex-settings-store-error"
-                className="nex-settings-error nex-fade-in"
-                role="alert"
-              >
-                {store.error.message}
-              </p>
-            )}
+            {store.error &&
+              (visibleSections.includes("provider") ||
+                visibleSections.includes("credentials")) && (
+                <p
+                  id="nex-settings-store-error"
+                  className="nex-settings-error nex-fade-in"
+                  role="alert"
+                >
+                  {store.error.message}
+                </p>
+              )}
             {visibleSections.length === 0 ? (
               <section
                 className="nex-settings-section"

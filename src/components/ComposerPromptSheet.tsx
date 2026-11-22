@@ -7,6 +7,7 @@ import type { ComposerContextState, PromptSheet } from "../lib/useComposerContex
 import { useStrings } from "../lib/useLocale";
 import Button from "./Button";
 import ModalShell from "./Modal";
+import { Checkbox } from "./ui/checkbox";
 
 function errorMessage(error: unknown, fallback: string) {
   if (typeof error === "object" && error !== null && "message" in error
@@ -148,10 +149,18 @@ export default function ComposerPromptSheet({
               </Button>
               {summary.enabled && summary.trusted && (
                 <label className="nex-prompt-toggle">
-                  <input type="checkbox" checked={summary.auto_select} disabled={busy}
-                    onChange={(event) => void changeSkill(event.currentTarget.checked
-                      ? "enable_auto_selection" : "disable_auto_selection")} />
-                  {t("prompt.autoSelect")}
+                  <Checkbox
+                    checked={summary.auto_select}
+                    disabled={busy}
+                    onCheckedChange={(checked) =>
+                      void changeSkill(
+                        checked
+                          ? "enable_auto_selection"
+                          : "disable_auto_selection"
+                      )
+                    }
+                  />
+                  <span>{t("prompt.autoSelect")}</span>
                 </label>
               )}
               <Button variant="primary" disabled={busy || !summary.enabled || !summary.trusted}

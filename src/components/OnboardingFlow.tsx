@@ -27,6 +27,7 @@ import type { WorkspaceStore } from "../lib/useWorkspace";
 import { useStrings } from "../lib/useLocale";
 import Button from "./Button";
 import ModalShell from "./Modal";
+import { Select } from "./ui/select";
 
 export interface OnboardingFlowProps {
   /** Shared provider store (App-lifted single source). */
@@ -63,6 +64,10 @@ export default function OnboardingFlow({
   // the provider list loads after mount (replay-after-load).
   const [manualPick, setManualPick] = useState(false);
   const { t } = useStrings();
+  const clearChatGptOAuthError = providers.clearChatGptOAuthError;
+  useEffect(() => {
+    clearChatGptOAuthError?.();
+  }, [clearChatGptOAuthError]);
   useEffect(() => {
     if (manualPick) return;
     const next =
@@ -193,24 +198,22 @@ export default function OnboardingFlow({
                   >
                     {t("onboarding.providerLabel")}
                   </label>
-                  <select
+                  <Select
                     id="nex-onboarding-provider"
-                    className="nex-select"
                     value={providerName}
                     disabled={connecting}
-                    onChange={(event) => {
+                    options={providers.providers.map(
+                      ({ supported, available }) => ({
+                        value: supported.name,
+                        label: `${supported.display_name}${available ? t("onboarding.connectedSuffix") : ""}`,
+                      })
+                    )}
+                    onChange={(nextValue) => {
                       setManualPick(true);
-                      setProviderName(event.target.value);
+                      setProviderName(nextValue);
                       setConnectDone(false);
                     }}
-                  >
-                    {providers.providers.map(({ supported, available }) => (
-                      <option key={supported.name} value={supported.name}>
-                        {supported.display_name}
-                        {available ? t("onboarding.connectedSuffix") : ""}
-                      </option>
-                    ))}
-                  </select>
+                  />
                   <label
                     className="nex-settings-label"
                     htmlFor="nex-onboarding-key"

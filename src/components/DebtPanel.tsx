@@ -28,6 +28,7 @@ import { useDebt } from "../lib/useDebt";
 import { useStrings, type Strings } from "../lib/useLocale";
 import Button from "./Button";
 import LoadingIndicator from "./LoadingIndicator";
+import { Select } from "./ui/select";
 import ConfirmDialog from "./ConfirmDialog";
 import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
 
@@ -193,32 +194,31 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
             <label className="nex-vcs-notice" htmlFor="nex-debt-severity">
               {t("debt.severityFilter")}
             </label>
-            <select
+            <Select
               id="nex-debt-severity"
-              className="nex-input"
               value={severityFilter}
-              onChange={(event) => setSeverityFilter(event.target.value)}
-            >
-              <option value="all">{t("debt.severityAll")}</option>
-              <option value="info">{t("debt.sevInfo")}</option>
-              <option value="warning">{t("debt.sevWarning")}</option>
-            </select>
+              options={[
+                { value: "all", label: t("debt.severityAll") },
+                { value: "info", label: t("debt.sevInfo") },
+                { value: "warning", label: t("debt.sevWarning") },
+              ]}
+              onChange={setSeverityFilter}
+            />
             <label className="nex-vcs-notice" htmlFor="nex-debt-status">
               {t("debt.statusFilter")}
             </label>
-            <select
+            <Select
               id="nex-debt-status"
-              className="nex-input"
               value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value)}
-            >
-              <option value="all">{t("debt.statusAll")}</option>
-              {STATUS_ORDER.map((status) => (
-                <option key={status} value={status}>
-                  {statusLabel(status, t)}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: "all", label: t("debt.statusAll") },
+                ...STATUS_ORDER.map((status) => ({
+                  value: status,
+                  label: statusLabel(status, t),
+                })),
+              ]}
+              onChange={setStatusFilter}
+            />
             {items.length === 0 ? (
               <p className="nex-agent-empty">{t("debt.emptyText")}</p>
             ) : visible.length === 0 ? (
@@ -256,21 +256,18 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
                       >
                         {t("debt.statusFilter")}
                       </label>{" "}
-                      <select
+                      <Select
                         id={`nex-debt-status-${item.id}`}
-                        className="nex-input"
                         value={item.status}
                         disabled={busyId === item.id}
-                        onChange={(event) =>
-                          void debt.changeStatus(item, event.target.value)
+                        options={STATUS_ORDER.map((status) => ({
+                          value: status,
+                          label: statusLabel(status, t),
+                        }))}
+                        onChange={(nextStatus) =>
+                          void debt.changeStatus(item, nextStatus)
                         }
-                      >
-                        {STATUS_ORDER.map((status) => (
-                          <option key={status} value={status}>
-                            {statusLabel(status, t)}
-                          </option>
-                        ))}
-                      </select>{" "}
+                      />{" "}
                       <Button
                         variant="quiet"
                         onClick={() => setDeleteTarget(item)}
@@ -332,15 +329,15 @@ export default function DebtPanel({ onClose }: DebtPanelProps) {
               >
                 {t("debt.severityLabel")}
               </label>
-              <select
+              <Select
                 id="nex-debt-form-severity"
-                className="nex-input"
                 value={formSeverity}
-                onChange={(event) => setFormSeverity(event.target.value)}
-              >
-                <option value="info">{t("debt.sevInfo")}</option>
-                <option value="warning">{t("debt.sevWarning")}</option>
-              </select>
+                options={[
+                  { value: "info", label: t("debt.sevInfo") },
+                  { value: "warning", label: t("debt.sevWarning") },
+                ]}
+                onChange={setFormSeverity}
+              />
               <label className="nex-vcs-notice" htmlFor="nex-debt-location">
                 {t("debt.locationLabel")}
               </label>

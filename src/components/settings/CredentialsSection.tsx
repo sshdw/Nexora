@@ -3,7 +3,7 @@
 //! parent (and are cleared only on a successful connect), so a section
 //! round trip preserves them exactly as before the split.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { openExternalUrl, type SupportedProvider } from "../../lib/tauri";
 import {
@@ -13,6 +13,7 @@ import {
 import { useStrings } from "../../lib/useLocale";
 import Button from "../Button";
 import { ChatGptMarkIcon } from "../icons";
+import { Checkbox } from "../ui/checkbox";
 
 const CHATGPT_MANAGE_USAGE_URL = "https://chatgpt.com/#settings";
 
@@ -33,6 +34,15 @@ export default function CredentialsSection({
 }: CredentialsSectionProps) {
   const { t } = useStrings();
   const [oauthOptInAck, setOauthOptInAck] = useState(false);
+
+  // Clear scoped ChatGPT OAuth errors when leaving the Credentials section so
+  // they never linger across tab/modal switches.
+  const clearOAuthError = store.clearChatGptOAuthError;
+  useEffect(() => {
+    return () => {
+      clearOAuthError?.();
+    };
+  }, [clearOAuthError]);
 
   const apiProviders = store.providers.filter(
     ({ supported }) => supported.name !== CHATGPT_PLAN_PROVIDER
@@ -185,14 +195,22 @@ export default function CredentialsSection({
             </p>
           ) : oauthOtherInstance ? null : (
             <label className="nex-capabilities-check">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={oauthOptInAck}
                 disabled={oauthBusy}
-                onChange={(event) => setOauthOptInAck(event.target.checked)}
+                onCheckedChange={(checked) => setOauthOptInAck(checked)}
               />
               <span>{t("settings.chatgptOAuthOptInLabel")}</span>
             </label>
+          )}
+          {store.chatgptOAuthError && (
+            <p
+              id="nex-chatgpt-oauth-error"
+              className="nex-settings-error nex-fade-in"
+              role="alert"
+            >
+              {store.chatgptOAuthError.message}
+            </p>
           )}
           {oauthOtherInstance ? (
             <Button

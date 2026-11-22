@@ -242,6 +242,10 @@ export interface ProvidersStore {
   chatgptOAuth?: ChatGptOAuthStatus | null;
   /** True while an opt-in ChatGPT OAuth flow/refresh/disconnect is running. */
   chatgptOAuthWorking?: boolean;
+  /** Scoped error for ChatGPT OAuth actions (never leaks into general provider/settings errors). */
+  chatgptOAuthError?: CommandError | null;
+  /** Clear the scoped ChatGPT OAuth error (e.g. on tab/modal switch). */
+  clearChatGptOAuthError?: () => void;
   /** Start interactive opt-in ChatGPT Plus/Pro OAuth 2.0 + PKCE sign-in. */
   startChatGptOAuth?: () => Promise<boolean>;
   /** Refresh stored opt-in ChatGPT OAuth tokens in the OS keyring. */
@@ -273,6 +277,11 @@ export function useProviders(): ProvidersStore {
   );
   const [chatgptOAuthWorking, setChatGptOAuthWorking] =
     useState<boolean>(false);
+  const [chatgptOAuthError, setChatGptOAuthError] =
+    useState<CommandError | null>(null);
+  const clearChatGptOAuthError = useCallback(() => {
+    setChatGptOAuthError(null);
+  }, []);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<CommandError | null>(null);
   const [working, setWorking] = useState<boolean>(false);
@@ -702,14 +711,14 @@ export function useProviders(): ProvidersStore {
 
   const startChatGptOAuth = useCallback(async (): Promise<boolean> => {
     setChatGptOAuthWorking(true);
-    setError(null);
+    setChatGptOAuthError(null);
     try {
       const next = await chatgptOAuthStart();
       setChatGptOAuth(next);
       await reload();
       return true;
     } catch (e) {
-      setError(toCommandError(e));
+      setChatGptOAuthError(toCommandError(e));
       return false;
     } finally {
       setChatGptOAuthWorking(false);
@@ -718,14 +727,14 @@ export function useProviders(): ProvidersStore {
 
   const refreshChatGptOAuth = useCallback(async (): Promise<boolean> => {
     setChatGptOAuthWorking(true);
-    setError(null);
+    setChatGptOAuthError(null);
     try {
       const next = await chatgptOAuthRefresh();
       setChatGptOAuth(next);
       return true;
     } catch (e) {
       await reload();
-      setError(toCommandError(e));
+      setChatGptOAuthError(toCommandError(e));
       return false;
     } finally {
       setChatGptOAuthWorking(false);
@@ -734,7 +743,7 @@ export function useProviders(): ProvidersStore {
 
   const disconnectChatGptOAuth = useCallback(async (): Promise<void> => {
     setChatGptOAuthWorking(true);
-    setError(null);
+    setChatGptOAuthError(null);
     try {
       await chatgptOAuthDisconnect();
       if (selectedProvider === CHATGPT_PLAN_PROVIDER) {
@@ -744,7 +753,7 @@ export function useProviders(): ProvidersStore {
       await reload();
     } catch (e) {
       await reload();
-      setError(toCommandError(e));
+      setChatGptOAuthError(toCommandError(e));
     } finally {
       setChatGptOAuthWorking(false);
     }
@@ -822,6 +831,8 @@ export function useProviders(): ProvidersStore {
       compatSaving,
       chatgptOAuth,
       chatgptOAuthWorking,
+      chatgptOAuthError,
+      clearChatGptOAuthError,
       loading,
       error,
       working,
@@ -852,6 +863,8 @@ export function useProviders(): ProvidersStore {
       compatSaving,
       chatgptOAuth,
       chatgptOAuthWorking,
+      chatgptOAuthError,
+      clearChatGptOAuthError,
       loading,
       error,
       working,

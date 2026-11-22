@@ -1394,14 +1394,6 @@ describe("black theme — legacy hex tokens (D-02 composited-chroma sweep)", () 
       "success-family wash — the sage rgba(143,168,135,…) IS --state-ok's hex",
     ],
     ["--color-on-secondary-container", "success-family companion (sage tint)"],
-    [
-      "--color-primary",
-      "legacy amber (06 §3); live legacy consumers; pruned by D-11/re-skin",
-    ],
-    ["--color-primary-hover", "legacy amber (06 §3); as above"],
-    ["--color-primary-container", "legacy amber wash (06 §3); as above"],
-    ["--color-on-primary", "amber fill's on-colour (hc #1c1408, c=0.0253)"],
-    ["--color-on-primary-container", "legacy amber companion (06 §3)"],
   ]);
 
   it("sweeps every colour literal: composited chroma under the pin, survivors named", () => {

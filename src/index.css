@@ -527,12 +527,12 @@
   --color-inverse-surface: #edeae7;
   --color-inverse-on-surface: #27262e;
 
-  /* Colour roles that keep their legacy (pre-mono) values */
-  --color-primary: #c9a66b;
-  --color-primary-hover: #d6b57e;
-  --color-primary-container: rgba(201, 166, 107, 0.14);
-  --color-on-primary: #211c14;
-  --color-on-primary-container: #e3c896;
+  /* Monochrome primary roles (PR 4 M3E/amber purge) */
+  --color-primary: #edeae7;
+  --color-primary-hover: #f5f3ef;
+  --color-primary-container: rgba(237, 234, 231, 0.12);
+  --color-on-primary: #141417;
+  --color-on-primary-container: #edeae7;
   --color-secondary-container: rgba(143, 168, 135, 0.14);
   --color-on-secondary-container: #c3d2ba;
   --color-error: #c98375;
@@ -725,32 +725,32 @@
        Values identical to the dark block — mechanical rename only.
        ============================================================ */
 
-  /* Surface ladder */
-  --color-surface-container-lowest: #fbfaf8;
-  --color-surface-container-low: #e9e7e2;
-  --color-surface-container: #f7f5f2;
+  /* Surface ladder — clean neutral monochrome (PR 4) */
+  --color-surface-container-lowest: #fafafa;
+  --color-surface-container-low: #f4f4f5;
+  --color-surface-container: #f4f4f5;
   --color-surface-container-high: #ffffff;
-  --color-surface-container-highest: #f3f1ed;
-  --color-surface-canvas: #fbfaf8;
-  --color-surface-elevated: #e9e7e2;
-  --color-surface-nested: #f7f5f2;
+  --color-surface-container-highest: #e4e4e7;
+  --color-surface-canvas: #fafafa;
+  --color-surface-elevated: #f4f4f5;
+  --color-surface-nested: #f4f4f5;
   --color-surface-floating: #ffffff;
   --color-shell-seam: rgba(0, 0, 0, 0.08);
 
-  /* On-surface content ladder */
-  --color-on-surface: #262420;
-  --color-on-surface-variant: #5f5b54;
-  --color-on-surface-tertiary: #615c53;
-  --color-on-surface-faint: #665f55;
-  --color-inverse-surface: #262420;
-  --color-inverse-on-surface: #f7f5f2;
+  /* On-surface content ladder — clean neutral monochrome (PR 4) */
+  --color-on-surface: #18181b;
+  --color-on-surface-variant: #52525b;
+  --color-on-surface-tertiary: #52525b;
+  --color-on-surface-faint: #63636e;
+  --color-inverse-surface: #18181b;
+  --color-inverse-on-surface: #fafafa;
 
-  /* Colour roles that keep their legacy (pre-mono) values */
-  --color-primary: #a9824a;
-  --color-primary-hover: #97743f;
-  --color-primary-container: rgba(169, 130, 74, 0.12);
-  --color-on-primary: #1a1712;
-  --color-on-primary-container: #6b5326;
+  /* Monochrome primary roles (PR 4 M3E/amber purge) */
+  --color-primary: #18181b;
+  --color-primary-hover: #27272a;
+  --color-primary-container: rgba(24, 24, 27, 0.08);
+  --color-on-primary: #fafafa;
+  --color-on-primary-container: #18181b;
   --color-secondary-container: rgba(93, 125, 85, 0.12);
   --color-on-secondary-container: #3c5a36;
   --color-error: #a8503f;
@@ -767,8 +767,8 @@
   --state-hover: rgba(0, 0, 0, 0.08);
   --state-selected: rgba(0, 0, 0, 0.1);
   --state-pressed: rgba(0, 0, 0, 0.12);
-  --state-inverse-hover: rgba(247, 245, 242, 0.08);
-  --state-inverse-pressed: rgba(247, 245, 242, 0.12);
+  --state-inverse-hover: rgba(250, 250, 250, 0.08);
+  --state-inverse-pressed: rgba(250, 250, 250, 0.12);
 
   /* Scrollbar. Light needs the 3:1 non-text control floor: 0.45 is
        3.36:1 on white (0.30 was 2.12:1), and 0.60 is 5.74:1 on hover.
@@ -816,12 +816,12 @@
   --color-inverse-surface: #faf7f1;
   --color-inverse-on-surface: #141318;
 
-  /* Colour roles that keep their legacy (pre-mono) values */
-  --color-primary: #e3c07c;
-  --color-primary-hover: #f0d09a;
-  --color-primary-container: rgba(227, 192, 124, 0.22);
-  --color-on-primary: #1c1408;
-  --color-on-primary-container: #f0d9a8;
+  /* Monochrome primary roles (PR 4 M3E/amber purge) */
+  --color-primary: #ffffff;
+  --color-primary-hover: #e4e4e7;
+  --color-primary-container: rgba(255, 255, 255, 0.18);
+  --color-on-primary: #060507;
+  --color-on-primary-container: #ffffff;
   --color-secondary-container: rgba(169, 193, 158, 0.22);
   --color-on-secondary-container: #cfdcc6;
   --color-error: #e09a8b;

@@ -274,4 +274,33 @@ describe("CredentialsSection & ProviderSection — ChatGPT subscription", () => 
 
     expect(screen.getByText(/use your ChatGPT plan allowance/)).toBeTruthy();
   });
+
+  it("renders scoped chatgptOAuthError inside the OAuth card and clears it on unmount", () => {
+    const clearChatGptOAuthError = vi.fn();
+    const store = makeStore({
+      chatgptOAuthError: {
+        kind: "providerError",
+        message: "ChatGPT OAuth callback timed out",
+      },
+      clearChatGptOAuthError,
+    });
+
+    const { unmount } = render(
+      <LocaleProvider>
+        <CredentialsSection
+          store={store}
+          draftKeys={{}}
+          onDraftChange={vi.fn()}
+          onConnect={vi.fn()}
+          onDisconnect={vi.fn()}
+        />
+      </LocaleProvider>
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "ChatGPT OAuth callback timed out"
+    );
+    unmount();
+    expect(clearChatGptOAuthError).toHaveBeenCalledTimes(1);
+  });
 });

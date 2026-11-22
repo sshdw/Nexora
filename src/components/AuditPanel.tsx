@@ -44,6 +44,8 @@ import { useStrings, type Strings } from "../lib/useLocale";
 import Button from "./Button";
 import LoadingIndicator from "./LoadingIndicator";
 import FileIssueDialog, { type FileIssueTarget } from "./FileIssueDialog";
+import { Checkbox } from "./ui/checkbox";
+import { Select } from "./ui/select";
 
 export interface AuditPanelProps {
   onClose: () => void;
@@ -315,19 +317,18 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
             <label className="nex-vcs-notice" htmlFor="nex-audit-kind">
               {t("audit.kindFilter")}
             </label>
-            <select
+            <Select
               id="nex-audit-kind"
-              className="nex-input"
               value={kindFilter}
-              onChange={(event) => setKindFilter(event.target.value)}
-            >
-              <option value="all">{t("audit.kindAll")}</option>
-              {KIND_ORDER.map((kind) => (
-                <option key={kind} value={kind}>
-                  {kindLabel(kind, t)}
-                </option>
-              ))}
-            </select>
+              options={[
+                { value: "all", label: t("audit.kindAll") },
+                ...KIND_ORDER.map((kind) => ({
+                  value: kind,
+                  label: kindLabel(kind, t),
+                })),
+              ]}
+              onChange={setKindFilter}
+            />
             {report.findings_overflow > 0 && (
               <p className="nex-vcs-notice" role="note">
                 {t("audit.moreFindings", { n: report.findings_overflow })}
@@ -579,14 +580,16 @@ export default function AuditPanel({ onClose }: AuditPanelProps) {
           <p className="nex-vcs-notice" role="note">
             {t("refactor.kindLabel")}: {t("audit.kindDeadCode")}
           </p>
-          <label className="nex-vcs-notice" htmlFor="nex-refactor-confirm">
-            <input
+          <label
+            className="nex-vcs-notice inline-flex items-center gap-2"
+            htmlFor="nex-refactor-confirm"
+          >
+            <Checkbox
               id="nex-refactor-confirm"
-              type="checkbox"
               checked={applyConfirmed}
-              onChange={(event) => setApplyConfirmed(event.target.checked)}
-            />{" "}
-            {t("refactor.confirmLabel")}
+              onCheckedChange={setApplyConfirmed}
+            />
+            <span>{t("refactor.confirmLabel")}</span>
           </label>
           <div>
             <Button

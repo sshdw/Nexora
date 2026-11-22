@@ -16,6 +16,7 @@ import {
   summarizeMcpServers,
   summarizeRoutingProfile,
 } from "./model";
+import { Checkbox } from "../ui/checkbox";
 import SettingSourceBadge from "./SettingSourceBadge";
 
 export interface AdvancedSectionProps {
@@ -84,14 +85,11 @@ export default function AdvancedSection({
             className="nex-flag-row"
             htmlFor={`flag-${flag.name}`}
           >
-            <input
+            <Checkbox
               id={`flag-${flag.name}`}
-              type="checkbox"
               checked={flagValues[flag.name] ?? true}
               disabled={flagsSaving !== null}
-              onChange={(event) =>
-                onFlagToggle(flag.name, event.target.checked)
-              }
+              onCheckedChange={(checked) => onFlagToggle(flag.name, checked)}
               aria-describedby={`flag-${flag.name}-hint`}
             />
             <span>
