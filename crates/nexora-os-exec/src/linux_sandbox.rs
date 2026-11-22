@@ -703,6 +703,14 @@ fn build_seccomp_bpf() -> Option<Vec<SockFilter>> {
 }
 
 fn find_usable_bwrap() -> Option<PathBuf> {
+    // Exercise the real fallback in its own test process with bubblewrap still installed.
+    #[cfg(test)]
+    if std::env::var("NEXORA_TEST_LINUX_SANDBOX_MECHANISM").as_deref()
+        == Ok(MECHANISM_LANDLOCK_SECCOMP)
+    {
+        return None;
+    }
+
     let candidate = Path::new("/usr/bin/bwrap");
     if candidate.is_file() && can_spawn_with_bwrap(candidate) {
         return Some(candidate.to_path_buf());

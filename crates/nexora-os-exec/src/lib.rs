@@ -630,6 +630,14 @@ mod tests {
                 status.is_verified(),
                 "mandatory native host proof failed: {status:?}"
             );
+            #[cfg(target_os = "linux")]
+            if let Ok(mechanism) = std::env::var("NEXORA_TEST_LINUX_SANDBOX_MECHANISM") {
+                assert_eq!(
+                    status,
+                    SandboxVerificationStatus::Verified { mechanism },
+                    "CI must prove the requested Linux backend"
+                );
+            }
         } else if !status.is_verified() {
             assert_eq!(status.posture(), "PerCommandConsent");
             eprintln!("native isolation proof unavailable on this host: {status:?}");

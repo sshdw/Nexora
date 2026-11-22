@@ -1,26 +1,5 @@
-# cargo-deny configuration — advisories gate ONLY (SEC-06).
-#
-# Scope: `cargo deny --manifest-path src-tauri/Cargo.toml check advisories`
-# resolves to this file (cargo-deny looks for deny.toml next to the manifest,
-# then walks up). It scans src-tauri/Cargo.lock against the RustSec advisory
-# database. That is the automated supply-chain gate SEC-06 calls for: the
-# desktop binary statically embeds vendored libgit2 (git2/libgit2-sys) and
-# bundled SQLite (libsqlite3-sys) C code, so an advisory against those
-# crates — or anything else in the lockfile — fails CI instead of riding in
-# unnoticed. Any matched, non-ignored advisory is a hard error; the only
-# configurable lint level in this schema is `yanked`, which is raised from
-# the default `warn` to `deny`.
-#
-# Deliberately NOT configured here: [licenses] and [bans]. Those encode
-# owner policy (which licenses are acceptable, which crates may not be
-# duplicated) and are a later owner decision. When they are added, they
-# must not weaken the advisory gate below.
-#
-# Keys are limited to the documented current schema: `version = 2` selects
-# the current advisories config format, where vulnerability/unmaintained/
-# unsound handling is built in (severity reported from CVSS) and is not a
-# config knob. No [licenses]/[bans]/[sources] sections exist yet, so no
-# top-level behavior is overridden.
+# RustSec and license policy for the desktop workspace and its Cargo.lock.
+# RustSec scanning also covers the crates that embed vendored libgit2 and SQLite.
 
 [advisories]
 version = 2
@@ -35,4 +14,47 @@ ignore = [
     "RUSTSEC-2026-0371",
     # unmaintained, no vulnerability, transitive via zvariant 5.x <- zbus 5.x (keyring -> zbus-secret-service-keyring-store -> secret-service) — revisit when upstream replaces it
     "RUSTSEC-2026-0372",
+]
+
+[licenses]
+allow = ["MIT", "Apache-2.0"]
+# These exceptions apply to the exact versions already in the desktop lockfile.
+exceptions = [
+    { crate = "alloc-no-stdlib@3.0.0", allow = ["BSD-3-Clause"] },
+    { crate = "alloc-stdlib@0.3.0", allow = ["BSD-3-Clause"] },
+    { crate = "aws-lc-rs@1.18.0", allow = ["ISC"] },
+    { crate = "aws-lc-sys@0.44.0", allow = ["BSD-3-Clause", "ISC"] },
+    { crate = "brotli@9.0.0", allow = ["BSD-3-Clause"] },
+    { crate = "cssparser@0.37.0", allow = ["MPL-2.0"] },
+    { crate = "cssparser-macros@0.7.1", allow = ["MPL-2.0"] },
+    { crate = "dtoa-short@0.3.5", allow = ["MPL-2.0"] },
+    { crate = "foldhash@0.2.0", allow = ["Zlib"] },
+    { crate = "icu_collections@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_locale_core@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_normalizer@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_normalizer_data@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_properties@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_properties_data@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "icu_provider@2.2.0", allow = ["Unicode-3.0"] },
+    { crate = "litemap@0.8.2", allow = ["Unicode-3.0"] },
+    { crate = "option-ext@0.2.0", allow = ["MPL-2.0"] },
+    { crate = "potential_utf@0.1.5", allow = ["Unicode-3.0"] },
+    { crate = "ring@0.17.14", allow = ["ISC"] },
+    { crate = "rustls-webpki@0.103.16", allow = ["ISC"] },
+    { crate = "selectors@0.38.0", allow = ["MPL-2.0"] },
+    { crate = "subtle@2.6.1", allow = ["BSD-3-Clause"] },
+    { crate = "target-lexicon@0.12.16", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { crate = "tinystr@0.8.3", allow = ["Unicode-3.0"] },
+    { crate = "unicode-ident@1.0.24", allow = ["Unicode-3.0"] },
+    { crate = "untrusted@0.9.0", allow = ["ISC"] },
+    { crate = "webpki-root-certs@1.0.11", allow = ["CDLA-Permissive-2.0"] },
+    { crate = "winx@0.36.4", allow = ["Apache-2.0 WITH LLVM-exception"] },
+    { crate = "writeable@0.6.3", allow = ["Unicode-3.0"] },
+    { crate = "yoke@0.8.3", allow = ["Unicode-3.0"] },
+    { crate = "yoke-derive@0.8.2", allow = ["Unicode-3.0"] },
+    { crate = "zerofrom@0.1.8", allow = ["Unicode-3.0"] },
+    { crate = "zerofrom-derive@0.1.7", allow = ["Unicode-3.0"] },
+    { crate = "zerotrie@0.2.4", allow = ["Unicode-3.0"] },
+    { crate = "zerovec@0.11.6", allow = ["Unicode-3.0"] },
+    { crate = "zerovec-derive@0.11.3", allow = ["Unicode-3.0"] },
 ]
