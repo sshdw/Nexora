@@ -180,9 +180,9 @@ describe("context ring — no token data", () => {
       name: "Context window: n/a",
     });
     fireEvent.click(trigger);
-    // The usage line and the panel's own reading both say n/a; neither
-    // invents a zero.
-    expect(screen.getAllByText("n/a").length).toBeGreaterThan(0);
+    // Clean empty/unmeasured state without raw "n/a" noise or invented zeros.
+    expect(screen.getAllByText("No persisted token usage").length).toBeGreaterThan(0);
+    expect(screen.queryByText("n/a")).toBeNull();
     expect(screen.queryByText("0%")).toBeNull();
     expect(screen.queryByText("0.0%")).toBeNull();
     expect(
@@ -322,8 +322,33 @@ describe("context ring — M16 Unknown limit, category breakdown & manual Compac
 
     fireEvent.click(trigger);
     expect(screen.getByText("12K / Unknown")).toBeInTheDocument();
-    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("Unknown")).toHaveLength(1);
+    expect(screen.queryByText("Usage")).toBeNull();
     expect(screen.queryByText(/200K/)).toBeNull();
+  });
+
+  it("collapses redundant Unknown repetition when there is no token data and keeps header horizontal", async () => {
+    mockStats.mockResolvedValue(
+      stats({
+        context_window: null,
+        context_window_provenance: "unknown",
+        total_tokens: 0,
+        usage_percent: 0,
+        has_token_data: false,
+      })
+    );
+    renderRing();
+    const trigger = await screen.findByRole("button", {
+      name: "Context window: Unknown",
+    });
+    fireEvent.click(trigger);
+
+    expect(screen.getAllByText("Unknown")).toHaveLength(1);
+    expect(screen.queryByText("Usage")).toBeNull();
+    const header = screen
+      .getByText("Context window")
+      .closest("[data-slot='popover-header']");
+    expect(header?.className).toContain("flex-row");
   });
 
   it("triggers manual compaction from the popover Compact button and refreshes stats", async () => {

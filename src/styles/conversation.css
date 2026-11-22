@@ -1951,6 +1951,21 @@ p.nex-agent-approval-meta {
   font-family: var(--type-family-mono);
   font-size: var(--type-size-body-small);
   color: var(--color-on-surface-variant);
+  animation: nex-step-reveal var(--nex-sys-motion-step-duration)
+    var(--nex-sys-motion-easing-standard-decelerate);
+}
+
+@keyframes nex-step-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-thinking-body {
+    animation: none;
+  }
 }
 
 .nex-thinking-empty {

@@ -291,7 +291,10 @@ describe("context panel — budget slider", () => {
   it("gives no verdict when there is no usage to measure", async () => {
     window.localStorage.setItem(CONTEXT_BUDGET_KEY, "8000");
     await renderPanel({ has_token_data: false, total_tokens: 0 });
-    expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /No persisted token usage/ })
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No persisted token usage")).toBeNull();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -301,7 +304,9 @@ describe("context panel — budget slider", () => {
       name: "Context budget",
     });
     expect(slider).toHaveAttribute("aria-valuenow", "128000");
-    expect(screen.getByText("No persisted token usage")).toBeInTheDocument();
+    expect(
+      screen.getByRole("img", { name: /No persisted token usage/ })
+    ).toBeInTheDocument();
   });
 
   it("never prints 0% when the backend has no token data", async () => {
@@ -313,8 +318,9 @@ describe("context panel — budget slider", () => {
       usage_percent: 0,
     });
 
-    const usage = screen.getByText("Usage");
-    expect(usage.parentElement).toHaveTextContent("n/a");
+    // Absent usage is omitted cleanly instead of printing "n/a" or "0%".
+    expect(screen.queryByText("Usage")).toBeNull();
+    expect(screen.queryByText("n/a")).toBeNull();
     expect(screen.queryByText("0%")).toBeNull();
     expect(screen.queryByText("0.0%")).toBeNull();
     // The breakdown is hidden outright; a bar of four zeros is a fabricated
@@ -330,31 +336,31 @@ describe("context panel — budget slider", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps the popover body one compact column", () => {
-    // The stage's two-column stat grid does not fit a 340 px popover; it
-    // also pushed the budget and files below the fold.
+  it("uses a compact 2-column grid for stats and 2x2 grid for breakdown legend", () => {
     const sheet = readRepoFile("src/styles/context.css");
     const gridStart = sheet.indexOf(".nex-context-grid {");
     expect(gridStart).toBeGreaterThan(-1);
     const grid = sheet.slice(gridStart, sheet.indexOf("}", gridStart));
-    expect(grid).toMatch(/flex-direction:\s*column/);
-    expect(grid).not.toMatch(/grid-template-columns/);
+    expect(grid).toMatch(/display:\s*grid/);
+    expect(grid).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+
+    const legendStart = sheet.indexOf(".nex-context-legend {");
+    expect(legendStart).toBeGreaterThan(-1);
+    const legend = sheet.slice(legendStart, sheet.indexOf("}", legendStart));
+    expect(legend).toMatch(/display:\s*grid/);
+    expect(legend).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
 
     const valueStart = sheet.indexOf(".nex-context-value {");
     const value = sheet.slice(valueStart, sheet.indexOf("}", valueStart));
     expect(value).toMatch(/font-size:\s*var\(--type-size-body-small\)/);
   });
 
-  it("reserves body padding so the budget card scrolls clear of the clipped edge", () => {
-    // The budget card is the last block; without end padding its bottom
-    // border is cut by the popover's clipped edge. The extra inline-end lane
-    // keeps the scrollbar off the right-hand values.
+  it("keeps the popover body compact without excessive bottom padding", () => {
     const sheet = readRepoFile("src/styles/context.css");
     const start = sheet.indexOf(".nex-context {");
     expect(start).toBeGreaterThan(-1);
     const body = sheet.slice(start, sheet.indexOf("}", start));
-    expect(body).toMatch(/padding-block-end:\s*var\(--space-lg\)/);
-    expect(body).toMatch(/padding-inline-end:\s*6px/);
+    expect(body).toMatch(/padding-block-end:\s*var\(--space-xxxs\)/);
     expect(body).toMatch(/overflow-y:\s*auto/);
   });
 });

@@ -13,29 +13,24 @@
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  gap: var(--space-xs);
+  gap: var(--space-xxxs);
   min-width: 0;
   min-height: 0;
   padding: 0;
-  /* The scrolling body needs its own end padding: the budget card is the
-     last block, and its 12 px border/corners must scroll fully clear of
-     the popover's clipped bottom edge. The extra 6 px inline-end keeps
-     the scrollbar's lane off the right-hand values. */
-  padding-block-end: var(--space-lg);
-  padding-inline-end: 6px;
+  padding-block-end: var(--space-xxxs);
+  padding-inline-end: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-/* One column of label/value ROWS, not the stage's two-column stat grid:
-   at 340 px the old grid spent half its width on a second column and
-   pushed the budget and files below the fold. Each row still carries the
-   same definition pair; the value may wrap. */
+/* Compact 2-column grid for essential stats inside the 340 px popover
+   so all content (including Context budget) fits without an internal
+   scrollbar on an empty stage. */
 .nex-context-grid {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xxs);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xxxs) var(--space-sm);
   margin: 0;
 }
 
@@ -43,8 +38,12 @@
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--space-sm);
+  gap: var(--space-xxs);
   min-width: 0;
+}
+
+.nex-context-cell.is-full {
+  grid-column: 1 / -1;
 }
 
 .nex-context-label {
@@ -60,11 +59,18 @@
   font-weight: var(--type-weight-semibold);
   color: var(--color-on-surface);
   text-align: end;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nex-context-value.is-muted {
+  font-weight: var(--type-weight-regular, 400);
+  color: var(--color-on-surface-tertiary);
 }
 
 .nex-context-section-title {
-  margin: var(--space-xxs) 0;
+  margin: 0 0 var(--space-xxxs);
   font-size: var(--type-size-label-medium);
   font-weight: var(--type-weight-medium);
   color: var(--color-on-surface-tertiary);
@@ -198,13 +204,14 @@
 }
 
 .nex-context-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-xs);
-  margin: var(--space-xs) 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-xxxs) var(--space-xs);
+  margin: var(--space-xxs) 0 0;
   padding: 0;
+  min-width: 0;
   list-style: none;
-  font-size: var(--type-size-label-medium);
+  font-size: var(--type-size-label-small);
   color: var(--color-on-surface-variant);
 }
 
@@ -212,12 +219,29 @@
   display: flex;
   align-items: center;
   gap: var(--space-xxs);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nex-context-dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: var(--shape-full);
+}
+
+.nex-context-files-empty {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-xs);
+}
+
+.nex-context-files-empty .nex-context-section-title,
+.nex-context-files-empty :is(.nex-agent-empty) {
+  margin: 0;
 }
 
 .nex-context-file-list {
@@ -313,6 +337,7 @@
    thing to run at all. */
 .nex-context-popover-header {
   display: flex;
+  flex-direction: row;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-xs);

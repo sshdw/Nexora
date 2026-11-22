@@ -5,9 +5,11 @@ import ComposerAutonomyHint from "./ComposerAutonomyHint";
 export default function AccessProfileControl({
   store,
   showLabel = true,
+  segmentedClassName,
 }: {
   store: AccessProfileStore;
   showLabel?: boolean;
+  segmentedClassName?: string;
 }) {
   const { t } = useStrings();
   return (
@@ -19,9 +21,9 @@ export default function AccessProfileControl({
         <span className="nex-settings-label">{t("access.label")}</span>
       )}
       <SegmentedGroup
+        className={segmentedClassName}
         label={t("access.label")}
         semantics="radio"
-        indicator={false}
         value={store.profile}
         onChange={(profile) => void store.setProfile(profile)}
         options={(["read_only", "standard", "supervised"] as const).map(
