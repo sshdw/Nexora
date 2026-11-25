@@ -602,3 +602,30 @@ These requirements extend the shipped user-initiated agent subsystem. Security c
 - Provide one-click file-level and turn-level Undo / Revert across app restarts: restore the pre-mutation bytes (or remove a newly created file when `pre_existed = 0`) after re-validating canonical workspace and symlink boundaries. If the target file was modified externally after `post_blob_sha256`, fail closed with a conflict warning unless the user explicitly confirms overwrite.
 - Deleting a conversation or run shall cascade-delete its checkpoint metadata and garbage-collect unreferenced checkpoint blobs without deleting or modifying original user workspace files.
 
+# 19. Stage 12 Runtime Stabilization, Unified 3-Mode Access, Web Tools & Local Models
+
+These requirements amend §17 where noted and specify Stage 12 capabilities.
+
+## 19.1 Unified 3-Mode Access Model (Amending §17)
+
+- Unify user-facing access profiles to **exactly three modes**, with `Plan` acting as the orthogonal read-only mode (no 4th access mode):
+  1. **Ask permissions (`Supervised`):** Workspace read-only tools (`read_file`, `list_directory`, `search_files`) auto-run; workspace mutations, shell commands, MCP calls, and internet access always require explicit approval.
+  2. **Auto-approve safe (`SemiAutonomous` / `Standard`):** Auto-approves ordinary workspace writes guarded by pre-mutation checkpoints (§18); sensitive paths, outside-workspace writes, unsafe shell commands, MCP calls, and internet access (host-bound consent) require explicit approval.
+  3. **Full access (`FullAutonomous`):** Auto-approves all tool categories without exceptions (including `execute_command`, `ExternalMcp`, `web_search`/`web_fetch`, and file mutations) **only** after an explicit user risk-acknowledgment opt-in (`agent.full_access_acknowledged`).
+- Legacy `read_only` persisted configurations shall map safely on read to `Ask permissions` (`Supervised`) without crashing. Project-level `.nexora/config.json` files shall never elevate access to `Full access`.
+- Even under `Full access`, the following safeguards remain strictly enforced: SSRF IP/DNS pinning, OS keyring secret isolation and secret redaction (`CommandError` secret-free), explicit `Deny` rules (deny-wins), run budgets/timeouts, immediate user `Stop` cancellation, subagent ceilings (`<= parent`), and **pausing for user confirmation whenever `scan_observation` detects a prompt-injection marker** in untrusted web or MCP output.
+
+## 19.2 Web Search & Fetch Tools
+
+- Provide native `web_search` and `web_fetch` agent tools, **default-off** (`agent.web.enabled = false`), hidden in `Plan`/read-only runs and offline mode.
+- Under Modes 1–2, `ExternalWebRead` requires per-call host-bound consent (never eligible for sticky groups or persistent allow rules); under `Full access`, web tools auto-run while preserving injection-marker pause on `scan_observation` hits.
+- Default search backend is keyless DuckDuckGo, with optional keyed Tavily, Brave, and Exa (API keys stored exclusively in the OS keyring) and optional SearXNG (HTTPS or validated loopback).
+- `web_fetch` enforces fail-closed SSRF protection (public-routable IP checks, DNS pinning, redirects disabled), streaming/decompression byte caps, untrusted-content sanitization, and an explicit `[truncated]` marker when truncated.
+
+## 19.3 Local Models, Provider Catalog & ChatGPT OAuth
+
+- Support dedicated local provider identities (`ollama`, `lmstudio`, `llama_cpp`, `local_openai_compatible`) with keyless execution permitted **only** for `is_local` connections targeting validated loopback endpoints, in-memory model discovery/metadata caching, and per-connection local timeouts.
+- Resolve model capabilities via per-field cascade (`ManualOverride > Live API > BuiltInCatalog/FamilyRules > Unknown`), expose `max_output_tokens` and secret-free `test_provider_connection` diagnostics, mark `xkiro` (and `opencode_zen` if live `/models` verification fails) as `deprecated/hidden`, and keep `SUPPORTED_MODELS` / `MODEL_RATES` aligned with live-verified models.
+- Keep `dynamic_agent_client` as the primary `Sign in with ChatGPT` OAuth flow with non-fatal `list_plan_models` (dual-schema + baseline fallback), `oaiapp_` and `app_` client ID prefixes, `120s` `iat` clock-skew leeway, and RFC 6749 §5.1 `None` scope handling.
+
+

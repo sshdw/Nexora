@@ -723,3 +723,12 @@ Indexes:
 - `idx_file_checkpoints_blob ON file_checkpoints(pre_blob_sha256)`
 
 Blob payloads live on disk under `<app_data>/checkpoints/<sha256>` (never inside SQLite and never inside the workspace). Deleting a conversation/run cascades `file_checkpoints` rows and garbage-collects unreferenced blob files from `<app_data>/checkpoints/`.
+
+## Stage 12 Persistence Notes (No Schema Migration)
+
+Stage 12 introduces no SQLite schema changes; the implemented schema remains **v17**.
+
+- **Unified 3-mode access & opt-in:** `agent.access_profile` (`supervised`, `standard`, `full_access`) and `agent.full_access_acknowledged` use the existing `app_settings` key-value table. Legacy `read_only` values map safely on read to `supervised` without mutating historical `agent_runs.mode` rows.
+- **Web tools configuration:** `agent.web.*` preferences (`enabled`, `backend`, `searxng_url`, result/byte caps) use `app_settings`; search provider API keys (Tavily, Brave, Exa) are stored exclusively in the OS keyring via `CredentialStore`.
+- **Local models:** Discovered local model inventories and capability metadata are held in memory only; only user-configured connection endpoints, selected models, and manual capability overrides persist in existing tables.
+

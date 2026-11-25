@@ -614,3 +614,23 @@ Depends on merged M01 and approval of the exact M03.a SRS, ARCHITECTURE, DATABAS
 PR 2A follows Stage 1 completion (M04.a consent-floor repair plus M03 durable cursor consumption). Deliver all three persisted access profiles and effective parent/Plan ceilings, non-overridable deny-read guards, sensitive-write protection, segment/nested-shell classification with honest categories, complete approval identity invalidation, and command-specific shell consent with matching existing approval UI. Validate compound/obfuscated/platform shell cases, canonical/link boundary escapes, policy/profile/environment/posture changes, rules/group attempts to bypass ceilings, and truthful provenance through production-reachable paths. Do not enable Standard automatic writes without PR 2B checkpoints or automatic GeneralShell without verified Stage 7 isolation.
 
 PR 2B delivers disk-backed content-addressed pre-mutation snapshots (`v17` `file_checkpoints` + `<app_data>/checkpoints/`), restart-safe turn/file ownership, conflict-checked one-click file/turn revert, and enables `Standard` automatic writes for ordinary workspace `write_file`/`edit_file` calls guarded by mandatory pre-mutation capture. Full M04 closes only after both PR units and their security/undo tests pass. Stage 7 separately delivers verified OS sandboxing and process-tree lifecycle; per-command shell fallback remains mandatory until verified isolation exists.
+
+## Stage 12 — Runtime Stabilization, Auth/Catalog, 3-Mode Access, Web Tools & Local Models
+
+Goal: eliminate confirmed runtime/data-flow bugs, restore ChatGPT OAuth reliability, update the provider catalog and capability cascade, unify access control to 3 modes (`Ask permissions`, `Auto-approve safe`, `Full access`), and deliver default-off Web Search/Fetch and Local Models.
+
+Scope (PR 0 → PR 8):
+- **PR 0 (Spec Amendment):** Approved updates to `docs/SRS.md`, `docs/ARCHITECTURE.md`, `docs/DATABASE.md` (no-migration note), `docs/ROADMAP.md`, and `OWNER-DECISIONS.md`.
+- **PR 1 (Runtime, Streaming, Scroll, IPC Error & Terminal):** `formatIpcError(e)`, `<MessageMarkdown>` streaming + list markers, `48px` `isAtBottom` smart scroll + `↓` button + new-turn jump fix, `Attach files` in `Agent` mode + `+` popover focus fix, `ask_user_question` payload normalization, `PTY Terminal` cursor + `FitAddon` ↔ `ConPTY` `pty_resize` sync.
+- **PR 2 (`Sign in with ChatGPT` OAuth + Plan Executor):** `dynamic_agent_client` primary flow with non-fatal `list_plan_models` + dual-schema/baseline fallback, `oaiapp_` + `app_` prefixes, `120s` `iat` leeway, RFC 6749 §5.1 `None` scope handling, and secret-free error variants.
+- **PR 3 (Model Catalog & Auto-Metadata Cascade):** Deprecate/hide `xkiro` (and `opencode_zen` if live `/models` fails), update `SUPPORTED_MODELS` / `MODEL_RATES`, add `max_output_tokens`, fix Anthropic/Gemini/OpenAI-compat parsers, implement per-field cascade (`ManualOverride > Live API > BuiltInCatalog/FamilyRules > Unknown`), and add `test_provider_connection`.
+- **PR 4 (Unified 3-Mode Access & `Full access`):** Unify `AccessProfile` + `AutonomyMode` onto 3 modes (`Ask permissions`, `Auto-approve safe`, `Full access`) with `Plan` orthogonal; explicit risk opt-in for `Full access`; preserve SSRF, keyring/redaction, `Deny` rules, budgets/timeouts, `Stop`, and prompt-injection marker pause.
+- **PR 5 (Web Foundation & SSRF):** `application/web/{mod,safety,extract,fetch}.rs` reusing `mcp/url_safety.rs` DNS/IP pinning, self-contained HTML-to-Markdown converter, streaming/decompression caps, and SSRF tests (no model-facing tool exposed yet).
+- **PR 6 (Web Tools, Search Backends & Minimal Settings Toggle):** `tools/web.rs`, `RiskClass::ExternalWebRead` (default-off, hidden in `Plan`/offline, host-bound consent in Modes 1–2, auto-approved in `Full access` with injection-marker pause), DDG keyless + Tavily/Brave/Exa keyring + SearXNG, `src/lib/ipc/web.ts`.
+- **PR 7 (Local Models Foundation):** `ollama`, `lmstudio`, `llama_cpp`, `local_openai_compatible` identities, keyless loopback-only execution, in-memory discovery/cache, local timeouts, mock HTTP tests.
+- **PR 8 (Local Models Wiring & Smoke):** End-to-end `list_all_model_capabilities` → `mergeConnectionModels` → `buildConnectionGroups`, `ContextRing` wiring, minimal local runtime connection UI, and isolated `APPDATA` smoke verification.
+
+Dependencies: Stage 2 M04 complete; owner sign-off on PR 0 specifications.
+
+Completion Criteria: all 9-step verification gates, `run-smart-gate.ps1`, `npm run lint`, Independent Reviewer M04/security checks, and isolated `APPDATA` live smoke tests pass for PR 1–8.
+
