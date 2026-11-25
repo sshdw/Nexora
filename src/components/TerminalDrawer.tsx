@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import {
+  formatIpcError,
   onTerminalPtyExit,
   onTerminalPtyOutput,
   terminalPtyKill,
@@ -27,7 +28,10 @@ export interface TerminalDrawerProps {
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
-const TERMINAL_FONT_FAMILY = '"Cascadia Code", Consolas, monospace';
+const MIN_SYNC_COLS = 10;
+const MIN_SYNC_ROWS = 4;
+const TERMINAL_FONT_FAMILY =
+  '"Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Segoe UI Mono", Consolas, monospace';
 const TERMINAL_FONT_SIZE = 13;
 
 function readCssVar(
@@ -59,12 +63,16 @@ function readTerminalTheme(): ITheme {
     theme.background = bg;
     theme.cursorAccent = bg;
     theme.black = bg;
+  } else {
+    theme.cursorAccent = "#09090b";
   }
   if (fg) {
     theme.foreground = fg;
     theme.cursor = fg;
     theme.white = fg;
     theme.brightWhite = fg;
+  } else {
+    theme.cursor = "#f4f4f5";
   }
   if (faint) theme.brightBlack = faint;
   if (err) {
@@ -103,19 +111,6 @@ function prefersReducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function readErrorMessage(cause: unknown, fallback: string): string {
-  if (typeof cause === "object" && cause !== null) {
-    const rec = cause as { message?: unknown };
-    if (typeof rec.message === "string" && rec.message.trim().length > 0) {
-      return rec.message;
-    }
-  }
-  if (cause instanceof Error && cause.message.trim().length > 0) {
-    return cause.message;
-  }
-  return fallback;
-}
-
 export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
   const { t } = useStrings();
   const [sessionInfo, setSessionInfo] = useState<PtySessionInfo | null>(null);
@@ -125,7 +120,7 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
   );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const xtermHostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const sessionIdRef = useRef<string | null>(null);
@@ -164,6 +159,9 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
   const syncPtySize = useCallback(
     (force = false) => {
       const { cols, rows } = fitTerminal();
+      if (cols < MIN_SYNC_COLS || rows < MIN_SYNC_ROWS) {
+        return;
+      }
       const prev = lastSizeRef.current;
       const changed = prev.cols !== cols || prev.rows !== rows;
       lastSizeRef.current = { cols, rows };
@@ -222,7 +220,16 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
         sessionIdRef.current = null;
         setExitedCode(matchingExit.exit_code);
       } else {
-        syncPtySize(false);
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => {
+            if (!disposedRef.current) {
+              syncPtySize(true);
+              termRef.current?.focus();
+            }
+          });
+        } else {
+          syncPtySize(true);
+        }
       }
 
       term?.focus();
@@ -230,13 +237,13 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
       if (disposedRef.current || spawnSeqRef.current !== mySeq) return;
       setStarting(false);
       setSessionInfo(null);
-      setErrorMsg(readErrorMessage(cause, errorSpawnRef.current));
+      setErrorMsg(formatIpcError(cause, errorSpawnRef.current));
     }
   }, [fitTerminal, syncPtySize]);
 
   useEffect(() => {
     if (!open) return;
-    const container = viewportRef.current;
+    const container = xtermHostRef.current;
     if (!container) return;
 
     disposedRef.current = false;
@@ -244,6 +251,8 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
     const term = new Terminal({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: TERMINAL_FONT_SIZE,
+      cursorStyle: "block",
+      cursorInactiveStyle: "outline",
       cursorBlink: !prefersReducedMotion(),
       convertEol: false,
       scrollback: 5000,
@@ -262,12 +271,24 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
       }
     });
 
+    let resizeRafId: number | null = null;
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver(() => {
-        if (!disposedRef.current) {
+        if (disposedRef.current) return;
+        if (typeof requestAnimationFrame !== "function") {
           syncPtySize(false);
+          return;
         }
+        if (resizeRafId !== null) {
+          cancelAnimationFrame(resizeRafId);
+        }
+        resizeRafId = requestAnimationFrame(() => {
+          resizeRafId = null;
+          if (!disposedRef.current) {
+            syncPtySize(false);
+          }
+        });
       });
       resizeObserver.observe(container);
     }
@@ -335,6 +356,9 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
       }
       if (unlistenOutput) unlistenOutput();
       if (unlistenExit) unlistenExit();
+      if (resizeRafId !== null && typeof cancelAnimationFrame === "function") {
+        cancelAnimationFrame(resizeRafId);
+      }
       resizeObserver?.disconnect();
       themeObserver?.disconnect();
       dataDisposable.dispose();
@@ -424,12 +448,13 @@ export default function TerminalDrawer({ open, onClose }: TerminalDrawerProps) {
       )}
 
       <div
-        ref={viewportRef}
         className="nex-terminal-drawer-viewport"
         role="region"
         aria-label={t("term.viewportLabel")}
         onClick={() => termRef.current?.focus()}
-      />
+      >
+        <div ref={xtermHostRef} className="nex-terminal-xterm-host" />
+      </div>
     </section>
   );
 }

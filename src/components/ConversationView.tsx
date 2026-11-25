@@ -36,6 +36,7 @@ import {
   continueAgentRun,
   decideRunPlan,
   extendAgentRun,
+  formatIpcError,
   listRunCheckpoints,
   pauseAgentRun,
   resolveAgentApproval,
@@ -65,7 +66,10 @@ import MessageMarkdown from "./MessageMarkdown";
 import ThinkingBlock from "./ThinkingBlock";
 import type { ModelConnectionGroup } from "./ModelPicker";
 import { useStrings } from "../lib/useLocale";
+import { ArrowDownIcon } from "./icons";
 import LoadingIndicator from "./LoadingIndicator";
+
+const AT_BOTTOM_THRESHOLD_PX = 48;
 
 export interface ConversationViewProps {
   conversationId: number;
@@ -367,7 +371,7 @@ export default function ConversationView({
         : await compactConversationContext(conversationId);
       handleCompacted(result);
     } catch (e) {
-      setAgentError(e instanceof Error ? e.message : t("ctx.compactFailed"));
+      setAgentError(formatIpcError(e, t("ctx.compactFailed")));
     } finally {
       setCompactBusy(false);
     }
@@ -380,10 +384,49 @@ export default function ConversationView({
     t,
   ]);
 
-  // Keep the newest message in view as history loads and responses arrive.
+  const shouldAutoScrollRef = useRef(true);
+  const [showScrollDown, setShowScrollDown] = useState(false);
+
   useEffect(() => {
+    shouldAutoScrollRef.current = true;
+    setShowScrollDown(false);
+  }, [conversationId]);
+
+  const handleThreadScroll = useCallback(() => {
     const el = threadRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    const atBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight <=
+      AT_BOTTOM_THRESHOLD_PX;
+    shouldAutoScrollRef.current = atBottom;
+    setShowScrollDown(!atBottom);
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    const el = threadRef.current;
+    shouldAutoScrollRef.current = true;
+    setShowScrollDown(false);
+    if (!el) return;
+    const reduced =
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (typeof el.scrollTo === "function") {
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: reduced ? "auto" : "smooth",
+      });
+    } else {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, []);
+
+  // Keep the newest message in view only when the user is already at the bottom.
+  useLayoutEffect(() => {
+    const el = threadRef.current;
+    if (el && shouldAutoScrollRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
   }, [messages, loading, sending, runs, agentBusy]);
 
   const handleAgentCancel = useCallback(async (runId: number) => {
@@ -391,7 +434,7 @@ export default function ConversationView({
     try {
       await cancelAgentRun(runId);
     } catch (e) {
-      setAgentError(e instanceof Error ? e.message : String(e));
+      setAgentError(formatIpcError(e));
     }
   }, []);
 
@@ -405,7 +448,7 @@ export default function ConversationView({
     try {
       await pauseAgentRun(runId);
     } catch (e) {
-      setAgentError(e instanceof Error ? e.message : String(e));
+      setAgentError(formatIpcError(e));
     }
   }, []);
 
@@ -414,7 +457,7 @@ export default function ConversationView({
     try {
       await resumeAgentRun(runId);
     } catch (e) {
-      setAgentError(e instanceof Error ? e.message : String(e));
+      setAgentError(formatIpcError(e));
     }
   }, []);
 
@@ -429,7 +472,7 @@ export default function ConversationView({
       try {
         await resolveAgentApproval(runId, callId, approved, scope);
       } catch (e) {
-        setAgentError(e instanceof Error ? e.message : String(e));
+        setAgentError(formatIpcError(e));
       }
     },
     []
@@ -465,7 +508,7 @@ export default function ConversationView({
           await extendAgentRun(runId, 10);
         }
       } catch (e) {
-        setAgentError(e instanceof Error ? e.message : String(e));
+        setAgentError(formatIpcError(e));
       }
     },
     [runs, selectedProvider, selectedModel, effectiveEffort, reloadAgent]
@@ -663,6 +706,8 @@ export default function ConversationView({
   const submitContent = useCallback(
     async (content: string, useAgentMode: boolean, usePlanMode: boolean) => {
       if (!content || !selectedProvider || !selectedModel) return;
+      shouldAutoScrollRef.current = true;
+      setShowScrollDown(false);
       const attachmentIds = attachments.map((attachment) => attachment.id);
       const hasAutomaticSkills = Boolean(
         promptContext.references?.automatic_skills?.length
@@ -690,13 +735,7 @@ export default function ConversationView({
           onMessageSent?.();
         } catch (e) {
           // Start failed: surface error, restore draft, and reload to show persisted state.
-          const msg =
-            e instanceof Error
-              ? e.message
-              : typeof e === "object" && e !== null && "message" in e
-                ? String((e as { message: unknown }).message)
-                : String(e);
-          setAgentError(msg);
+          setAgentError(formatIpcError(e));
           await Promise.all([
             refreshAttachments(),
             reloadAgent(),
@@ -790,13 +829,7 @@ export default function ConversationView({
       await clarifyRun(liveRunId, content);
       setDraft("");
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object" && e !== null && "message" in e
-            ? String((e as { message: unknown }).message)
-            : String(e);
-      setAgentError(msg);
+      setAgentError(formatIpcError(e));
     } finally {
       setLiveActionBusy(false);
     }
@@ -816,13 +849,7 @@ export default function ConversationView({
       );
       setDraft("");
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object" && e !== null && "message" in e
-            ? String((e as { message: unknown }).message)
-            : String(e);
-      setAgentError(msg);
+      setAgentError(formatIpcError(e));
     } finally {
       setLiveActionBusy(false);
     }
@@ -859,13 +886,7 @@ export default function ConversationView({
       await runNextQueueItem();
       await reloadAgent();
     } catch (e) {
-      const msg =
-        e instanceof Error
-          ? e.message
-          : typeof e === "object" && e !== null && "message" in e
-            ? String((e as { message: unknown }).message)
-            : String(e);
-      setAgentError(msg);
+      setAgentError(formatIpcError(e));
     }
   }, [runNextQueueItem, reloadAgent]);
 
@@ -926,6 +947,7 @@ export default function ConversationView({
       <div
         className="nex-thread"
         ref={threadRef}
+        onScroll={handleThreadScroll}
         role="log"
         aria-label={t("conv.messagesAria")}
       >
@@ -1075,7 +1097,9 @@ export default function ConversationView({
               />
             )}
             {streamingText && (
-              <div className="nex-message-body">{streamingText}</div>
+              <div className="nex-message-body">
+                <MessageMarkdown messageId={-1} content={streamingText} />
+              </div>
             )}
           </article>
         )}
@@ -1089,7 +1113,12 @@ export default function ConversationView({
             className="nex-message nex-message-assistant nex-message-streaming"
             aria-live="polite"
           >
-            <div className="nex-message-body">{activeRun.streaming_text}</div>
+            <div className="nex-message-body">
+              <MessageMarkdown
+                messageId={-activeRun.run_id}
+                content={activeRun.streaming_text}
+              />
+            </div>
           </article>
         )}
         {agentBusy && (
@@ -1098,6 +1127,17 @@ export default function ConversationView({
           </div>
         )}
       </div>
+
+      {showScrollDown && (
+        <button
+          type="button"
+          className="nex-scroll-to-bottom"
+          aria-label={t("conv.scrollToBottom")}
+          onClick={scrollToBottom}
+        >
+          <ArrowDownIcon size={16} />
+        </button>
+      )}
 
       {/* The COMPOSER's own failure strips (#220). These used to carry
           the shared `.nex-composer-error`, which nine other panels also

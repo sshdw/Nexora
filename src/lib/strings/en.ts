@@ -201,6 +201,7 @@ export const en = {
   // Conversation | Context pair left to name. The composer's mode pair
   // keeps `conv.modeChat` / `conv.agentToggle` byte-identical.
   "conv.messagesAria": "Messages",
+  "conv.scrollToBottom": "Scroll to bottom",
   "conv.loadingMessages": "Loading messages",
   "conv.authorYou": "You",
   "conv.authorAssistant": "Assistant",
@@ -426,7 +427,9 @@ export const en = {
   "agent.actSearch": "Searched",
   "agent.actList": "Listed",
   "agent.actRun": "Ran",
+  "agent.actAskUser": "Asked user",
   "agent.actTool": "Called",
+  "agent.questionAnswerLabel": "Answer",
   "agent.pathTitle": "Full path",
   "agent.queryTitle": "Full query",
   "agent.commandTitle": "Full command",

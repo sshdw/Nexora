@@ -148,7 +148,12 @@
   cursor: text;
 }
 
-.nex-terminal-drawer-viewport .xterm {
+.nex-terminal-xterm-host {
+  width: 100%;
+  height: 100%;
+}
+
+.nex-terminal-xterm-host .xterm {
   height: 100%;
   width: 100%;
 }

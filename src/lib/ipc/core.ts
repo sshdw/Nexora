@@ -19,3 +19,28 @@ export interface CommandError {
   kind: string;
   message: string;
 }
+
+/** Extract a safe human-readable error message from an IPC rejection or JS Error.
+ *  Never falls back to `String(plainObject)` (which yields `"[object Object]"`),
+ *  and never serializes arbitrary keys/fields into the UI banner. */
+export function formatIpcError(
+  err: unknown,
+  fallback = "An unexpected error occurred"
+): string {
+  if (typeof err === "string") {
+    const trimmed = err.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  if (err instanceof Error) {
+    const trimmed = err.message.trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  if (typeof err === "object" && err !== null && "message" in err) {
+    const msg = (err as { message: unknown }).message;
+    if (typeof msg === "string") {
+      const trimmed = msg.trim();
+      if (trimmed.length > 0) return trimmed;
+    }
+  }
+  return fallback;
+}

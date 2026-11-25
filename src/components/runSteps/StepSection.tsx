@@ -365,6 +365,8 @@ export const StepSection = memo(function StepSection({
   const isDiff =
     step.kind === "tool_call" &&
     (step.tool_name === "write_file" || step.tool_name === "edit_file");
+  const isQuestion =
+    step.kind === "tool_call" && step.tool_name === "ask_user_question";
   // Stable identities (not inline arrows) so the memo above survives a
   // re-render driven by any other row's frame.
   const seq = step.seq;
@@ -441,6 +443,12 @@ export const StepSection = memo(function StepSection({
               )}
               <DiffView observation={displayObservation} />
             </>
+          ) : isQuestion ? (
+            <QuestionStepView
+              argsJson={step.arguments}
+              observation={displayObservation}
+              answerLabel={t("agent.questionAnswerLabel")}
+            />
           ) : (
             (() => {
               const formattedArgs = formatStepArguments(step);
@@ -519,6 +527,75 @@ export const StepSection = memo(function StepSection({
     </div>
   );
 });
+
+function QuestionStepView({
+  argsJson,
+  observation,
+  answerLabel,
+}: {
+  argsJson: string | null;
+  observation: string;
+  answerLabel: string;
+}) {
+  const args = parseToolArgs(argsJson);
+  const questionText =
+    typeof args?.question === "string" ? args.question.trim() : "";
+
+  let selectedOptions: string[] = [];
+  let freeText: string | null = null;
+  let parsedOk = false;
+  const trimmedObs = observation.trim();
+  if (trimmedObs.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmedObs) as {
+        selected_options?: unknown;
+        free_text?: unknown;
+      };
+      if (Array.isArray(parsed.selected_options)) {
+        selectedOptions = parsed.selected_options.filter(
+          (item): item is string => typeof item === "string" && item.trim().length > 0
+        );
+      }
+      if (typeof parsed.free_text === "string" && parsed.free_text.trim().length > 0) {
+        freeText = parsed.free_text.trim();
+      }
+      parsedOk = true;
+    } catch {
+      parsedOk = false;
+    }
+  }
+
+  return (
+    <div className="nex-agent-question-step">
+      {questionText && (
+        <p className="nex-agent-question-step-prompt">{questionText}</p>
+      )}
+      {parsedOk ? (
+        (selectedOptions.length > 0 || freeText !== null) && (
+          <div className="nex-agent-question-step-answer">
+            <span className="nex-agent-question-step-label">{answerLabel}</span>
+            {selectedOptions.length > 0 && (
+              <div className="nex-agent-question-step-options">
+                {selectedOptions.map((opt) => (
+                  <span key={opt} className="nex-tag">
+                    {opt}
+                  </span>
+                ))}
+              </div>
+            )}
+            {freeText !== null && (
+              <p className="nex-agent-question-step-free">{freeText}</p>
+            )}
+          </div>
+        )
+      ) : (
+        trimmedObs.length > 0 && (
+          <p className="nex-agent-question-step-status">{trimmedObs}</p>
+        )
+      )}
+    </div>
+  );
+}
 
 /** Re-exported for the folder index: `diffCounts` is part of the original
  * public surface of `AgentRunSteps.tsx` (consumed via the barrel). */

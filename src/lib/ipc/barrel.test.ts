@@ -68,6 +68,7 @@ const SNAPSHOT: readonly string[] = [
   "exportSetupToFile",
   "extendAgentRun",
   "flagsStatus",
+  "formatIpcError",
   "getAccessProfile",
   "getAgentStepObservation",
   "getCompatConfig",

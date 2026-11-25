@@ -228,8 +228,13 @@ describe("TerminalDrawer (interactive PTY)", () => {
     const term = xtermInstances[0];
     expect(term).toBeDefined();
     expect(term.focus).toHaveBeenCalled();
-    expect(term.options.fontFamily).toBe('"Cascadia Code", Consolas, monospace');
+    expect(term.options.fontFamily).toBe(
+      '"Cascadia Mono", "Cascadia Code", "JetBrains Mono", "Segoe UI Mono", Consolas, monospace'
+    );
     expect(term.options.fontSize).toBe(13);
+    expect(term.options.cursorStyle).toBe("block");
+    expect(term.options.cursorInactiveStyle).toBe("outline");
+    expect((term.options.theme as { cursor?: string } | undefined)?.cursor).toBeTruthy();
 
     // Streams matching session output and ignores foreign sessions.
     act(() => {
@@ -288,6 +293,21 @@ describe("TerminalDrawer (interactive PTY)", () => {
         cols: 112,
         rows: 30,
       })
+    );
+
+    // Collapsed / tiny transition frames (< 10 cols or < 4 rows) must not resize ConPTY.
+    mockInvoke.mockClear();
+    fitAddon.fit.mockImplementation(() => {
+      term.cols = 2;
+      term.rows = 1;
+    });
+    act(() => {
+      for (const cb of [...resizeCallbacks]) cb();
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "terminal_pty_resize",
+      expect.anything()
     );
   });
 

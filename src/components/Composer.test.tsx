@@ -2379,4 +2379,22 @@ describe("composer — Stage 5 PR 5B: Plan toggle and / + @ triggers", () => {
       "https://chatgpt.com/#settings"
     );
   });
+
+  it("keeps Slash and Mention popovers open when opened from the + menu", async () => {
+    renderComposer();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Commands/ }));
+
+    expect(
+      screen.getByRole("listbox", { name: "Available slash commands" })
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Mentions/ }));
+
+    expect(
+      screen.getByRole("listbox", { name: "Available context references" })
+    ).toBeInTheDocument();
+  });
 });

@@ -766,6 +766,12 @@ export default function Composer({
               sideOffset={8}
               className="nex-composer-trigger-menu"
               onOpenAutoFocus={(event) => event.preventDefault()}
+              onFocusOutside={(event) => {
+                if (event.target === fieldRef.current) event.preventDefault();
+              }}
+              onInteractOutside={(event) => {
+                if (event.target === fieldRef.current) event.preventDefault();
+              }}
             >
               {slashItems.length === 0 && promptContext?.skillsLoading ? (
                 <p role="status" className="nex-composer-trigger-empty">{t("common.loading")}</p>
@@ -838,6 +844,12 @@ export default function Composer({
               sideOffset={8}
               className="nex-composer-trigger-menu"
               onOpenAutoFocus={(event) => event.preventDefault()}
+              onFocusOutside={(event) => {
+                if (event.target === fieldRef.current) event.preventDefault();
+              }}
+              onInteractOutside={(event) => {
+                if (event.target === fieldRef.current) event.preventDefault();
+              }}
             >
               {mentionItems.length === 0 ? (
                 <p className="nex-composer-trigger-empty">
@@ -1051,9 +1063,8 @@ export default function Composer({
 
           <div className="nex-composer-bar">
             {/* "+" consolidated action menu (available in both Chat and Agent
-                modes). Attach files is Chat-only (`!agentMode`, R4-02 / G-20);
-                typing `/` or `@` in the field also opens the anchored menus
-                below. */}
+                modes). Typing `/` or `@` in the field also opens the anchored
+                menus below. */}
             <div className="nex-composer-plus-anchor">
               <Popover
                 open={plusOpen}

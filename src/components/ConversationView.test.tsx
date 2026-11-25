@@ -751,3 +751,84 @@ describe("Stage 6 PR 6B: Plan decision flow and safe Continue", () => {
     expect(extendAgentRunMock).not.toHaveBeenCalled();
   });
 });
+
+describe("Stage 12 PR 1: streaming Markdown, smart scroll, and IPC error formatting", () => {
+  it("renders streaming agent response through MessageMarkdown preserving headings and lists", () => {
+    agentRuns = [
+      {
+        run_id: 99,
+        conversation_id: 1,
+        status: "running",
+        model: "gemini-3.6-flash",
+        started_at: 1000,
+        finished_at: null,
+        error: null,
+        steps: [],
+        steps_loaded: true,
+        total_steps: 0,
+        pending_approval: null,
+        pending_question: null,
+        streaming_text: "## Summary\n\n- First item\n- Second item\n\n```ts\nconst x = 1;\n```",
+      },
+    ];
+
+    const { container } = render(pane());
+    const streamingArticle = container.querySelector(".nex-message-streaming");
+    expect(streamingArticle).not.toBeNull();
+    expect(streamingArticle!.querySelector("h2")?.textContent).toBe("Summary");
+    expect(streamingArticle!.querySelectorAll("ul > li")).toHaveLength(2);
+    expect(streamingArticle!.querySelector("pre code")?.textContent).toContain("const x = 1;");
+  });
+
+  it("does not hijack scroll when user scrolled up and shows the scroll-to-bottom button", () => {
+    const { container, rerender } = render(pane());
+    const thread = container.querySelector(".nex-thread") as HTMLDivElement;
+
+    Object.defineProperty(thread, "scrollHeight", { value: 1200, configurable: true });
+    Object.defineProperty(thread, "clientHeight", { value: 400, configurable: true });
+    thread.scrollTop = 100;
+    fireEvent.scroll(thread);
+
+    const jumpBtn = screen.getByRole("button", { name: "Scroll to bottom" });
+    expect(jumpBtn).toBeInTheDocument();
+
+    agentRuns = [
+      {
+        run_id: 100,
+        conversation_id: 1,
+        status: "running",
+        model: "gemini-3.6-flash",
+        started_at: 1000,
+        finished_at: null,
+        error: null,
+        steps: [],
+        steps_loaded: true,
+        total_steps: 0,
+        pending_approval: null,
+        pending_question: null,
+        streaming_text: "New streamed token",
+      },
+    ];
+    rerender(pane());
+
+    expect(thread.scrollTop).toBe(100);
+
+    fireEvent.click(jumpBtn);
+    expect(thread.scrollTop).toBe(1200);
+    expect(screen.queryByRole("button", { name: "Scroll to bottom" })).toBeNull();
+  });
+
+  it("extracts CommandError.message instead of rendering [object Object]", async () => {
+    startAgentRunMock.mockRejectedValueOnce({
+      kind: "request",
+      message: "Provider timed out",
+    });
+
+    render(pane("Test prompt"));
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Provider timed out");
+    expect(alert.textContent).not.toContain("[object Object]");
+  });
+});

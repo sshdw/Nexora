@@ -10,6 +10,7 @@ import {
   type WorkQueueItem,
   cancelWorkQueueItem,
   enqueueWorkItem,
+  formatIpcError,
   listWorkQueue,
   reorderWorkQueue,
   runNextWorkItem,
@@ -56,13 +57,7 @@ export function useWorkQueue(conversationId: number): WorkQueueStore {
       setError(null);
     } catch (err) {
       if (convRef.current !== targetConv || requestRef.current !== req) return;
-      setError(
-        err instanceof Error
-          ? err.message
-          : typeof err === "object" && err !== null && "message" in err
-            ? String((err as { message: unknown }).message)
-            : String(err)
-      );
+      setError(formatIpcError(err));
     } finally {
       if (convRef.current === targetConv && requestRef.current === req) {
         setLoading(false);

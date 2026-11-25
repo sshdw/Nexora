@@ -5,7 +5,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { PendingQuestionView } from "../lib/tauri";
+import { formatIpcError, type PendingQuestionView } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import { Button } from "./ui/button";
 import { Checkbox } from "./ui/checkbox";
@@ -62,13 +62,7 @@ export default function QuestionPanel({
     try {
       await onSubmit(selected, trimmedFree || undefined);
     } catch (err) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : typeof err === "object" && err !== null && "message" in err
-            ? String((err as { message: unknown }).message)
-            : String(err);
-      setValidationError(msg);
+      setValidationError(formatIpcError(err));
       setSubmitting(false);
     }
   };
