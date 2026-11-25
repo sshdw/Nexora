@@ -186,6 +186,7 @@ export const ru: Record<StringKey, string> = {
   "empty.text": "Ваши разговоры появятся здесь.",
 
   "conv.messagesAria": "Сообщения",
+  "conv.scrollToBottom": "Прокрутить вниз",
   "conv.loadingMessages": "Загрузка сообщений",
   "conv.authorYou": "Вы",
   "conv.authorAssistant": "Ассистент",
@@ -387,7 +388,9 @@ export const ru: Record<StringKey, string> = {
   "agent.actSearch": "Искал",
   "agent.actList": "Показал",
   "agent.actRun": "Выполнил",
+  "agent.actAskUser": "Вопрос пользователю",
   "agent.actTool": "Вызвал",
+  "agent.questionAnswerLabel": "Ответ",
   "agent.pathTitle": "Полный путь",
   "agent.queryTitle": "Полный запрос",
   "agent.commandTitle": "Полная команда",

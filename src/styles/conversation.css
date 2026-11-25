@@ -309,6 +309,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overflow-anchor: auto;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -347,6 +348,41 @@
 .nex-main-conversation > .nex-thread {
   margin-inline: calc(-1 * var(--dock-width));
   padding-inline: var(--dock-width);
+}
+
+.nex-scroll-to-bottom {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin-top: calc(var(--space-sm) * -1);
+  margin-bottom: var(--space-xs);
+  border-radius: var(--shape-full);
+  border: 1px solid var(--color-outline-variant);
+  background: var(--color-surface-container-high);
+  color: var(--color-on-surface);
+  box-shadow: var(--nex-sys-elevation-level1);
+  cursor: pointer;
+  z-index: 5;
+  transition: background var(--nex-sys-motion-micro-duration)
+    var(--nex-sys-motion-micro-easing);
+}
+
+.nex-scroll-to-bottom:hover {
+  background: var(--color-surface-container-highest);
+}
+
+.nex-scroll-to-bottom:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nex-scroll-to-bottom {
+    transition: none;
+  }
 }
 
 .nex-thread-status {
@@ -452,6 +488,10 @@
   user-select: text;
 }
 
+.nex-message-assistant .nex-message-body {
+  white-space: normal;
+}
+
 /* Code containment: fenced or inline code inside a message reads inside
    a quiet tone container — never bare accent text on the canvas. */
 .nex-message-body pre {
@@ -523,7 +563,19 @@
 
 .nex-message-body ul,
 .nex-message-body ol {
-  padding-inline-start: var(--space-md);
+  padding-inline-start: var(--space-lg);
+}
+.nex-message-body ul {
+  list-style-type: disc;
+}
+.nex-message-body ol {
+  list-style-type: decimal;
+}
+.nex-message-body ul ul {
+  list-style-type: circle;
+}
+.nex-message-body ul ul ul {
+  list-style-type: square;
 }
 .nex-message-body li + li {
   margin-top: var(--space-xxxs);
@@ -1148,6 +1200,47 @@ p.nex-agent-approval-meta {
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
+}
+
+.nex-agent-question-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: var(--shape-extra-small);
+  background: var(--color-surface-container);
+  border: 1px solid var(--color-outline-variant);
+}
+
+.nex-agent-question-step-prompt {
+  margin: 0;
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface);
+  font-weight: var(--type-weight-medium);
+}
+
+.nex-agent-question-step-answer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+}
+
+.nex-agent-question-step-label {
+  font-size: var(--type-size-label-small);
+  color: var(--color-on-surface-variant);
+}
+
+.nex-agent-question-step-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xxs);
+}
+
+.nex-agent-question-step-free,
+.nex-agent-question-step-status {
+  margin: 0;
+  font-size: var(--type-size-body-small);
+  color: var(--color-on-surface-variant);
 }
 
 .nex-agent-step-args {

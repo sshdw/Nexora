@@ -21,6 +21,7 @@ import {
   type SubagentStepSnapshot,
   answerRunQuestion,
   clarifyAgentRun,
+  formatIpcError,
   getAgentStepObservation,
   inspectRunLive,
   killSubagent as invokeKillSubagent,
@@ -216,7 +217,7 @@ function parseRevertError(cause: unknown): RevertOutcome {
   }
   return {
     status: "error",
-    message: cause instanceof Error ? cause.message : String(cause),
+    message: formatIpcError(cause),
   };
 }
 
@@ -541,7 +542,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
           }
         } catch (cause) {
           if (current(session))
-            setError(cause instanceof Error ? cause.message : String(cause));
+            setError(formatIpcError(cause));
         } finally {
           session.drain = null;
         }
@@ -786,7 +787,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
       await catchUp(session);
     } catch (cause) {
       if (current(session) && request === session.request) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(formatIpcError(cause));
       }
     } finally {
       if (current(session) && request === session.request) setLoading(false);
@@ -998,7 +999,7 @@ export function useAgentRun(conversationId: number | null): AgentRunStore {
         write({
           observation_loading: false,
           observation_error:
-            cause instanceof Error ? cause.message : String(cause),
+            formatIpcError(cause),
         });
       } finally {
         if (session.observations.get(key) === token)

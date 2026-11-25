@@ -1882,4 +1882,40 @@ describe("AgentRunSteps — Stage 5 PR 5B: Thinking, Plan/Result cards, Diffs & 
     fireEvent.click(screen.getByRole("button", { name: /Refactor parser/ }));
     expect(screen.getByText("Updated parser cleanly.")).toBeInTheDocument();
   });
+
+  it("renders ask_user_question as clean Q&A without raw JSON or allow_free_text", () => {
+    const { container } = renderRun(
+      runView({
+        status: "completed",
+        steps: [
+          stepView({
+            id: 91,
+            seq: 1,
+            tool_name: "ask_user_question",
+            arguments: JSON.stringify({
+              question: "Which database engine?",
+              options: ["SQLite", "Postgres"],
+              allow_free_text: true,
+              multi_select: false,
+            }),
+            observation: JSON.stringify({
+              selected_options: ["SQLite"],
+              free_text: "Use WAL mode",
+            }),
+          }),
+        ],
+      })
+    );
+
+    const stepBtn = screen.getByRole("button", { name: /Asked user/ });
+    expect(stepBtn).toHaveTextContent("Which database engine?");
+    fireEvent.click(stepBtn);
+
+    const body = container.querySelector(".nex-agent-step-body")!;
+    expect(body).toHaveTextContent("Which database engine?");
+    expect(body).toHaveTextContent("SQLite");
+    expect(body).toHaveTextContent("Use WAL mode");
+    expect(body.textContent).not.toContain("allow_free_text");
+    expect(body.textContent).not.toContain("selected_options");
+  });
 });

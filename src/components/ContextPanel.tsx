@@ -39,6 +39,7 @@
 import { useEffect, useId, useState } from "react";
 
 import {
+  formatIpcError,
   getAgentStepObservation,
   listAgentRuns,
   listAgentSteps,
@@ -210,7 +211,7 @@ export default function ContextPanel({
         );
       } catch (e) {
         if (!cancelled)
-          setFilesError(e instanceof Error ? e.message : String(e));
+          setFilesError(formatIpcError(e));
       } finally {
         if (!cancelled) setFilesLoading(false);
       }

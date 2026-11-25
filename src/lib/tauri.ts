@@ -18,7 +18,7 @@
 //! a plain `export *`; the `lib/ipc/barrel.test.ts` parity test pins the
 //! exact runtime surface against a snapshot list.
 
-export { type CommandError } from "./ipc/core";
+export { type CommandError, formatIpcError } from "./ipc/core";
 export * from "./ipc/conversations";
 export * from "./ipc/providers";
 export * from "./ipc/settings";

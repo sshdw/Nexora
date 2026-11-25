@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { PlanDecisionKind } from "../lib/tauri";
+import { formatIpcError, type PlanDecisionKind } from "../lib/tauri";
 import { useStrings } from "../lib/useLocale";
 import { Button } from "./ui/button";
 
@@ -45,7 +45,7 @@ export default function PlanDecisionPanel({
     try {
       await onDecide(runId, decision, reply);
     } catch (cause) {
-      setValidationError(cause instanceof Error ? cause.message : String(cause));
+      setValidationError(formatIpcError(cause));
     } finally {
       setSubmitting(false);
     }

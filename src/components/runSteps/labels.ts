@@ -168,6 +168,7 @@ const TOOL_VERBS: Record<string, StringKey> = {
   search_files: "agent.actSearch",
   list_directory: "agent.actList",
   execute_command: "agent.actRun",
+  ask_user_question: "agent.actAskUser",
 };
 
 /** Whether this tool has a verb of its own. An UNKNOWN tool has to keep
@@ -211,6 +212,13 @@ export function stepTarget(
     return command === null
       ? null
       : { text: command, title: tr(getLocale(), "agent.commandTitle") };
+  }
+  if (step.tool_name === "ask_user_question") {
+    const question =
+      typeof args.question === "string" ? args.question.trim() : "";
+    return question.length === 0
+      ? null
+      : { text: question, title: tr(getLocale(), "agent.questionTitle") };
   }
   const path = typeof args.path === "string" ? args.path : null;
   if (path !== null)
