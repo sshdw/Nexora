@@ -567,3 +567,19 @@ Separate from the in-memory pipeline `RunSnapshot` (`snapshots.rs`), the workspa
 With the verified disk-backed checkpoint service active, `Standard` mode permits ordinary workspace `write_file`/`edit_file` mutations automatically, while sensitive paths (`.env*`, keys, `.git/hooks/**`, `.git/config`, `.nexora/**`) and outside-workspace targets continue to require explicit approval.
 
 Expose thin IPC commands (`list_run_checkpoints`, `revert_file_checkpoint`, `revert_turn_checkpoints` in `commands/agent.rs` and `src/lib/ipc/agent.ts`) and 1-click file/turn Revert controls in `AgentRunSteps.tsx`. Every revert operation re-validates canonical workspace and symlink boundaries, verifies the current workspace file hash against `post_blob_sha256` (rejecting silent overwrite on external modification unless explicitly forced), restores or removes the target, and records `reverted_at`.
+
+## Stage 12 Architecture Amendments
+
+### Unified 3-Mode Access & `Full access` Policy
+- `AccessProfile` and `AutonomyMode` unify onto three user-facing modes (`Ask permissions` / `Supervised`, `Auto-approve safe` / `SemiAutonomous`, `Full access` / `FullAutonomous`), with `Plan` as the orthogonal read-only ceiling. Legacy `read_only` values resolve safely to `Supervised`.
+- `Full access` requires explicit opt-in (`agent.full_access_acknowledged` in personal `app_settings`); `.nexora/config.json` may restrict but never elevate to `Full access`. Every auto-approved action in `Full access` records audit/step provenance, and `scan_observation` prompt-injection marker hits still pause for user confirmation.
+
+### Web Search & Fetch Subsystem (`application/web/`)
+- `src-tauri/src/application/web/{mod,safety,extract,fetch}.rs` and `search/{ddg,tavily,brave,exa,searxng}.rs` implement bounded search/fetch behind `tools/web.rs` and `RiskClass::ExternalWebRead`.
+- `safety.rs` reuses `application/mcp/url_safety.rs` (public-routable IP checks, DNS pinning, `Policy::none()` redirects). `extract.rs` uses a self-contained HTML-to-Markdown converter (no new HTML/MD crate) with pre/post caps and `[truncated]` markers, followed by `injection::sanitize_web_content`, secret redaction, and `tool_message` enveloping. Search API keys live solely in `CredentialStore`.
+
+### Local Models, Capability Cascade & Runtime Fixes
+- `src-tauri/src/infrastructure/providers/local/{mod,ollama,lmstudio,llamacpp,generic}.rs` and `src-tauri/src/application/local_models.rs` handle local runtime discovery and in-memory caching without adding provider catalogs to `crates/nexora-core`. Keyless execution is restricted to `is_local` connections on validated loopback endpoints.
+- `application/capabilities.rs` and `infrastructure/providers/metadata.rs` resolve `max_output_tokens` and capabilities via per-field cascade (`ManualOverride > Live API > BuiltInCatalog/FamilyRules > Unknown`), backed by secret-free `test_provider_connection` diagnostics.
+- Frontend runtime fixes standardize IPC error formatting (`formatIpcError(e)`), `<MessageMarkdown>` streaming, `48px` `isAtBottom` smart scroll, `PTY Terminal` `FitAddon` ↔ `ConPTY` resize sync, and normalized `ask_user_question` payloads.
+
