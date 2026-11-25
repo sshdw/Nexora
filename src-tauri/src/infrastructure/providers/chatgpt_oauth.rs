@@ -70,6 +70,9 @@ pub(crate) const DEFAULT_OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 /// Refresh access tokens when fewer than this many seconds remain before expiry.
 const REFRESH_SKEW_SECS: i64 = 60;
 
+/// Allowed clock-skew leeway (in seconds) when validating `id_token` `iat` claims.
+const ID_TOKEN_CLOCK_SKEW_SECS: i64 = 120;
+
 /// Maximum bytes read from a loopback HTTP callback request.
 const MAX_CALLBACK_REQUEST_BYTES: usize = 8192;
 
@@ -313,6 +316,14 @@ pub(crate) enum ChatGptOAuthError {
     MissingCode,
     /// The authorization code exchange failed or returned an invalid payload.
     TokenExchangeFailed,
+    /// The OAuth callback did not include a valid issued client identifier.
+    CallbackClientIdInvalid,
+    /// The OAuth token endpoint rejected the request with an HTTP error status.
+    TokenEndpointRejected { status: u16 },
+    /// Verifying the OAuth ID token signature or claims failed.
+    IdTokenVerificationFailed,
+    /// Fetching or parsing the issuer's JWKS signing keys failed.
+    JwksFetchFailed,
     /// Refreshing the stored OAuth token failed or no refresh token is stored.
     TokenRefreshFailed,
     /// Refreshing the stored OAuth token failed transiently (network/5xx/rate limit);
@@ -363,6 +374,24 @@ impl std::fmt::Display for ChatGptOAuthError {
             }
             Self::TokenExchangeFailed => {
                 write!(f, "ChatGPT OAuth token exchange failed")
+            }
+            Self::CallbackClientIdInvalid => {
+                write!(
+                    f,
+                    "ChatGPT OAuth callback did not include a valid client ID"
+                )
+            }
+            Self::TokenEndpointRejected { status } => {
+                write!(
+                    f,
+                    "ChatGPT OAuth token endpoint rejected the request (HTTP {status})"
+                )
+            }
+            Self::IdTokenVerificationFailed => {
+                write!(f, "ChatGPT OAuth ID token verification failed")
+            }
+            Self::JwksFetchFailed => {
+                write!(f, "failed to fetch ChatGPT OAuth signing keys (JWKS)")
             }
             Self::TokenRefreshFailed => {
                 write!(
@@ -548,13 +577,16 @@ pub(crate) struct PlanModel {
 }
 
 fn has_plan_scope(scope: Option<&str>) -> bool {
-    scope.is_some_and(|scope| scope.split_ascii_whitespace().any(|s| s == PLAN_SCOPE))
+    scope.is_none_or(|scope| scope.split_ascii_whitespace().any(|s| s == PLAN_SCOPE))
 }
 
 fn is_issued_client(client_id: &str) -> bool {
-    client_id.strip_prefix("oaiapp_").is_some_and(|suffix| {
+    let suffix = client_id
+        .strip_prefix("oaiapp_")
+        .or_else(|| client_id.strip_prefix("app_"));
+    suffix.is_some_and(|suffix| {
         !suffix.is_empty()
-            && suffix.len() <= 256
+            && client_id.len() <= 256
             && suffix
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
@@ -1489,10 +1521,10 @@ fn oauth_client(
         .map_err(|_| failure_kind)
 }
 
-fn read_oauth_json<T: serde::de::DeserializeOwned>(
+fn read_oauth_bytes(
     response: reqwest::blocking::Response,
     failure_kind: ChatGptOAuthError,
-) -> Result<T, ChatGptOAuthError> {
+) -> Result<Vec<u8>, ChatGptOAuthError> {
     if !response.status().is_success() {
         return Err(failure_kind);
     }
@@ -1506,6 +1538,14 @@ fn read_oauth_json<T: serde::de::DeserializeOwned>(
         return Err(ChatGptOAuthError::ResponseTooLarge);
     }
 
+    Ok(body)
+}
+
+fn read_oauth_json<T: serde::de::DeserializeOwned>(
+    response: reqwest::blocking::Response,
+    failure_kind: ChatGptOAuthError,
+) -> Result<T, ChatGptOAuthError> {
+    let body = read_oauth_bytes(response, failure_kind)?;
     serde_json::from_slice(&body).map_err(|_| failure_kind)
 }
 
@@ -1637,7 +1677,8 @@ fn verify_id_token(
     nonce: &str,
     timeout: Duration,
 ) -> Result<String, ChatGptOAuthError> {
-    let failure = ChatGptOAuthError::TokenExchangeFailed;
+    let failure = ChatGptOAuthError::IdTokenVerificationFailed;
+    let jwks_failure = ChatGptOAuthError::JwksFetchFailed;
     let (signed, signature) = token.rsplit_once('.').ok_or(failure)?;
     let (header, claims) = signed.split_once('.').ok_or(failure)?;
     let decode = |value| URL_SAFE_NO_PAD.decode(value).map_err(|_| failure);
@@ -1649,11 +1690,11 @@ fn verify_id_token(
         "{}/.well-known/jwks.json",
         config.issuer.trim_end_matches('/')
     ))?;
-    let response = oauth_client(timeout, failure)?
+    let response = oauth_client(timeout, jwks_failure)?
         .get(endpoint)
         .send()
-        .map_err(|_| failure)?;
-    let keys: JwkSet = read_oauth_json(response, failure)?;
+        .map_err(|_| jwks_failure)?;
+    let keys: JwkSet = read_oauth_json(response, jwks_failure)?;
     let key = keys
         .keys
         .iter()
@@ -1689,7 +1730,7 @@ fn verify_id_token(
         || claims.iss != config.issuer
         || claims.sub.trim().is_empty()
         || claims.exp <= now
-        || claims.iat > now.saturating_add(5)
+        || claims.iat > now.saturating_add(ID_TOKEN_CLOCK_SKEW_SECS)
         || !constant_time_eq(claims.nonce.as_bytes(), nonce.as_bytes())
     {
         return Err(failure);
@@ -1737,6 +1778,84 @@ struct AccountModelEntry {
     visibility: String,
 }
 
+#[derive(Deserialize)]
+struct OpenAiModels {
+    data: Vec<OpenAiModelEntry>,
+}
+
+#[derive(Deserialize)]
+struct OpenAiModelEntry {
+    id: String,
+}
+
+fn baseline_plan_models() -> Vec<PlanModel> {
+    vec![
+        PlanModel {
+            slug: "gpt-5".to_owned(),
+            display_name: "GPT-5".to_owned(),
+        },
+        PlanModel {
+            slug: "gpt-4o".to_owned(),
+            display_name: "GPT-4o".to_owned(),
+        },
+        PlanModel {
+            slug: "o3".to_owned(),
+            display_name: "o3".to_owned(),
+        },
+        PlanModel {
+            slug: "o4-mini".to_owned(),
+            display_name: "o4-mini".to_owned(),
+        },
+    ]
+}
+
+fn is_valid_plan_model(model: &PlanModel) -> bool {
+    !model.slug.is_empty()
+        && model.slug.len() <= 128
+        && model
+            .slug
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_' | b'.' | b':'))
+        && !model.display_name.trim().is_empty()
+        && model.display_name.len() <= 128
+        && !model.display_name.chars().any(char::is_control)
+}
+
+fn parse_plan_models(body: &[u8]) -> Result<Vec<PlanModel>, ChatGptOAuthError> {
+    let mut models = Vec::new();
+    if let Ok(catalog) = serde_json::from_slice::<AccountModels>(body) {
+        for entry in catalog.models {
+            let model = entry.model;
+            if entry.visibility == "list"
+                && is_valid_plan_model(&model)
+                && !models
+                    .iter()
+                    .any(|existing: &PlanModel| existing.slug == model.slug)
+            {
+                models.push(model);
+            }
+        }
+        return Ok(models);
+    }
+    if let Ok(catalog) = serde_json::from_slice::<OpenAiModels>(body) {
+        for entry in catalog.data {
+            let model = PlanModel {
+                slug: entry.id.clone(),
+                display_name: entry.id,
+            };
+            if is_valid_plan_model(&model)
+                && !models
+                    .iter()
+                    .any(|existing: &PlanModel| existing.slug == model.slug)
+            {
+                models.push(model);
+            }
+        }
+        return Ok(models);
+    }
+    Err(ChatGptOAuthError::TokenExchangeFailed)
+}
+
 fn list_plan_models(
     config: &ChatGptOAuthConfig,
     access_token: &str,
@@ -1753,28 +1872,19 @@ fn list_plan_models(
         .bearer_auth(access_token)
         .send()
         .map_err(|_| failure)?;
-    let catalog: AccountModels = read_oauth_json(response, failure)?;
-    let mut models = Vec::new();
-    for entry in catalog.models {
-        let model = entry.model;
-        if entry.visibility == "list"
-            && !model.slug.is_empty()
-            && model.slug.len() <= 128
-            && model
-                .slug
-                .bytes()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'-' | b'_' | b'.' | b':'))
-            && !model.display_name.trim().is_empty()
-            && model.display_name.len() <= 128
-            && !model.display_name.chars().any(char::is_control)
-            && !models
-                .iter()
-                .any(|existing: &PlanModel| existing.slug == model.slug)
-        {
-            models.push(model);
-        }
+    let body = read_oauth_bytes(response, failure)?;
+    parse_plan_models(&body)
+}
+
+fn resolve_plan_models(
+    config: &ChatGptOAuthConfig,
+    access_token: &str,
+    timeout: Duration,
+) -> Vec<PlanModel> {
+    match list_plan_models(config, access_token, timeout) {
+        Ok(models) if !models.is_empty() => models,
+        _ => baseline_plan_models(),
     }
-    Ok(models)
 }
 
 struct ExchangeError {
@@ -1808,14 +1918,19 @@ fn exchange_code(
                 .as_ref()
                 .is_some_and(|id| id != &identity.client_id)
             {
-                return Err(failure.into());
+                return Err(ChatGptOAuthError::CallbackClientIdInvalid.into());
             }
             identity.client_id.clone()
         }
         None => callback
             .client_id
+            .or_else(|| {
+                let configured = config.client_id.trim();
+                (configured != DYNAMIC_CLIENT_ID && !configured.is_empty())
+                    .then(|| configured.to_owned())
+            })
             .filter(|id| is_issued_client(id))
-            .ok_or(failure)?,
+            .ok_or(ChatGptOAuthError::CallbackClientIdInvalid)?,
     };
     let form = [
         ("grant_type", "authorization_code"),
@@ -1832,14 +1947,20 @@ fn exchange_code(
                 code: OAuthTokenErrorCode::AccessDenied | OAuthTokenErrorCode::InvalidScope,
                 ..
             } => ChatGptOAuthError::AuthorizationDenied,
-            _ => failure,
+            TokenEndpointError::Http { status, .. } => {
+                ChatGptOAuthError::TokenEndpointRejected { status }
+            }
+            TokenEndpointError::Transport | TokenEndpointError::InvalidPayload => failure,
         };
         ExchangeError::from(mapped)
     })?;
-    let id_token = raw.id_token.take().ok_or(failure)?;
+    let id_token = raw
+        .id_token
+        .take()
+        .ok_or(ChatGptOAuthError::IdTokenVerificationFailed)?;
     let subject = verify_id_token(config, &id_token, &client_id, nonce, timeout)?;
     if previous.is_some_and(|previous| previous.subject != subject) {
-        return Err(failure.into());
+        return Err(ChatGptOAuthError::IdTokenVerificationFailed.into());
     }
     let verified_identity = PlanIdentity {
         client_id,
@@ -1862,15 +1983,7 @@ fn exchange_code(
             });
         }
     };
-    let models = match list_plan_models(config, &record.access_token, timeout) {
-        Ok(models) => models,
-        Err(error) => {
-            return Err(ExchangeError {
-                error,
-                verified_identity: Some(verified_identity),
-            });
-        }
-    };
+    let models = resolve_plan_models(config, &record.access_token, timeout);
     if let Some(identity) = record.identity.as_mut() {
         identity.models = models;
     }
@@ -1956,6 +2069,11 @@ fn refresh_tokens_locked(
     }
     if existing.connected_at > 0 {
         updated.connected_at = existing.connected_at;
+    }
+    if let Some(identity) = updated.identity.as_mut() {
+        if identity.models.is_empty() {
+            identity.models = baseline_plan_models();
+        }
     }
     ChatGptOAuthStore::save_with_scope(backend, scope, &updated)?;
     Ok(updated)
@@ -2944,6 +3062,10 @@ mod tests {
             ChatGptOAuthError::AuthorizationDenied,
             ChatGptOAuthError::MissingCode,
             ChatGptOAuthError::TokenExchangeFailed,
+            ChatGptOAuthError::CallbackClientIdInvalid,
+            ChatGptOAuthError::TokenEndpointRejected { status: 400 },
+            ChatGptOAuthError::IdTokenVerificationFailed,
+            ChatGptOAuthError::JwksFetchFailed,
             ChatGptOAuthError::TokenRefreshFailed,
             ChatGptOAuthError::TokenRefreshTransient,
             ChatGptOAuthError::ReauthorizationRequired,
@@ -3498,6 +3620,470 @@ mod tests {
             Ok(_) => panic!("over-limit OAuth token response must be rejected"),
         }
 
+        server.join().unwrap();
+    }
+
+    fn signed_fixture_id_token_with(
+        port: u16,
+        client_id: &str,
+        nonce: &str,
+        iat_offset_secs: i64,
+    ) -> String {
+        let key = ring::signature::RsaKeyPair::from_pkcs8(
+            &URL_SAFE_NO_PAD.decode(FIXTURE_PRIVATE_KEY).unwrap(),
+        )
+        .unwrap();
+        let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","kid":"fixture"}"#);
+        let now = now_unix_secs();
+        let claims = serde_json::json!({
+            "iss": format!("http://127.0.0.1:{port}"),
+            "sub": "example-subject",
+            "aud": [client_id],
+            "nonce": nonce,
+            "iat": now + iat_offset_secs,
+            "exp": now + 600,
+        });
+        let signed = format!("{header}.{}", URL_SAFE_NO_PAD.encode(claims.to_string()));
+        let mut signature = vec![0u8; key.public().modulus_len()];
+        key.sign(
+            &ring::signature::RSA_PKCS1_SHA256,
+            &ring::rand::SystemRandom::new(),
+            signed.as_bytes(),
+            &mut signature,
+        )
+        .unwrap();
+        format!("{signed}.{}", URL_SAFE_NO_PAD.encode(signature))
+    }
+
+    fn spawn_exchange_server(
+        client_id: &'static str,
+        scope: Option<&'static str>,
+        iat_offset_secs: i64,
+        models_status: &'static str,
+        models_body: &'static str,
+    ) -> (
+        u16,
+        std::sync::mpsc::Sender<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind custom exchange server");
+        let port = listener.local_addr().expect("addr").port();
+        let (send_nonce, receive_nonce) = std::sync::mpsc::channel::<String>();
+        let handle = std::thread::spawn(move || {
+            for idx in 0..3 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let (status, body) = match idx {
+                    0 => {
+                        let nonce = receive_nonce.recv_timeout(Duration::from_secs(5)).unwrap();
+                        let mut token_payload = serde_json::json!({
+                            "access_token": "custom-access-secret",
+                            "refresh_token": "custom-refresh-secret",
+                            "expires_in": 3600,
+                            "token_type": "Bearer",
+                            "id_token": signed_fixture_id_token_with(
+                                port,
+                                client_id,
+                                &nonce,
+                                iat_offset_secs,
+                            ),
+                        });
+                        if let Some(scope_value) = scope {
+                            token_payload["scope"] = serde_json::json!(scope_value);
+                        }
+                        ("200 OK", token_payload.to_string())
+                    }
+                    1 => (
+                        "200 OK",
+                        serde_json::json!({"keys": [{
+                            "kid": "fixture", "kty": "RSA", "alg": "RS256",
+                            "n": FIXTURE_MODULUS, "e": "AQAB",
+                        }]})
+                        .to_string(),
+                    ),
+                    _ => (models_status, models_body.to_owned()),
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        (port, send_nonce, handle)
+    }
+
+    #[test]
+    fn list_plan_models_failures_still_persist_tokens_with_baseline_models() {
+        let _flow_guard = lock_session_flow_test();
+        let cases = [
+            ("404 Not Found", r#"{"error":"not_found"}"#),
+            ("500 Internal Server Error", r#"{"error":"internal"}"#),
+            ("200 OK", "not-valid-json{{{"),
+            ("200 OK", r#"{"models":[]}"#),
+        ];
+
+        for (models_status, models_body) in cases {
+            let (port, send_nonce, server) = spawn_exchange_server(
+                "oaiapp_fixture",
+                Some(DEFAULT_SCOPES),
+                0,
+                models_status,
+                models_body,
+            );
+            let keyring = MemoryKeyring::default();
+            let config = ChatGptOAuthConfig {
+                issuer: format!("http://127.0.0.1:{port}"),
+                client_id: DYNAMIC_CLIENT_ID.to_string(),
+                scopes: DEFAULT_SCOPES.to_string(),
+                callback_ports: Vec::new(),
+            };
+
+            let status = run_oauth_login_flow_with(
+                &keyring,
+                &config,
+                |auth_url| {
+                    let parsed = Url::parse(auth_url).unwrap();
+                    let query: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+                    send_nonce.send(query["nonce"].clone()).unwrap();
+                    let cb_url = format!(
+                        "{}?code=nonfatal-models-code&client_id=oaiapp_fixture&state={}",
+                        query["redirect_uri"], query["state"]
+                    );
+                    std::thread::spawn(move || {
+                        let _ = reqwest::blocking::get(cb_url);
+                    });
+                    Ok(())
+                },
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                None,
+            )
+            .expect("sign-in must succeed even when /v1/models fails");
+
+            assert!(status.connected);
+            assert_eq!(status.models, baseline_plan_models());
+            let stored = ChatGptOAuthStore::load_with(&keyring)
+                .unwrap()
+                .expect("tokens persisted in keyring");
+            assert_eq!(stored.access_token, "custom-access-secret");
+            assert_eq!(
+                stored.refresh_token.as_deref(),
+                Some("custom-refresh-secret")
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn list_plan_models_parses_standard_openai_data_list() {
+        let _flow_guard = lock_session_flow_test();
+        let (port, server) = spawn_scripted_token_server(vec![(
+            "200 OK",
+            r#"{"object":"list","data":[{"id":"gpt-5"},{"id":"o4-mini"},{"id":"gpt-5"},{"id":"bad model!"}]}"#,
+        )]);
+        let config = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+
+        let models = list_plan_models(&config, "fixture-token", Duration::from_secs(5))
+            .expect("OpenAI { data: [...] } list parses");
+        assert_eq!(
+            models,
+            vec![
+                PlanModel {
+                    slug: "gpt-5".to_owned(),
+                    display_name: "gpt-5".to_owned(),
+                },
+                PlanModel {
+                    slug: "o4-mini".to_owned(),
+                    display_name: "o4-mini".to_owned(),
+                },
+            ]
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn verify_id_token_accepts_60s_iat_clock_skew_and_rejects_excessive_skew() {
+        let _flow_guard = lock_session_flow_test();
+        let jwks = serde_json::json!({"keys": [{
+            "kid": "fixture", "kty": "RSA", "alg": "RS256",
+            "n": FIXTURE_MODULUS, "e": "AQAB",
+        }]})
+        .to_string();
+        let (port, server) = spawn_owned_scripted_token_server(vec![
+            ("200 OK", jwks.clone()),
+            ("200 OK", jwks),
+            (
+                "500 Internal Server Error",
+                r#"{"error":"jwks_down"}"#.to_owned(),
+            ),
+        ]);
+        let config = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+
+        let skewed_60s = signed_fixture_id_token_with(port, "oaiapp_fixture", "nonce-1", 60);
+        let subject = verify_id_token(
+            &config,
+            &skewed_60s,
+            "oaiapp_fixture",
+            "nonce-1",
+            Duration::from_secs(5),
+        )
+        .expect("60s iat clock skew must be accepted within 120s leeway");
+        assert_eq!(subject, "example-subject");
+
+        let skewed_180s = signed_fixture_id_token_with(port, "oaiapp_fixture", "nonce-2", 180);
+        let err = verify_id_token(
+            &config,
+            &skewed_180s,
+            "oaiapp_fixture",
+            "nonce-2",
+            Duration::from_secs(5),
+        )
+        .expect_err("180s iat clock skew exceeds 120s leeway");
+        assert_eq!(err, ChatGptOAuthError::IdTokenVerificationFailed);
+
+        let jwks_err = verify_id_token(
+            &config,
+            &skewed_60s,
+            "oaiapp_fixture",
+            "nonce-1",
+            Duration::from_secs(5),
+        )
+        .expect_err("JWKS 500 must map to JwksFetchFailed");
+        assert_eq!(jwks_err, ChatGptOAuthError::JwksFetchFailed);
+
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn rfc6749_omitted_scope_is_accepted_while_explicit_missing_plan_scope_is_rejected() {
+        let _flow_guard = lock_session_flow_test();
+        assert!(has_plan_scope(None));
+        assert!(has_plan_scope(Some(DEFAULT_SCOPES)));
+        assert!(!has_plan_scope(Some("openid profile email")));
+        assert!(!has_plan_scope(Some("")));
+
+        let (port, send_nonce, server) = spawn_exchange_server(
+            "oaiapp_fixture",
+            None,
+            0,
+            "200 OK",
+            r#"{"data":[{"id":"gpt-5"}]}"#,
+        );
+        let keyring = MemoryKeyring::default();
+        let config = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+
+        let status = run_oauth_login_flow_with(
+            &keyring,
+            &config,
+            |auth_url| {
+                let parsed = Url::parse(auth_url).unwrap();
+                let query: HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+                send_nonce.send(query["nonce"].clone()).unwrap();
+                let cb_url = format!(
+                    "{}?code=no-scope-code&client_id=oaiapp_fixture&state={}",
+                    query["redirect_uri"], query["state"]
+                );
+                std::thread::spawn(move || {
+                    let _ = reqwest::blocking::get(cb_url);
+                });
+                Ok(())
+            },
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            None,
+        )
+        .expect("token response omitting scope per RFC 6749 §5.1 must succeed");
+
+        assert!(status.connected);
+        assert_eq!(status.models.len(), 1);
+        assert_eq!(status.models[0].slug, "gpt-5");
+        server.join().unwrap();
+
+        let (port_bad, send_nonce_bad, server_bad) = spawn_exchange_server(
+            "oaiapp_fixture",
+            Some("openid profile email"),
+            0,
+            "200 OK",
+            r#"{"data":[{"id":"gpt-5"}]}"#,
+        );
+        let config_bad = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port_bad}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+        let nonce_bad = "nonce-missing-plan-scope";
+        send_nonce_bad.send(nonce_bad.to_owned()).unwrap();
+        let err = exchange_code(
+            &config_bad,
+            AuthorizationCallback {
+                code: "code-bad-scope".to_owned(),
+                client_id: Some("oaiapp_fixture".to_owned()),
+            },
+            "http://127.0.0.1:1455/auth/callback",
+            "verifier",
+            nonce_bad,
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("explicit scope lacking PLAN_SCOPE must be rejected");
+        assert_eq!(err.error, ChatGptOAuthError::AuthorizationDenied);
+        // Drain the unused 3rd accept by connecting once so the helper thread exits cleanly.
+        let _ = TcpStream::connect(("127.0.0.1", port_bad));
+        server_bad.join().unwrap();
+    }
+
+    #[test]
+    fn issued_client_accepts_app_prefix_config_fallback_and_classifies_invalid_client_id() {
+        let _flow_guard = lock_session_flow_test();
+        assert!(is_issued_client("oaiapp_12345_abc-XYZ"));
+        assert!(is_issued_client("app_EMoamEEZ73f0CkXaXp7hrann"));
+        assert!(!is_issued_client("app_"));
+        assert!(!is_issued_client("oaiapp_"));
+        assert!(!is_issued_client("dynamic_agent_client"));
+        assert!(!is_issued_client("app_invalid space"));
+        assert!(!is_issued_client(&format!("app_{}", "a".repeat(253))));
+
+        // 1. Callback with app_* client_id succeeds.
+        let (port, send_nonce, server) = spawn_exchange_server(
+            "app_TestClient_01",
+            Some(DEFAULT_SCOPES),
+            0,
+            "200 OK",
+            r#"{"data":[{"id":"gpt-5"}]}"#,
+        );
+        let config = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+        send_nonce.send("nonce-app-cb".to_owned()).unwrap();
+        let record = exchange_code(
+            &config,
+            AuthorizationCallback {
+                code: "code-app-prefix".to_owned(),
+                client_id: Some("app_TestClient_01".to_owned()),
+            },
+            "http://127.0.0.1:1455/auth/callback",
+            "verifier",
+            "nonce-app-cb",
+            None,
+            Duration::from_secs(5),
+        )
+        .map_err(|err| err.error)
+        .expect("app_* callback client_id must succeed");
+        assert_eq!(
+            record.identity.as_ref().map(|id| id.client_id.as_str()),
+            Some("app_TestClient_01")
+        );
+        server.join().unwrap();
+
+        // 2. Callback omitting client_id falls back to config.client_id when != DYNAMIC_CLIENT_ID.
+        let (port2, send_nonce2, server2) = spawn_exchange_server(
+            "app_ConfiguredFallback_02",
+            Some(DEFAULT_SCOPES),
+            0,
+            "200 OK",
+            r#"{"data":[{"id":"o3"}]}"#,
+        );
+        let config_fallback = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port2}"),
+            client_id: "app_ConfiguredFallback_02".to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+        send_nonce2.send("nonce-app-fallback".to_owned()).unwrap();
+        let record2 = exchange_code(
+            &config_fallback,
+            AuthorizationCallback {
+                code: "code-fallback".to_owned(),
+                client_id: None,
+            },
+            "http://127.0.0.1:1455/auth/callback",
+            "verifier",
+            "nonce-app-fallback",
+            None,
+            Duration::from_secs(5),
+        )
+        .map_err(|err| err.error)
+        .expect("omitted callback client_id falls back to configured app_* client_id");
+        assert_eq!(
+            record2.identity.as_ref().map(|id| id.client_id.as_str()),
+            Some("app_ConfiguredFallback_02")
+        );
+        server2.join().unwrap();
+
+        // 3. Callback omitting client_id with DYNAMIC_CLIENT_ID fails with CallbackClientIdInvalid.
+        let missing_err = exchange_code(
+            &config,
+            AuthorizationCallback {
+                code: "code-missing-cid".to_owned(),
+                client_id: None,
+            },
+            "http://127.0.0.1:1455/auth/callback",
+            "verifier",
+            "nonce-missing",
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("missing client_id with dynamic_agent_client must fail");
+        assert_eq!(
+            missing_err.error,
+            ChatGptOAuthError::CallbackClientIdInvalid
+        );
+    }
+
+    #[test]
+    fn token_endpoint_http_rejection_classifies_status_code() {
+        let _flow_guard = lock_session_flow_test();
+        let (port, server) = spawn_scripted_token_server(vec![(
+            "400 Bad Request",
+            r#"{"error":"invalid_grant","error_description":"code expired"}"#,
+        )]);
+        let config = ChatGptOAuthConfig {
+            issuer: format!("http://127.0.0.1:{port}"),
+            client_id: DYNAMIC_CLIENT_ID.to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+            callback_ports: Vec::new(),
+        };
+        let reject_err = exchange_code(
+            &config,
+            AuthorizationCallback {
+                code: "code-expired".to_owned(),
+                client_id: Some("app_TestClient_01".to_owned()),
+            },
+            "http://127.0.0.1:1455/auth/callback",
+            "verifier",
+            "nonce-reject",
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("400 token response must fail with TokenEndpointRejected");
+        assert_eq!(
+            reject_err.error,
+            ChatGptOAuthError::TokenEndpointRejected { status: 400 }
+        );
         server.join().unwrap();
     }
 }

@@ -349,7 +349,9 @@ impl CompletedTurn {
                     name,
                     arguments,
                 } => {
-                    if namespace.as_deref() != Some(TOOL_NAMESPACE)
+                    let valid_namespace =
+                        namespace.is_none() || namespace.as_deref() == Some(TOOL_NAMESPACE);
+                    if !valid_namespace
                         || call_id.is_empty()
                         || calls.iter().any(|call| call.id == call_id)
                         || !request.tools.iter().any(|tool| tool.name == name)
@@ -632,5 +634,86 @@ mod tests {
                 "content": [{"type": "input_text", "text": "Follow-up question"}]
             })
         );
+    }
+
+    #[test]
+    fn function_call_accepts_null_or_nexora_namespace_and_rejects_foreign_namespace() {
+        let mut request = fixture_request();
+        request.tools = Arc::new(vec![nexora_core::provider::ToolDefinition {
+            name: "read_file".to_owned(),
+            description: "Read a file".to_owned(),
+            parameters: json!({"type": "object", "properties": {}}),
+        }]);
+
+        // 1. Explicit `"namespace": null` is accepted.
+        let turn_null: CompletedTurn = serde_json::from_value(json!({
+            "model": "fixture-model",
+            "output": [{
+                "type": "function_call",
+                "namespace": null,
+                "call_id": "call-null-ns",
+                "name": "read_file",
+                "arguments": "{}"
+            }]
+        }))
+        .expect("deserialize function_call with null namespace");
+        let resp_null = turn_null
+            .into_response(&request)
+            .expect("null namespace function call must be accepted");
+        assert_eq!(resp_null.tool_calls.len(), 1);
+        assert_eq!(resp_null.tool_calls[0].id, "call-null-ns");
+        assert_eq!(resp_null.tool_calls[0].name, "read_file");
+
+        // 2. Omitted `namespace` field is also accepted.
+        let turn_omitted: CompletedTurn = serde_json::from_value(json!({
+            "model": "fixture-model",
+            "output": [{
+                "type": "function_call",
+                "call_id": "call-omitted-ns",
+                "name": "read_file",
+                "arguments": "{}"
+            }]
+        }))
+        .expect("deserialize function_call with omitted namespace");
+        let resp_omitted = turn_omitted
+            .into_response(&request)
+            .expect("omitted namespace function call must be accepted");
+        assert_eq!(resp_omitted.tool_calls.len(), 1);
+        assert_eq!(resp_omitted.tool_calls[0].id, "call-omitted-ns");
+
+        // 3. Matching `TOOL_NAMESPACE` ("nexora") continues to be accepted.
+        let turn_nexora: CompletedTurn = serde_json::from_value(json!({
+            "model": "fixture-model",
+            "output": [{
+                "type": "function_call",
+                "namespace": TOOL_NAMESPACE,
+                "call_id": "call-nexora-ns",
+                "name": "read_file",
+                "arguments": "{}"
+            }]
+        }))
+        .expect("deserialize function_call with nexora namespace");
+        let resp_nexora = turn_nexora
+            .into_response(&request)
+            .expect("nexora namespace function call must be accepted");
+        assert_eq!(resp_nexora.tool_calls.len(), 1);
+        assert_eq!(resp_nexora.tool_calls[0].id, "call-nexora-ns");
+
+        // 4. Foreign namespace is still rejected.
+        let turn_foreign: CompletedTurn = serde_json::from_value(json!({
+            "model": "fixture-model",
+            "output": [{
+                "type": "function_call",
+                "namespace": "foreign_ns",
+                "call_id": "call-foreign-ns",
+                "name": "read_file",
+                "arguments": "{}"
+            }]
+        }))
+        .expect("deserialize function_call with foreign namespace");
+        assert!(matches!(
+            turn_foreign.into_response(&request),
+            Err(ExecutorError::UnexpectedResponse)
+        ));
     }
 }
