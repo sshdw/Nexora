@@ -624,6 +624,10 @@ impl From<ChatGptOAuthError> for CommandError {
             | ChatGptOAuthError::AuthorizationDenied
             | ChatGptOAuthError::MissingCode
             | ChatGptOAuthError::TokenExchangeFailed
+            | ChatGptOAuthError::CallbackClientIdInvalid
+            | ChatGptOAuthError::TokenEndpointRejected { .. }
+            | ChatGptOAuthError::IdTokenVerificationFailed
+            | ChatGptOAuthError::JwksFetchFailed
             | ChatGptOAuthError::TokenRefreshFailed
             | ChatGptOAuthError::TokenRefreshTransient
             | ChatGptOAuthError::ReauthorizationRequired
@@ -715,6 +719,10 @@ mod tests {
             ChatGptOAuthError::StateMismatch,
             ChatGptOAuthError::CallbackTimeout,
             ChatGptOAuthError::TokenExchangeFailed,
+            ChatGptOAuthError::CallbackClientIdInvalid,
+            ChatGptOAuthError::TokenEndpointRejected { status: 400 },
+            ChatGptOAuthError::IdTokenVerificationFailed,
+            ChatGptOAuthError::JwksFetchFailed,
             ChatGptOAuthError::TokenRefreshFailed,
             ChatGptOAuthError::TokenRefreshTransient,
             ChatGptOAuthError::ReauthorizationRequired,
