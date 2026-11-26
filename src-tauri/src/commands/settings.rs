@@ -192,6 +192,15 @@ pub(crate) fn set_setting(
     db: State<'_, Database>,
 ) -> Result<(), CommandError> {
     validate_setting(&key, value.as_deref())?;
+    if key == nexora_core::config::ACCESS_PROFILE_KEY
+        && value.as_deref() == Some("full_access")
+        && !crate::application::settings::is_full_access_acknowledged(db.inner())
+    {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "full access requires explicit user risk acknowledgment",
+        ));
+    }
     SettingsService::new(db.inner())
         .write(&key, value.as_deref())
         .map_err(Into::into)

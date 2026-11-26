@@ -1082,13 +1082,13 @@ mod tests {
             .with_checkpoints(Some(store.clone()));
 
         // Before bind_workspace verifies the store, checkpoints are not yet trusted.
-        let ordinary_write = ToolCall {
-            id: "c1".into(),
+        let write_call = |id: &str, path: &str| ToolCall {
+            id: id.into(),
             name: "write_file".into(),
-            arguments: serde_json::json!({"path": "src/main.rs", "content": "fn main() {}"})
-                .to_string(),
+            arguments: serde_json::json!({"path": path, "content": "x"}).to_string(),
             thought_signature: None,
         };
+        let ordinary_write = write_call("c1", "src/main.rs");
         assert!(!gate.has_verified_checkpoints());
         assert!(gate.needs_approval(&ordinary_write));
 
@@ -1120,12 +1120,7 @@ mod tests {
             ".nexora/nexora.json",
             "../outside.txt",
         ] {
-            let call = ToolCall {
-                id: format!("sens-{sensitive}"),
-                name: "write_file".into(),
-                arguments: serde_json::json!({"path": sensitive, "content": "x"}).to_string(),
-                thought_signature: None,
-            };
+            let call = write_call(&format!("sens-{sensitive}"), sensitive);
             assert!(
                 gate.needs_approval(&call),
                 "sensitive/outside path {sensitive} must still require approval"
@@ -1140,12 +1135,28 @@ mod tests {
         };
         assert!(gate.needs_approval(&shell));
 
-        // SemiAutonomous and Supervised modes still prompt even with verified checkpoints.
+        // SemiAutonomous (`Auto-approve safe`) auto-approves ordinary workspace writes
+        // once checkpoints are verified, while still prompting without checkpoints or on
+        // sensitive paths.
         let semi_gate = ApprovalGate::new(AutonomyMode::SemiAutonomous)
             .with_access(AccessContext::fixed(AccessProfile::Standard))
             .with_checkpoints(Some(store.clone()));
-        semi_gate.bind_workspace(&ws);
         assert!(semi_gate.needs_approval(&ordinary_write));
+        semi_gate.bind_workspace(&ws);
+        assert!(!semi_gate.needs_approval(&ordinary_write));
+        assert!(semi_gate.needs_approval(&write_call("semi-sens", ".env")));
+
+        let semi_no_ckpt = ApprovalGate::new(AutonomyMode::SemiAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::Standard));
+        semi_no_ckpt.bind_workspace(&ws);
+        assert!(semi_no_ckpt.needs_approval(&ordinary_write));
+
+        // Supervised mode still prompts even with verified checkpoints.
+        let sup_mode_gate = ApprovalGate::new(AutonomyMode::Supervised)
+            .with_access(AccessContext::fixed(AccessProfile::Standard))
+            .with_checkpoints(Some(store.clone()));
+        sup_mode_gate.bind_workspace(&ws);
+        assert!(sup_mode_gate.needs_approval(&ordinary_write));
 
         let sup_access = AccessContext::fixed(AccessProfile::Supervised);
         let sup_gate = ApprovalGate::new(AutonomyMode::FullAutonomous)

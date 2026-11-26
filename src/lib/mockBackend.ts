@@ -279,9 +279,9 @@ const MOCK_LAYERED_DEFAULTS: Record<string, string | null> = {
 };
 
 function mockAccessRank(v: string | undefined): number {
-  if (v === "read_only") return 2;
-  if (v === "supervised") return 1;
-  return 0;
+  if (v === "read_only" || v === "supervised") return 2;
+  if (v === "full_access") return 0;
+  return 1;
 }
 
 function mockAutonomyRank(v: string | undefined): number {
@@ -317,7 +317,8 @@ function buildMockResolvedSettings(
     if (
       key === "agent.access_profile" &&
       projVal !== undefined &&
-      mockAccessRank(projVal) < mockAccessRank(personalAccess)
+      (projVal === "full_access" ||
+        mockAccessRank(projVal) < mockAccessRank(personalAccess))
     ) {
       projVal = undefined;
       blockedProject = true;
@@ -1315,7 +1316,8 @@ async function invoke(
         if (
           key === "agent.access_profile" &&
           strVal !== null &&
-          mockAccessRank(strVal) < mockAccessRank(personalAccess)
+          (strVal === "full_access" ||
+            mockAccessRank(strVal) < mockAccessRank(personalAccess))
         ) {
           throw {
             kind: "permissionDenied",
@@ -1971,12 +1973,12 @@ async function invoke(
             content: "hello world\nsecond line",
           });
           const rawProfile = settings.get("agent.access_profile");
-          const profile =
+          const profile: ApprovalMetadata["access_profile"] =
             rawProfile === undefined || rawProfile === "standard"
               ? "standard"
-              : rawProfile === "supervised"
-                ? "supervised"
-                : "read_only";
+              : rawProfile === "full_access"
+                ? "full_access"
+                : "supervised";
           const metadata: ApprovalMetadata = {
             access_profile: profile,
             sandbox_posture: "PerCommandConsent",

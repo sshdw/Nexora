@@ -43,6 +43,7 @@ import {
   FolderSimple,
   GearSix,
   GitBranch,
+  Hand,
   ListChecks,
   MagnifyingGlass,
   Paperclip,
@@ -51,6 +52,7 @@ import {
   Record,
   SealCheck,
   ShieldCheck,
+  ShieldWarning,
   SlidersHorizontal,
   Square,
   Stack,
@@ -152,7 +154,9 @@ export const SlidersIcon = uiIcon(SlidersHorizontal, "SlidersIcon");
 export const CheckIcon = uiIcon(Check, "CheckIcon");
 export const ChevronRightIcon = uiIcon(CaretRight, "ChevronRightIcon");
 export const EyeIcon = uiIcon(Eye, "EyeIcon");
+export const HandIcon = uiIcon(Hand, "HandIcon");
 export const ShieldCheckIcon = uiIcon(ShieldCheck, "ShieldCheckIcon");
+export const ShieldAlertIcon = uiIcon(ShieldWarning, "ShieldAlertIcon");
 export const FileTextIcon = uiIcon(FileText, "FileTextIcon");
 export const CodeIcon = uiIcon(Code, "CodeIcon");
 export const UndoIcon = uiIcon(ArrowCounterClockwise, "UndoIcon");

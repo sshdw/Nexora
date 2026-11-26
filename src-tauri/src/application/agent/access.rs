@@ -12,18 +12,30 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 
 pub(crate) const PROFILE_KEY: &str = "agent.access_profile";
+pub(crate) const FULL_ACCESS_ACKNOWLEDGED_KEY: &str =
+    nexora_core::config::FULL_ACCESS_ACKNOWLEDGED_KEY;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AccessProfile {
+    /// Mode 3 (`Full access`): unlimited auto-approve when explicitly acknowledged.
+    FullAccess,
+    /// Mode 2 (`Auto-approve safe`): checkpointed ordinary workspace writes and
+    /// verified-sandbox general shell auto-run; sensitive/unsafe/MCP/web ask.
     Standard,
+    /// Mode 1 (`Ask permissions`): workspace reads auto-run; all mutations,
+    /// shell commands, MCP calls, and web access ask. Legacy `"read_only"` maps
+    /// here on read.
     Supervised,
+    /// Internal fail-closed ceiling (`Plan` mode, read-only subagent, DB/config
+    /// error, or corrupt profile value). Never selectable as a 4th user mode.
     ReadOnly,
 }
 impl AccessProfile {
     pub(crate) fn resolve(value: Option<&str>) -> Self {
         match value {
             None | Some("standard") => Self::Standard,
-            Some("supervised") => Self::Supervised,
+            Some("supervised" | "read_only") => Self::Supervised,
+            Some("full_access") => Self::FullAccess,
             _ => Self::ReadOnly,
         }
     }
@@ -78,7 +90,7 @@ impl AccessContext {
             clock: policy_clock(db),
             selected: AccessProfile::ReadOnly,
             parent: None,
-            child_ceiling: AccessProfile::Standard,
+            child_ceiling: AccessProfile::FullAccess,
             workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
@@ -95,7 +107,7 @@ impl AccessContext {
             clock: Arc::new(RwLock::new(0)),
             selected: profile,
             parent: None,
-            child_ceiling: AccessProfile::Standard,
+            child_ceiling: AccessProfile::FullAccess,
             workspace_root: None,
             plan: AtomicBool::new(false),
             checkpoints_enabled: AtomicBool::new(false),
@@ -216,6 +228,16 @@ impl AccessContext {
                     Ok(raw) => AccessProfile::resolve(raw.as_deref()),
                     Err(_) => return AccessProfile::ReadOnly,
                 };
+            // Stage 12 PR 4: `Full access` requires explicit personal opt-in
+            // (`agent.full_access_acknowledged = true` in personal `app_settings`).
+            // Unacknowledged `full_access` fails closed to `Standard` (`Auto-approve safe`).
+            let personal = if personal == AccessProfile::FullAccess
+                && !crate::application::settings::is_full_access_acknowledged(db)
+            {
+                AccessProfile::Standard
+            } else {
+                personal
+            };
             let snap = resolve_settings(db, self.0.workspace_root.as_deref(), None);
             if snap.config_notice.is_some() {
                 return AccessProfile::ReadOnly;
@@ -224,13 +246,14 @@ impl AccessContext {
                 .entries
                 .get(PROFILE_KEY)
                 .and_then(|entry| entry.value.as_deref());
+            // Restrict-only invariant: `.nexora/config.json` may tighten, never elevate.
             personal.max(AccessProfile::resolve(resolved))
         });
         selected.max(self.0.child_ceiling).max(
             self.0
                 .parent
                 .as_ref()
-                .map_or(AccessProfile::Standard, Self::profile),
+                .map_or(AccessProfile::FullAccess, Self::profile),
         )
     }
     pub(crate) fn execution_store(&self) -> Option<PermissionStore> {
@@ -427,16 +450,19 @@ mod tests {
         let root = AccessContext::root(&db);
         let child = root.child(AccessProfile::Supervised);
         assert_eq!(child.profile(), AccessProfile::Supervised);
+        // Legacy "read_only" maps safely on read to Supervised ("Ask permissions").
         SettingsService::new(&db)
             .write(PROFILE_KEY, Some("read_only"))
             .unwrap();
-        assert_eq!(root.profile(), AccessProfile::ReadOnly);
-        assert_eq!(child.profile(), AccessProfile::ReadOnly);
+        assert_eq!(root.profile(), AccessProfile::Supervised);
+        assert_eq!(child.profile(), AccessProfile::Supervised);
         SettingsService::new(&db)
             .write(PROFILE_KEY, Some("standard"))
             .unwrap();
         assert_eq!(child.profile(), AccessProfile::Supervised);
+        // Orthogonal Plan mode enforces ReadOnly ceiling for root and children.
         root.set_plan(true);
+        assert_eq!(root.profile(), AccessProfile::ReadOnly);
         assert_eq!(child.profile(), AccessProfile::ReadOnly);
         let plan_child = root.child(AccessProfile::Standard);
         root.set_plan(false);
@@ -844,31 +870,33 @@ mod tests {
         );
         unlink_directory(&alias);
         link_directory(&a, &alias);
-        approve(&gate, &request, true);
-        let execute = || {
+        let write_request = call(
+            "write_file",
+            json!({"path":"alias/out.txt","content":"hello"}),
+        );
+        approve(&gate, &write_request, true);
+        let execute_write = || {
             ToolRegistry::execute_agent(
-                &request,
+                &write_request,
                 &workspace,
                 &CancellationToken::new(),
                 Some(&gate),
             )
         };
-        assert!(execute().unwrap().contains("needle A"));
-        assert!(
-            execute().unwrap().contains("needle A"),
-            "same canonical scope reuses exact consent"
-        );
+        execute_write().unwrap();
+        execute_write().unwrap();
+        assert_eq!(std::fs::read_to_string(a.join("out.txt")).unwrap(), "hello");
         unlink_directory(&alias);
         link_directory(&b, &alias);
-        assert!(!gate.has_current_consent(&request));
+        assert!(!gate.has_current_consent(&write_request));
         assert_eq!(
-            execute(),
+            execute_write(),
             Err(super::super::tools::ToolError::ConsentInvalidated)
         );
-        approve(&gate, &request, false);
-        let result = execute().unwrap();
-        assert!(result.contains("needle B"));
-        assert!(!result.contains("needle A"));
+        assert!(!b.join("out.txt").exists());
+        approve(&gate, &write_request, false);
+        execute_write().unwrap();
+        assert_eq!(std::fs::read_to_string(b.join("out.txt")).unwrap(), "hello");
         unlink_directory(&alias);
         std::fs::remove_dir_all(&workspace).unwrap();
     }
@@ -945,5 +973,51 @@ mod tests {
 
         super::super::sandbox::clear_test_status(&workspace);
         std::fs::remove_dir_all(&workspace).unwrap();
+    }
+
+    #[test]
+    fn full_access_requires_personal_acknowledgment_and_respects_subagent_ceiling() {
+        let db = in_memory_database();
+        let root = AccessContext::root(&db);
+
+        // Unacknowledged full_access fails closed to Standard ("Auto-approve safe").
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("full_access"))
+            .unwrap();
+        assert_eq!(root.profile(), AccessProfile::Standard);
+
+        // False acknowledgment still fails closed.
+        SettingsService::new(&db)
+            .write(FULL_ACCESS_ACKNOWLEDGED_KEY, Some("false"))
+            .unwrap();
+        assert_eq!(root.profile(), AccessProfile::Standard);
+
+        // Explicit personal acknowledgment activates FullAccess.
+        SettingsService::new(&db)
+            .write(FULL_ACCESS_ACKNOWLEDGED_KEY, Some("true"))
+            .unwrap();
+        assert_eq!(root.profile(), AccessProfile::FullAccess);
+
+        // Subagent ceiling: child requesting Standard stays Standard even under FullAccess parent.
+        let std_child = root.child(AccessProfile::Standard);
+        assert_eq!(std_child.profile(), AccessProfile::Standard);
+
+        // Child requesting FullAccess gets FullAccess while parent is FullAccess,
+        // and immediately downgrades when parent downgrades.
+        let full_child = root.child(AccessProfile::FullAccess);
+        assert_eq!(full_child.profile(), AccessProfile::FullAccess);
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("supervised"))
+            .unwrap();
+        assert_eq!(root.profile(), AccessProfile::Supervised);
+        assert_eq!(full_child.profile(), AccessProfile::Supervised);
+
+        // Child spawned while parent is Supervised can never escalate to FullAccess.
+        let capped_child = root.child(AccessProfile::FullAccess);
+        assert_eq!(capped_child.profile(), AccessProfile::Supervised);
+        SettingsService::new(&db)
+            .write(PROFILE_KEY, Some("full_access"))
+            .unwrap();
+        assert_eq!(capped_child.profile(), AccessProfile::Supervised);
     }
 }

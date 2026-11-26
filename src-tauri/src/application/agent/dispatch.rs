@@ -11,7 +11,9 @@ use crate::application::agent::approval::AutonomyMode;
 use crate::application::agent::approval::{ApprovalDecision, ApprovalGate, ParkEnd, RiskClass};
 use crate::application::agent::checkpoints::{CheckpointHook, CheckpointRunContext};
 use crate::application::agent::control::{AgentRunEvent, CancellationToken, RunControl};
-use crate::application::agent::governance::{audit, AuditEvent, AuditLog, GateOutcome};
+use crate::application::agent::governance::{
+    audit, audit_auto_approved_full_access, AuditEvent, AuditLog, GateOutcome,
+};
 use crate::application::agent::injection;
 use crate::application::agent::permissions::{self, PermissionOutcome, PermissionStore, RunPreset};
 use crate::application::agent::persistence::{step_preview_opt, ActiveRunRecord, StepProvenance};
@@ -764,6 +766,21 @@ fn handle_permission_store_decision(
                                 .approval_gate
                                 .is_some_and(|gate| gate.has_current_consent(call))
                         {
+                            if ctx
+                                .approval_gate
+                                .is_some_and(ApprovalGate::is_full_access_active)
+                                && matches!(
+                                    RiskClass::classify(&call.name),
+                                    RiskClass::Mutating
+                                        | RiskClass::DangerousShell
+                                        | RiskClass::ExternalMcp
+                                )
+                            {
+                                audit_auto_approved_full_access(ctx.audit);
+                                if let Some(rec) = record.as_mut() {
+                                    rec.approval_auto_full_access(call);
+                                }
+                            }
                             execute_and_record_bound(
                                 ctx,
                                 call,
@@ -854,6 +871,17 @@ fn park_for_approval(
                 group_size,
                 considered_rule,
             );
+        }
+        if gate.is_full_access_active()
+            && matches!(
+                RiskClass::classify(&call.name),
+                RiskClass::Mutating | RiskClass::DangerousShell | RiskClass::ExternalMcp
+            )
+        {
+            audit_auto_approved_full_access(ctx.audit);
+            if let Some(rec) = record.as_mut() {
+                rec.approval_auto_full_access(call);
+            }
         }
     }
     Ok(true)
@@ -1206,8 +1234,18 @@ fn execute_tool_call(
     let user_approved = ctx
         .approval_gate
         .is_some_and(|gate| gate.has_current_consent(call));
+    let auto_full_access = !user_approved
+        && ctx
+            .approval_gate
+            .is_some_and(ApprovalGate::is_full_access_active)
+        && matches!(
+            RiskClass::classify(&call.name),
+            RiskClass::Mutating | RiskClass::DangerousShell | RiskClass::ExternalMcp
+        );
     let valid_provenance = if user_approved {
         StepProvenance::user(Some(group_key))
+    } else if auto_full_access {
+        StepProvenance::auto_full_access()
     } else {
         StepProvenance::system()
     };

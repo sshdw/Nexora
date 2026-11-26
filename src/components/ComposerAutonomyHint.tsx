@@ -24,9 +24,9 @@ import type { AccessProfile, AutonomyMode } from "../lib/tauri";
  *  is irrelevant to the explainer (one mode is live at a time);
  *  it exists so the lookup cannot return undefined. */
 const EXPLAINED_MODES: readonly (AutonomyMode | AccessProfile)[] = [
-  "read_only",
-  "standard",
   "supervised",
+  "standard",
+  "full_access",
   "semi_autonomous",
   "full_autonomous",
 ];

@@ -491,6 +491,19 @@ impl<'a> StepProvenance<'a> {
             decided_by: Some("system"),
         }
     }
+
+    /// Auto-approved without parking under acknowledged `Full access` mode
+    /// (Stage 12 PR 4). Uses `decided_by = "system"` (satisfying the v7
+    /// `agent_steps` CHECK constraint) and tags `group_key` with the fixed
+    /// vocabulary `"auto_approved_full_access"` for audit/history inspection.
+    #[must_use]
+    pub(crate) const fn auto_full_access() -> Self {
+        Self {
+            rule_id: None,
+            group_key: Some("auto_approved_full_access"),
+            decided_by: Some("system"),
+        }
+    }
 }
 
 /// One not-yet-sequenced `agent_steps` row (M1-core): the step payload plus
@@ -658,6 +671,22 @@ impl<'a> ActiveRunRecord<'a> {
             status: Some(status),
             duration_ms: None,
             provenance,
+            usage: None,
+        });
+    }
+
+    /// Record an `approval` step for a tool call auto-approved under
+    /// acknowledged `Full access` mode (Stage 12 PR 4), so every autonomous
+    /// mutating/shell/MCP action is inspectable in run history.
+    pub(crate) fn approval_auto_full_access(&mut self, call: &ToolCall) {
+        self.append(&PendingStep {
+            kind: "approval",
+            tool_name: Some(&call.name),
+            arguments: Some(&call.arguments),
+            observation: Some("auto_approved_full_access"),
+            status: Some("succeeded"),
+            duration_ms: None,
+            provenance: StepProvenance::auto_full_access(),
             usage: None,
         });
     }

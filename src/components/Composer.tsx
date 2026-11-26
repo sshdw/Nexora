@@ -98,6 +98,7 @@ import {
   BranchIcon,
   ChatGptMarkIcon,
   ChevronDownIcon,
+  ShieldAlertIcon,
   ChevronRightIcon,
   CloseIcon,
   CodeIcon,
@@ -1251,14 +1252,25 @@ export default function Composer({
                       ref={accessLayout.triggerRef}
                       variant="ghost"
                       size="sm"
-                      className="nex-composer-autonomy-trigger"
+                      className={
+                        autonomy.access.profile === "full_access"
+                          ? "nex-composer-autonomy-trigger is-full-access"
+                          : "nex-composer-autonomy-trigger"
+                      }
                       aria-label={t("access.label")}
                       title={t("access.label")}
                     >
-                      <span
-                        className="nex-composer-autonomy-dot"
-                        aria-hidden="true"
-                      />
+                      {autonomy.access.profile === "full_access" ? (
+                        <ShieldAlertIcon
+                          size={16}
+                          className="nex-composer-autonomy-warn-icon"
+                        />
+                      ) : (
+                        <span
+                          className="nex-composer-autonomy-dot"
+                          aria-hidden="true"
+                        />
+                      )}
                       <span className="nex-composer-autonomy-name">
                         {t(`access.${autonomy.access.profile}`)}
                       </span>

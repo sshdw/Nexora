@@ -199,7 +199,12 @@ impl SelfAuditReport {
 const KNOWN_SIGNALS: &[&str] = &["boundary", "imperative", "mimicry"];
 
 /// Recorded gate-outcome vocabulary (`GateOutcome::as_str`).
-const KNOWN_OUTCOMES: &[&str] = &["approved", "denied", "cancelled"];
+const KNOWN_OUTCOMES: &[&str] = &[
+    "approved",
+    "denied",
+    "cancelled",
+    "auto_approved_full_access",
+];
 
 /// Trail park/resolution tallies.
 struct ParkCounts {

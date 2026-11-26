@@ -145,6 +145,8 @@ pub(crate) enum GateOutcome {
     Denied,
     /// Cancellation ended the parked wait.
     Cancelled,
+    /// Auto-approved without parking under acknowledged `Full access` mode.
+    AutoApprovedFullAccess,
 }
 
 impl GateOutcome {
@@ -155,6 +157,7 @@ impl GateOutcome {
             Self::Approved => "approved",
             Self::Denied => "denied",
             Self::Cancelled => "cancelled",
+            Self::AutoApprovedFullAccess => "auto_approved_full_access",
         }
     }
 }
@@ -239,6 +242,11 @@ pub(crate) enum AuditEvent {
     /// the caller's genuine `Failed` edge. Payload-free fixed vocabulary —
     /// the violation codes live in the report, never in the trail.
     SelfAuditFailed,
+    /// Auto-approved without parking under acknowledged `Full access` mode
+    /// (Stage 12 PR 4): payload-free fixed vocabulary recorded on every
+    /// `Mutating`, `DangerousShell`, or `ExternalMcp` call auto-approved by
+    /// `Full access`.
+    AutoApprovedFullAccess,
     /// Routing-profile fallback (#81): the run-path canonical load
     /// ([`RoutingService::resolve`](crate::application::routing::RoutingService::resolve))
     /// met a present-but-invalid workspace profile file and fell back to the
@@ -270,6 +278,7 @@ impl AuditEvent {
             Self::RolledBack => "rolled_back",
             Self::SelfAuditPassed => "self_audit_passed",
             Self::SelfAuditFailed => "self_audit_failed",
+            Self::AutoApprovedFullAccess => "auto_approved_full_access",
             Self::RoutingFallback => "routing_fallback",
         }
     }
@@ -283,6 +292,7 @@ impl AuditEvent {
             GateOutcome::Approved => Some(Self::ApprovalResolved { approved: true }),
             GateOutcome::Denied => Some(Self::ApprovalResolved { approved: false }),
             GateOutcome::Cancelled => None,
+            GateOutcome::AutoApprovedFullAccess => Some(Self::AutoApprovedFullAccess),
         }
     }
 }
@@ -323,6 +333,13 @@ impl AuditEntry {
                 } else {
                     GateOutcome::Denied.as_str()
                 }),
+                None,
+                None,
+                None,
+                None,
+            ),
+            AuditEvent::AutoApprovedFullAccess => (
+                Some(GateOutcome::AutoApprovedFullAccess.as_str()),
                 None,
                 None,
                 None,
@@ -404,6 +421,20 @@ impl AuditLog {
         Ok(())
     }
 
+    /// Append an in-state governance audit event while the run remains
+    /// `Running` (e.g. [`AuditEvent::AutoApprovedFullAccess`]). Does not mutate
+    /// the lifecycle transition table.
+    pub(crate) fn record_running(&self, event: AuditEvent) {
+        let mut entries = self.lock();
+        let seq = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+        entries.push(AuditEntry::new(
+            seq,
+            RunState::Running,
+            RunState::Running,
+            event,
+        ));
+    }
+
     /// Ordered snapshot of the trail.
     #[must_use]
     pub(crate) fn entries(&self) -> Vec<AuditEntry> {
@@ -442,6 +473,14 @@ pub(crate) fn audit(log: Option<&AuditLog>, from: RunState, to: RunState, event:
                 to.as_str()
             );
         }
+    }
+}
+
+/// Best-effort audit append for an autonomous tool approval under acknowledged
+/// `Full access` mode (Stage 12 PR 4). Secret-free fixed vocabulary only.
+pub(crate) fn audit_auto_approved_full_access(log: Option<&AuditLog>) {
+    if let Some(trail) = log {
+        trail.record_running(AuditEvent::AutoApprovedFullAccess);
     }
 }
 
@@ -657,11 +696,26 @@ mod tests {
     // Gates: park / resolve / cancel paths with recorded decisions
     // -----------------------------------------------------------------------
 
+    fn mutating_tool_step(id: &str) -> AiResponse {
+        AiResponse {
+            content: String::new(),
+            model: "m".to_string(),
+            tool_calls: vec![crate::application::execution::ToolCall {
+                id: id.to_string(),
+                name: "write_file".to_string(),
+                arguments: serde_json::json!({ "path": format!("{id}.txt"), "content": "ok" })
+                    .to_string(),
+                thought_signature: None,
+            }],
+            usage: None,
+        }
+    }
+
     fn supervised_two_tool_script() -> (FakeExecutor, std::path::PathBuf) {
         let ws = temp_workspace();
         let fake = FakeExecutor::new(vec![
-            Ok(tool_step("g1")),
-            Ok(tool_step("g2")),
+            Ok(mutating_tool_step("g1")),
+            Ok(mutating_tool_step("g2")),
             Ok(text_response("done")),
         ]);
         (fake, ws)
@@ -731,7 +785,10 @@ mod tests {
         let log = Arc::new(AuditLog::new());
         let gate = ApprovalGate::new(AutonomyMode::Supervised);
         let driver_gate = gate.clone();
-        let fake = FakeExecutor::new(vec![Ok(tool_step("d1")), Ok(text_response("done"))]);
+        let fake = FakeExecutor::new(vec![
+            Ok(mutating_tool_step("d1")),
+            Ok(text_response("done")),
+        ]);
         let runner = AgentRunner::new(&fake, &ws)
             .with_approval_gate(gate)
             .with_audit_log(Arc::clone(&log));
@@ -775,7 +832,7 @@ mod tests {
         let log = Arc::new(AuditLog::new());
         let gate = ApprovalGate::new(AutonomyMode::Supervised);
         let driver_gate = gate.clone();
-        let fake = FakeExecutor::new(vec![Ok(tool_step("c1"))]);
+        let fake = FakeExecutor::new(vec![Ok(mutating_tool_step("c1"))]);
         let runner = AgentRunner::new(&fake, &ws)
             .with_approval_gate(gate.clone())
             .with_audit_log(Arc::clone(&log));

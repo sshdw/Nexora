@@ -53,6 +53,10 @@ pub const SELECTED_EFFORT_KEY: &str = "provider.effort";
 pub const MODEL_CAPABILITY_OVERRIDES_KEY: &str = "provider.capability_overrides";
 /// Settings key holding the validated agent access profile.
 pub const ACCESS_PROFILE_KEY: &str = "agent.access_profile";
+/// Settings key recording explicit user risk acknowledgment before `Full access`
+/// (`full_access` / `full_autonomous`) is honored. Personal `app_settings` only;
+/// never writable or elevatable via `.nexora/config.json`.
+pub const FULL_ACCESS_ACKNOWLEDGED_KEY: &str = "agent.full_access_acknowledged";
 /// Settings key holding the agent autonomy mode.
 pub const AUTONOMY_KEY: &str = "agent.autonomy";
 /// Settings key holding the per-run spend guard, in micro-USD.
@@ -115,7 +119,7 @@ pub const MAX_SUBAGENT_MAX_CONCURRENCY: usize = 6;
 pub const MAX_MODEL_LEN: usize = 200;
 
 /// Every writable setting key that is not a `flags.*` flag.
-pub const BASE_KEYS: [&str; 16] = [
+pub const BASE_KEYS: [&str; 17] = [
     APPEARANCE_THEME_KEY,
     SELECTED_PROVIDER_KEY,
     SELECTED_MODEL_KEY,
@@ -123,6 +127,7 @@ pub const BASE_KEYS: [&str; 16] = [
     MODEL_CAPABILITY_OVERRIDES_KEY,
     AUTONOMY_KEY,
     ACCESS_PROFILE_KEY,
+    FULL_ACCESS_ACKNOWLEDGED_KEY,
     SPEND_LIMIT_KEY,
     APPROVAL_TIMEOUT_KEY,
     SUBAGENT_MAX_CONCURRENCY_KEY,
@@ -166,6 +171,8 @@ pub enum ConfigKey {
     Autonomy,
     /// Persisted security ceiling.
     AccessProfile,
+    /// [`FULL_ACCESS_ACKNOWLEDGED_KEY`]
+    FullAccessAcknowledged,
     /// [`SPEND_LIMIT_KEY`]
     SpendLimit,
     /// [`APPROVAL_TIMEOUT_KEY`]
@@ -207,6 +214,7 @@ impl ConfigKey {
             Self::SelectedEffort => Some(SELECTED_EFFORT_KEY),
             Self::ModelCapabilityOverrides => Some(MODEL_CAPABILITY_OVERRIDES_KEY),
             Self::AccessProfile => Some(ACCESS_PROFILE_KEY),
+            Self::FullAccessAcknowledged => Some(FULL_ACCESS_ACKNOWLEDGED_KEY),
             Self::Autonomy => Some(AUTONOMY_KEY),
             Self::SpendLimit => Some(SPEND_LIMIT_KEY),
             Self::ApprovalTimeout => Some(APPROVAL_TIMEOUT_KEY),
@@ -261,6 +269,7 @@ pub fn classify_key(key: &str) -> Option<ConfigKey> {
         SELECTED_EFFORT_KEY => Some(ConfigKey::SelectedEffort),
         MODEL_CAPABILITY_OVERRIDES_KEY => Some(ConfigKey::ModelCapabilityOverrides),
         ACCESS_PROFILE_KEY => Some(ConfigKey::AccessProfile),
+        FULL_ACCESS_ACKNOWLEDGED_KEY => Some(ConfigKey::FullAccessAcknowledged),
         AUTONOMY_KEY => Some(ConfigKey::Autonomy),
         SPEND_LIMIT_KEY => Some(ConfigKey::SpendLimit),
         APPROVAL_TIMEOUT_KEY => Some(ConfigKey::ApprovalTimeout),
@@ -549,9 +558,12 @@ pub fn validate_setting(
         Some(ConfigKey::ModelCapabilityOverrides) => is_valid_capability_overrides(value)
             .then_some(())
             .ok_or_else(|| invalid_value(key, value)),
-        Some(ConfigKey::AccessProfile) => ["read_only", "standard", "supervised"]
+        Some(ConfigKey::AccessProfile) => ["read_only", "standard", "supervised", "full_access"]
             .contains(&value)
             .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::FullAccessAcknowledged) => parse_global_bool(value)
+            .map(|_| ())
             .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::Autonomy) => VALID_AUTONOMY
             .contains(&value)
@@ -668,7 +680,7 @@ mod tests {
         }
         assert_eq!(
             BASE_KEYS.len(),
-            16,
+            17,
             "the allowlist is closed; keep it in sync"
         );
     }
@@ -763,11 +775,21 @@ mod tests {
 
     #[test]
     fn access_profile_domain_is_closed() {
-        for value in ["read_only", "standard", "supervised"] {
+        for value in ["read_only", "standard", "supervised", "full_access"] {
             assert!(validate(ACCESS_PROFILE_KEY, Some(value)).is_ok());
         }
-        for value in ["ReadOnly", "auto", "", "unknown"] {
+        for value in ["ReadOnly", "FullAccess", "auto", "", "unknown"] {
             assert!(validate(ACCESS_PROFILE_KEY, Some(value)).is_err());
+        }
+    }
+
+    #[test]
+    fn full_access_acknowledged_accepts_booleans_only() {
+        for value in ["true", "false", "TRUE", " False "] {
+            assert_accepted(FULL_ACCESS_ACKNOWLEDGED_KEY, value);
+        }
+        for value in ["", "yes", "1", "0", "full_access"] {
+            assert_rejected(FULL_ACCESS_ACKNOWLEDGED_KEY, value);
         }
     }
 
