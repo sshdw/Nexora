@@ -584,14 +584,18 @@ export default function SettingsView({
     await refreshResolvedSettings();
   };
 
-  const handleAccessProfileChange = async (profile: AccessProfile) => {
+  const handleAccessProfileChange = async (
+    profile: AccessProfile,
+    options?: { acknowledgeFullAccess?: boolean }
+  ): Promise<string | null> => {
     setScopedSaveError(null);
     if (saveScope === "project") {
-      await persistProjectKey("agent.access_profile", profile);
-      return;
+      const ok = await persistProjectKey("agent.access_profile", profile);
+      return ok ? null : tr(getLocale(), "access.saveFailed");
     }
-    await autonomy.access.setProfile(profile);
+    const err = await autonomy.access.setProfile(profile, options);
     await refreshResolvedSettings();
+    return err;
   };
 
   const handleProviderChange = async (name: string) => {
@@ -808,11 +812,13 @@ export default function SettingsView({
 
   const projectAccess = projectOverrideValue("agent.access_profile");
   const effectiveAccessProfile: AccessProfile =
-    projectAccess === "read_only" ||
-    projectAccess === "standard" ||
-    projectAccess === "supervised"
-      ? projectAccess
-      : autonomy.access.profile;
+    projectAccess === "read_only" || projectAccess === "supervised"
+      ? "supervised"
+      : projectAccess === "standard"
+        ? "standard"
+        : projectAccess === "full_access"
+          ? "full_access"
+          : autonomy.access.profile;
 
   const displayedFlagValues = useMemo(() => {
     const merged = { ...flagValues };
@@ -876,8 +882,8 @@ export default function SettingsView({
             onSpendCommit={commitSpendLimit}
             onAutonomyChange={(mode) => void handleAutonomyChange(mode)}
             effectiveAccessProfile={effectiveAccessProfile}
-            onAccessProfileChange={(profile) =>
-              void handleAccessProfileChange(profile)
+            onAccessProfileChange={(profile, options) =>
+              handleAccessProfileChange(profile, options)
             }
             effectiveAutonomy={effectiveAutonomy}
             resolvedEntries={resolvedEntries}

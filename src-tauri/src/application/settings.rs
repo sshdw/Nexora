@@ -42,9 +42,10 @@ use crate::infrastructure::repository::Result;
 use nexora_core::config::{
     self, flag_key, ConfigKey, ConfigRegistry, ACCESS_PROFILE_KEY, AGENT_PROFILE_KEY,
     APPEARANCE_THEME_KEY, APPROVAL_TIMEOUT_KEY, AUTONOMY_KEY, CHAT_PROFILE_KEY,
-    MAX_CAPABILITY_OVERRIDES_BYTES, MCP_SERVERS_KEY, MODEL_CAPABILITY_OVERRIDES_KEY,
-    SELECTED_EFFORT_KEY, SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY, SPEND_LIMIT_KEY,
-    SUBAGENT_MAX_CONCURRENCY_KEY, WORKSPACE_RECENT_KEY, WORKSPACE_ROOTS_KEY, WORKSPACE_ROOT_KEY,
+    FULL_ACCESS_ACKNOWLEDGED_KEY, MAX_CAPABILITY_OVERRIDES_BYTES, MCP_SERVERS_KEY,
+    MODEL_CAPABILITY_OVERRIDES_KEY, SELECTED_EFFORT_KEY, SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY,
+    SPEND_LIMIT_KEY, SUBAGENT_MAX_CONCURRENCY_KEY, WORKSPACE_RECENT_KEY, WORKSPACE_ROOTS_KEY,
+    WORKSPACE_ROOT_KEY,
 };
 
 /// Application-layer service coordinating persistent application settings.
@@ -391,6 +392,28 @@ pub(crate) fn default_setting_value(key: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether the user has explicitly acknowledged the `Full access` risk opt-in
+/// in personal `app_settings` (`agent.full_access_acknowledged = true`).
+///
+/// Strictly personal-only: `.nexora/config.json` is never consulted and read
+/// failures fail closed to `false`.
+#[must_use]
+pub(crate) fn is_full_access_acknowledged(db: &Database) -> bool {
+    SettingsService::new(db)
+        .read(FULL_ACCESS_ACKNOWLEDGED_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| config::parse_global_bool(&raw))
+        == Some(true)
+}
+
+fn personal_full_access_acknowledged(personal_raw: &BTreeMap<String, String>) -> bool {
+    personal_raw
+        .get(FULL_ACCESS_ACKNOWLEDGED_KEY)
+        .and_then(|raw| config::parse_global_bool(raw))
+        == Some(true)
+}
+
 /// Restrictiveness rank of [`AutonomyMode`]: higher = more restrictive.
 #[must_use]
 pub(crate) const fn autonomy_strictness(mode: AutonomyMode) -> u8 {
@@ -672,6 +695,56 @@ fn filter_untrusted_project_entries(entries: &[RawProjectConfigEntry]) -> Filter
     out
 }
 
+fn filter_full_access_project_escalation(
+    key: &str,
+    k_low: &str,
+    value: &Value,
+    out: &mut FilteredProjectConfig,
+) -> bool {
+    if key == FULL_ACCESS_ACKNOWLEDGED_KEY || k_low == FULL_ACCESS_ACKNOWLEDGED_KEY {
+        record_blocked(
+            key,
+            "cannot_auto_approve",
+            "project config cannot acknowledge or enable full access",
+            &mut out.values,
+            &mut out.blocked_by_key,
+            &mut out.blocked,
+        );
+        return true;
+    }
+    if key == ACCESS_PROFILE_KEY
+        && value
+            .as_str()
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("full_access"))
+    {
+        record_blocked(
+            key,
+            "cannot_elevate_access_profile",
+            "project config cannot elevate access profile to full access",
+            &mut out.values,
+            &mut out.blocked_by_key,
+            &mut out.blocked,
+        );
+        return true;
+    }
+    if key == AUTONOMY_KEY
+        && value
+            .as_str()
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("full_autonomous"))
+    {
+        record_blocked(
+            key,
+            "cannot_widen_autonomy",
+            "project config cannot widen autonomy to full autonomous",
+            &mut out.values,
+            &mut out.blocked_by_key,
+            &mut out.blocked,
+        );
+        return true;
+    }
+    false
+}
+
 fn filter_security_policy(
     key: &str,
     k_low: &str,
@@ -742,7 +815,11 @@ fn filter_security_policy(
         return true;
     }
 
-    // Invariant 4: Never auto-approve shell commands or MCP servers (or define project MCP servers).
+    // Invariant 4: Never auto-approve shell commands or MCP servers (or define project MCP servers),
+    // and never acknowledge or elevate to `Full access` via `.nexora/config.json`.
+    if filter_full_access_project_escalation(key, k_low, value, out) {
+        return true;
+    }
     if is_auto_approve_key(k_low)
         || (!value.is_null()
             && (key == MCP_SERVERS_KEY || k_low == "mcp" || k_low.starts_with("mcp.")))
@@ -844,21 +921,39 @@ fn merge_capability_overrides_json(
 fn effective_access_ceiling(
     personal_raw: Option<&str>,
     session_raw: Option<&str>,
+    full_access_ack: bool,
 ) -> AccessProfile {
+    let resolve_checked = |raw: Option<&str>| {
+        let p = AccessProfile::resolve(raw);
+        if p == AccessProfile::FullAccess && !full_access_ack {
+            AccessProfile::Standard
+        } else {
+            p
+        }
+    };
     match (personal_raw, session_raw) {
-        (p, Some(s)) => AccessProfile::resolve(p).max(AccessProfile::resolve(Some(s))),
-        (p, None) => AccessProfile::resolve(p),
+        (p, Some(s)) => resolve_checked(p).max(resolve_checked(Some(s))),
+        (p, None) => resolve_checked(p),
     }
 }
 
 fn effective_autonomy_ceiling(
     personal_raw: Option<&str>,
     session_raw: Option<&str>,
+    full_access_ack: bool,
 ) -> AutonomyMode {
-    let p_mode = parse_autonomy_mode(personal_raw);
+    let parse_checked = |raw: Option<&str>| {
+        let m = parse_autonomy_mode(raw);
+        if m == AutonomyMode::FullAutonomous && !full_access_ack {
+            AutonomyMode::SemiAutonomous
+        } else {
+            m
+        }
+    };
+    let p_mode = parse_checked(personal_raw);
     match session_raw {
         Some(s) => {
-            let s_mode = parse_autonomy_mode(Some(s));
+            let s_mode = parse_checked(Some(s));
             if autonomy_strictness(s_mode) >= autonomy_strictness(p_mode) {
                 s_mode
             } else {
@@ -874,6 +969,7 @@ fn enforce_project_ceilings(
     session_overrides: Option<&BTreeMap<String, String>>,
     filtered: &mut FilteredProjectConfig,
 ) {
+    let full_access_ack = personal_full_access_acknowledged(personal_raw);
     let valid_session = |key: &str| {
         session_overrides
             .and_then(|m| m.get(key))
@@ -884,9 +980,12 @@ fn enforce_project_ceilings(
     let access_ceiling = effective_access_ceiling(
         personal_raw.get(ACCESS_PROFILE_KEY).map(String::as_str),
         valid_session(ACCESS_PROFILE_KEY),
+        full_access_ack,
     );
     if let Some(proj_access_str) = filtered.values.get(ACCESS_PROFILE_KEY).cloned() {
-        if AccessProfile::resolve(Some(&proj_access_str)) < access_ceiling {
+        if proj_access_str == "full_access"
+            || AccessProfile::resolve(Some(&proj_access_str)) < access_ceiling
+        {
             record_blocked(
                 ACCESS_PROFILE_KEY,
                 "cannot_elevate_access_profile",
@@ -901,10 +1000,13 @@ fn enforce_project_ceilings(
     let autonomy_ceiling = effective_autonomy_ceiling(
         personal_raw.get(AUTONOMY_KEY).map(String::as_str),
         valid_session(AUTONOMY_KEY),
+        full_access_ack,
     );
     if let Some(proj_autonomy_str) = filtered.values.get(AUTONOMY_KEY).cloned() {
         let proj_mode = parse_autonomy_mode(Some(&proj_autonomy_str));
-        if autonomy_strictness(proj_mode) < autonomy_strictness(autonomy_ceiling) {
+        if proj_mode == AutonomyMode::FullAutonomous
+            || autonomy_strictness(proj_mode) < autonomy_strictness(autonomy_ceiling)
+        {
             record_blocked(
                 AUTONOMY_KEY,
                 "cannot_widen_autonomy",
@@ -933,7 +1035,7 @@ fn build_resolved_entry(
         .cloned();
     let project_val = filtered.values.get(&key).cloned();
 
-    let (value, source) = if let Some(s) = session_val {
+    let (mut value, source) = if let Some(s) = session_val {
         (Some(s), SettingSource::Session)
     } else if key == MODEL_CAPABILITY_OVERRIDES_KEY && project_val.is_some() {
         (
@@ -949,6 +1051,18 @@ fn build_resolved_entry(
     } else {
         (None, SettingSource::Default)
     };
+
+    let full_access_ack = personal_full_access_acknowledged(personal_raw);
+    if key == ACCESS_PROFILE_KEY {
+        match value.as_deref() {
+            Some("read_only") => value = Some("supervised".to_string()),
+            Some("full_access") if !full_access_ack => value = Some("standard".to_string()),
+            _ => {}
+        }
+    } else if key == AUTONOMY_KEY && value.as_deref() == Some("full_autonomous") && !full_access_ack
+    {
+        value = Some("semi_autonomous".to_string());
+    }
 
     let blocked_entry = filtered.blocked_by_key.get(&key);
     ResolvedSettingEntry {
@@ -1119,6 +1233,12 @@ fn save_project_setting_entry(
         None => configured_workspace_root(db).ok_or(ScopedSaveError::WorkspaceRequired)?,
     };
 
+    if trimmed_key == FULL_ACCESS_ACKNOWLEDGED_KEY {
+        return Err(ScopedSaveError::SecurityBlocked(
+            "project config cannot acknowledge or enable full access".to_string(),
+        ));
+    }
+
     if !LAYERED_SETTING_KEYS.contains(&trimmed_key) {
         return Err(ScopedSaveError::InvalidInput(format!(
             "setting '{trimmed_key}' is not supported in project configuration"
@@ -1136,7 +1256,13 @@ fn save_project_setting_entry(
             "project config cannot auto-approve shell commands or MCP servers".to_string(),
         ));
     }
+    let full_access_ack = is_full_access_acknowledged(db);
     if trimmed_key == access::PROFILE_KEY {
+        if raw_val == "full_access" {
+            return Err(ScopedSaveError::SecurityBlocked(
+                "project config cannot elevate access profile to full access".to_string(),
+            ));
+        }
         let ceiling = effective_access_ceiling(
             SettingsService::new(db)
                 .read(ACCESS_PROFILE_KEY)?
@@ -1144,6 +1270,7 @@ fn save_project_setting_entry(
             session_overrides
                 .and_then(|m| m.get(ACCESS_PROFILE_KEY))
                 .map(String::as_str),
+            full_access_ack,
         );
         if AccessProfile::resolve(Some(raw_val)) < ceiling {
             return Err(ScopedSaveError::SecurityBlocked(
@@ -1153,13 +1280,19 @@ fn save_project_setting_entry(
         }
     }
     if trimmed_key == AUTONOMY_KEY {
+        let requested = parse_autonomy_mode(Some(raw_val));
+        if requested == AutonomyMode::FullAutonomous {
+            return Err(ScopedSaveError::SecurityBlocked(
+                "project config cannot widen autonomy to full autonomous".to_string(),
+            ));
+        }
         let ceiling = effective_autonomy_ceiling(
             SettingsService::new(db).read(AUTONOMY_KEY)?.as_deref(),
             session_overrides
                 .and_then(|m| m.get(AUTONOMY_KEY))
                 .map(String::as_str),
+            full_access_ack,
         );
-        let requested = parse_autonomy_mode(Some(raw_val));
         if autonomy_strictness(requested) < autonomy_strictness(ceiling) {
             return Err(ScopedSaveError::SecurityBlocked(
                 "project config cannot widen autonomy above personal or session ceiling"
@@ -1216,7 +1349,18 @@ pub(crate) fn save_scoped_setting(
     validate_scoped_write_input(trimmed_key, &k_low, value)?;
 
     match scope {
-        SettingScope::Personal => SettingsService::new(db).write(trimmed_key, value)?,
+        SettingScope::Personal => {
+            if trimmed_key == ACCESS_PROFILE_KEY
+                && value == Some("full_access")
+                && !is_full_access_acknowledged(db)
+            {
+                return Err(ScopedSaveError::SecurityBlocked(
+                    "full access requires explicit user risk acknowledgment (agent.full_access_acknowledged = true)"
+                        .to_string(),
+                ));
+            }
+            SettingsService::new(db).write(trimmed_key, value)?;
+        }
         SettingScope::Project => {
             save_project_setting_entry(db, workspace_root, trimmed_key, value, session_overrides)?;
         }
@@ -1440,13 +1584,13 @@ mod stage4_tests {
             ws.join(".nexora/config.json"),
             r#"{"agent": {"access_profile": "read_only"}}"#,
         )
-        .expect("write read_only override");
+        .expect("write legacy read_only override");
 
-        // Personal Standard + Project ReadOnly => AccessContext tightens to ReadOnly.
+        // Personal Standard + Project legacy ReadOnly => tightens cleanly to Supervised ("Ask permissions").
         let tightened = access::AccessContext::root(&db).with_workspace(&ws);
-        assert_eq!(tightened.profile(), AccessProfile::ReadOnly);
+        assert_eq!(tightened.profile(), AccessProfile::Supervised);
 
-        // Personal ReadOnly + Project Standard => elevation stays blocked at ReadOnly.
+        // Personal legacy ReadOnly + Project Standard => elevation stays blocked at Supervised.
         SettingsService::new(&db)
             .write(ACCESS_PROFILE_KEY, Some("read_only"))
             .expect("set personal read_only");
@@ -1455,7 +1599,106 @@ mod stage4_tests {
             r#"{"agent": {"access_profile": "standard"}}"#,
         )
         .expect("write standard override");
-        assert_eq!(tightened.profile(), AccessProfile::ReadOnly);
+        assert_eq!(tightened.profile(), AccessProfile::Supervised);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn project_config_never_elevates_to_full_access_or_acknowledges_full_access() {
+        let db = test_db();
+        let ws = temp_ws("no-full-access-project");
+        project_dir::init_nexora_dir(&ws).expect("init .nexora");
+
+        // Unacknowledged personal full_access save is rejected.
+        assert!(matches!(
+            save_scoped_setting(
+                &db,
+                Some(&ws),
+                SettingScope::Personal,
+                ACCESS_PROFILE_KEY,
+                Some("full_access"),
+                None,
+            ),
+            Err(ScopedSaveError::SecurityBlocked(_))
+        ));
+
+        // Project config attempting full_access, full_autonomous, and full_access_acknowledged is blocked.
+        std::fs::write(
+            ws.join(".nexora/config.json"),
+            r#"{
+              "agent": {
+                "access_profile": "full_access",
+                "autonomy": "full_autonomous",
+                "full_access_acknowledged": true
+              }
+            }"#,
+        )
+        .expect("write hostile full_access project config");
+
+        let snap = resolve_settings(&db, Some(&ws), None);
+        assert_eq!(
+            snap.entries[ACCESS_PROFILE_KEY].value.as_deref(),
+            Some("standard")
+        );
+        assert!(snap.entries[ACCESS_PROFILE_KEY].blocked_project_value);
+        assert_eq!(
+            snap.entries[AUTONOMY_KEY].value.as_deref(),
+            Some("semi_autonomous")
+        );
+        assert!(snap.entries[AUTONOMY_KEY].blocked_project_value);
+        assert!(!is_full_access_acknowledged(&db));
+        assert!(snap
+            .blocked
+            .iter()
+            .any(|b| b.key == FULL_ACCESS_ACKNOWLEDGED_KEY));
+
+        // AccessContext stays at Standard (never elevated by .nexora/config.json).
+        let ctx = access::AccessContext::root(&db).with_workspace(&ws);
+        assert_eq!(ctx.profile(), AccessProfile::Standard);
+
+        // Project-scoped save of full_access or full_access_acknowledged is rejected even after personal ack.
+        SettingsService::new(&db)
+            .write(FULL_ACCESS_ACKNOWLEDGED_KEY, Some("true"))
+            .expect("personal ack");
+        assert!(matches!(
+            save_scoped_setting(
+                &db,
+                Some(&ws),
+                SettingScope::Project,
+                ACCESS_PROFILE_KEY,
+                Some("full_access"),
+                None,
+            ),
+            Err(ScopedSaveError::SecurityBlocked(_))
+        ));
+        assert!(matches!(
+            save_scoped_setting(
+                &db,
+                Some(&ws),
+                SettingScope::Project,
+                FULL_ACCESS_ACKNOWLEDGED_KEY,
+                Some("true"),
+                None,
+            ),
+            Err(ScopedSaveError::SecurityBlocked(_))
+        ));
+
+        // Personal full_access save succeeds once explicitly acknowledged.
+        let personal_snap = save_scoped_setting(
+            &db,
+            Some(&ws),
+            SettingScope::Personal,
+            ACCESS_PROFILE_KEY,
+            Some("full_access"),
+            None,
+        )
+        .expect("acknowledged personal full_access");
+        assert_eq!(
+            personal_snap.entries[ACCESS_PROFILE_KEY].value.as_deref(),
+            Some("full_access")
+        );
+        assert_eq!(ctx.profile(), AccessProfile::FullAccess);
 
         let _ = std::fs::remove_dir_all(&ws);
     }

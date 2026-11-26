@@ -159,7 +159,7 @@ impl TaskCapability {
     pub(crate) const fn cap_by_access_profile(self, profile: AccessProfile) -> Self {
         match profile {
             AccessProfile::ReadOnly => Self::ReadOnly,
-            AccessProfile::Supervised | AccessProfile::Standard => self,
+            AccessProfile::Supervised | AccessProfile::Standard | AccessProfile::FullAccess => self,
         }
     }
 
@@ -168,7 +168,8 @@ impl TaskCapability {
     pub(crate) const fn to_access_profile(self) -> AccessProfile {
         match self {
             Self::ReadOnly => AccessProfile::ReadOnly,
-            Self::WorkspaceWrite | Self::FullAccess => AccessProfile::Standard,
+            Self::WorkspaceWrite => AccessProfile::Standard,
+            Self::FullAccess => AccessProfile::FullAccess,
         }
     }
 

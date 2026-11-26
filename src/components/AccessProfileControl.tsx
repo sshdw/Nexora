@@ -1,26 +1,27 @@
-import { useId, useRef } from "react";
+import { useId, useRef, useState } from "react";
 import type { AccessProfile } from "../lib/tauri";
 import type { AccessProfileStore } from "../lib/useAccessProfile";
 import { useStrings } from "../lib/useLocale";
 import SegmentedGroup from "./SegmentedGroup";
 import ComposerAutonomyHint from "./ComposerAutonomyHint";
+import ConfirmDialog from "./ConfirmDialog";
 import {
   CheckIcon,
-  EyeIcon,
+  HandIcon,
+  ShieldAlertIcon,
   ShieldCheckIcon,
-  SlidersIcon,
 } from "./icons";
 
 const ACCESS_PROFILES: readonly AccessProfile[] = [
-  "read_only",
-  "standard",
   "supervised",
+  "standard",
+  "full_access",
 ];
 
 function AccessProfileIcon({ profile }: { profile: AccessProfile }) {
-  if (profile === "read_only") return <EyeIcon size={16} />;
+  if (profile === "supervised") return <HandIcon size={16} />;
   if (profile === "standard") return <ShieldCheckIcon size={16} />;
-  return <SlidersIcon size={16} />;
+  return <ShieldAlertIcon size={16} />;
 }
 
 export default function AccessProfileControl({
@@ -37,14 +38,48 @@ export default function AccessProfileControl({
   const { t } = useStrings();
   const baseId = useId();
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const [confirmFullAccessOpen, setConfirmFullAccessOpen] = useState(false);
   const disabled = store.loading || store.saving;
+
+  const requestProfile = (target: AccessProfile) => {
+    if (
+      target === "full_access" &&
+      !store.fullAccessAcknowledged &&
+      store.profile !== "full_access"
+    ) {
+      setConfirmFullAccessOpen(true);
+      return;
+    }
+    void store.setProfile(target);
+  };
+
+  const handleConfirmFullAccess = async () => {
+    const err = await store.setProfile("full_access", {
+      acknowledgeFullAccess: true,
+    });
+    if (!err) {
+      setConfirmFullAccessOpen(false);
+    }
+  };
+
+  const confirmModal = confirmFullAccessOpen ? (
+    <ConfirmDialog
+      title={t("access.fullAccessConfirmTitle")}
+      body={t("access.fullAccessConfirmBody")}
+      confirmLabel={t("access.fullAccessConfirmAction")}
+      danger
+      busy={store.saving}
+      onConfirm={() => void handleConfirmFullAccess()}
+      onCancel={() => setConfirmFullAccessOpen(false)}
+    />
+  ) : null;
 
   if (variant === "list") {
     const moveFocus = (nextIdx: number) => {
       const target = ACCESS_PROFILES[nextIdx];
       if (!target) return;
       optionRefs.current[nextIdx]?.focus();
-      void store.setProfile(target);
+      requestProfile(target);
     };
 
     return (
@@ -72,8 +107,12 @@ export default function AccessProfileControl({
                 aria-describedby={descId}
                 tabIndex={selected ? 0 : -1}
                 disabled={disabled}
-                className="nex-access-option"
-                onClick={() => void store.setProfile(profile)}
+                className={
+                  profile === "full_access"
+                    ? "nex-access-option nex-access-option-warn"
+                    : "nex-access-option"
+                }
+                onClick={() => requestProfile(profile)}
                 onKeyDown={(event) => {
                   if (disabled) return;
                   if (event.key === "ArrowDown" || event.key === "ArrowRight") {
@@ -129,15 +168,13 @@ export default function AccessProfileControl({
             {store.error}
           </p>
         )}
+        {confirmModal}
       </div>
     );
   }
 
   return (
-    <div
-      className="nex-settings-field"
-      aria-busy={disabled}
-    >
+    <div className="nex-settings-field" aria-busy={disabled}>
       {showLabel && (
         <span className="nex-settings-label">{t("access.label")}</span>
       )}
@@ -146,7 +183,7 @@ export default function AccessProfileControl({
         label={t("access.label")}
         semantics="radio"
         value={store.profile}
-        onChange={(profile) => void store.setProfile(profile)}
+        onChange={requestProfile}
         options={ACCESS_PROFILES.map((profile) => ({
           value: profile,
           label: t(`access.${profile}`),
@@ -167,6 +204,7 @@ export default function AccessProfileControl({
           {store.error}
         </p>
       )}
+      {confirmModal}
     </div>
   );
 }

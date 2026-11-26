@@ -1323,6 +1323,20 @@
   color: var(--foreground);
 }
 
+.nex-composer-autonomy-trigger.is-full-access {
+  color: var(--state-warn);
+}
+
+.nex-composer-autonomy-trigger.is-full-access:hover {
+  color: var(--state-warn);
+}
+
+.nex-composer-autonomy-warn-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--state-warn);
+}
+
 /* The dot is a mode marker, not a status light: three modes, one
    achromatic dot, filled by the label beside it. No hue (D-08). */
 .nex-composer-autonomy-dot {
@@ -1402,6 +1416,11 @@
 
 .nex-access-option[aria-checked="true"] .nex-access-option-icon {
   color: var(--foreground);
+}
+
+.nex-access-option-warn .nex-access-option-icon,
+.nex-access-option-warn[aria-checked="true"] .nex-access-option-icon {
+  color: var(--state-warn);
 }
 
 .nex-access-option-body {

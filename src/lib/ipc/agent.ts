@@ -7,9 +7,9 @@ import type { PromptReferences } from "./promptContext";
 import { invoke } from "./core";
 import { getSetting, setSetting } from "./settings";
 
-export type AccessProfile = "read_only" | "standard" | "supervised";
+export type AccessProfile = "supervised" | "standard" | "full_access";
 export interface ApprovalMetadata {
-  access_profile: AccessProfile;
+  access_profile: AccessProfile | "read_only";
   sandbox_posture: "Verified" | "PerCommandConsent";
   checkpoints_available: boolean;
   allow_for_run: boolean;
@@ -29,11 +29,13 @@ export interface ApprovalMetadata {
 }
 export async function getAccessProfile(): Promise<AccessProfile> {
   const raw = await getSetting("agent.access_profile");
-  return raw === null || raw === "standard"
-    ? "standard"
-    : raw === "supervised"
-      ? "supervised"
-      : "read_only";
+  if (raw === null || raw === "standard") return "standard";
+  if (raw === "supervised" || raw === "read_only") return "supervised";
+  if (raw === "full_access") {
+    const ack = await getSetting("agent.full_access_acknowledged");
+    return ack?.trim().toLowerCase() === "true" ? "full_access" : "standard";
+  }
+  return "supervised";
 }
 export function setAccessProfile(profile: AccessProfile): Promise<void> {
   return setSetting("agent.access_profile", profile);

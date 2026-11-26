@@ -1578,15 +1578,25 @@ fn e2e_autonomy_setting_respected() {
     let ws = e2e_workspace("autonomy");
     let conversation_id = create_conversation(&db, "autonomy");
 
-    // Set setting to full_autonomous
+    // Set setting to full_autonomous without acknowledgment -> must fail closed to SemiAutonomous.
     SettingsService::new(&db)
         .write("agent.autonomy", Some("full_autonomous"))
         .expect("write setting");
+    assert_eq!(
+        crate::application::agent::service::resolve_autonomy_mode(&db),
+        AutonomyMode::SemiAutonomous,
+        "unacknowledged full_autonomous must fail closed to semi"
+    );
+
+    // Explicit user risk acknowledgment enables FullAutonomous.
+    SettingsService::new(&db)
+        .write("agent.full_access_acknowledged", Some("true"))
+        .expect("write acknowledgment");
     let mode = crate::application::agent::service::resolve_autonomy_mode(&db);
     assert_eq!(
         mode,
         AutonomyMode::FullAutonomous,
-        "resolved mode must be full"
+        "resolved mode must be full once acknowledged"
     );
 
     let executor = Arc::new(ScriptedExecutor::new(vec![

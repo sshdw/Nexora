@@ -820,7 +820,7 @@ describe("composer — modes", () => {
     // the three choices exist only while it is open.
     expect(
       screen.getByRole("button", { name: "Access profile" })
-    ).toHaveTextContent("Standard");
+    ).toHaveTextContent("Auto-approve safe");
     expect(
       screen.queryByRole("radiogroup", { name: "Access profile" })
     ).not.toBeInTheDocument();
@@ -914,13 +914,13 @@ describe("composer — modes", () => {
       name: "Access profile",
     });
     expect(
-      within(profileGroup).getByRole("radio", { name: "Standard" })
+      within(profileGroup).getByRole("radio", { name: "Auto-approve safe" })
     ).toHaveAttribute("aria-checked", "true");
     expect(
-      within(profileGroup).getByRole("radio", { name: "Read only" })
+      within(profileGroup).getByRole("radio", { name: "Ask permissions" })
     ).toBeInTheDocument();
     expect(
-      within(profileGroup).getByRole("radio", { name: "Supervised" })
+      within(profileGroup).getByRole("radio", { name: "Full access" })
     ).toBeInTheDocument();
     // Duplicated legacy autonomy section is removed from the Composer popover.
     expect(
@@ -943,7 +943,7 @@ describe("composer — modes", () => {
     });
     renderComposer({ agentMode: true, autonomy });
     fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Supervised" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Ask permissions" }));
     expect(setProfile).toHaveBeenCalledWith("supervised");
   });
 
@@ -951,7 +951,8 @@ describe("composer — modes", () => {
     mockReducedMotion(true);
     const autonomy = autonomyStub({
       access: {
-        profile: "read_only",
+        profile: "full_access",
+        fullAccessAcknowledged: true,
         loading: false,
         saving: false,
         error: null,
@@ -962,7 +963,7 @@ describe("composer — modes", () => {
     const { rerender, props } = renderComposer({ agentMode: true, autonomy });
     fireEvent.click(screen.getByRole("button", { name: "Access profile" }));
     expect(
-      screen.getByText(tr("en", "access.hint.read_only"))
+      screen.getByText(tr("en", "access.hint.full_access"))
     ).toBeInTheDocument();
 
     autonomy.access.profile = "supervised";

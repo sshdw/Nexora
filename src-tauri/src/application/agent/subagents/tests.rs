@@ -375,17 +375,15 @@ fn lifetime_child_access_ceiling_enforces_parent_downgrade_and_plan_mode() {
     let root_access = AccessContext::root(&db);
     assert_eq!(root_access.profile(), AccessProfile::Standard);
 
-    // Part A: parent downgrades mid-run before child attempts write_file.
-    let db_downgrade = db.clone();
+    // Part A: parent enables live read-only Plan ceiling mid-run before child attempts write_file.
+    let root_downgrade = root_access.clone();
     let turn_counter = Arc::new(AtomicUsize::new(0));
     let turn_clone = Arc::clone(&turn_counter);
     let (exec, recorded) = FnExecutor::new(move |_req, _cancel| {
         let t = turn_clone.fetch_add(1, Ordering::SeqCst);
         if t == 0 {
-            // Simulate user downgrading parent access to read_only while child is live!
-            SettingsService::new(&db_downgrade)
-                .write(PROFILE_KEY, Some("read_only"))
-                .unwrap();
+            // Simulate live parent downgrade to read-only Plan ceiling while child is live!
+            root_downgrade.set_plan(true);
             Ok(tool_reply(vec![make_call(
                 "w1",
                 "write_file",

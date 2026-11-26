@@ -814,7 +814,7 @@ describe("SettingsView — Stage 4 provenance, scope & capability overrides", ()
     fireEvent.click(
       within(
         screen.getByRole("radiogroup", { name: "Access profile" })
-      ).getByRole("radio", { name: "Standard" })
+      ).getByRole("radio", { name: "Auto-approve safe" })
     );
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(

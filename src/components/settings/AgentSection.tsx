@@ -22,7 +22,10 @@ export interface AgentSectionProps {
   onSpendCommit: () => void;
   onAutonomyChange: (mode: AutonomyStore["mode"]) => void;
   effectiveAccessProfile?: AccessProfile;
-  onAccessProfileChange?: (profile: AccessProfile) => void;
+  onAccessProfileChange?: (
+    profile: AccessProfile,
+    options?: { acknowledgeFullAccess?: boolean }
+  ) => Promise<string | null> | void;
   effectiveAutonomy?: AutonomyStore["mode"];
   resolvedEntries?: Record<string, ResolvedSettingEntry> | null;
 }
@@ -45,12 +48,15 @@ export default function AgentSection({
       ? {
           ...autonomy.access,
           profile: effectiveAccessProfile ?? autonomy.access.profile,
-          setProfile: async (profile: AccessProfile) => {
+          setProfile: async (
+            profile: AccessProfile,
+            options?: { acknowledgeFullAccess?: boolean }
+          ) => {
             if (onAccessProfileChange) {
-              onAccessProfileChange(profile);
-              return null;
+              const result = await onAccessProfileChange(profile, options);
+              return result ?? null;
             }
-            return autonomy.access.setProfile(profile);
+            return autonomy.access.setProfile(profile, options);
           },
         }
       : autonomy.access;

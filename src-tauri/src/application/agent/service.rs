@@ -475,21 +475,52 @@ pub(crate) fn parse_autonomy_mode(value: Option<&str>) -> AutonomyMode {
 }
 
 /// Resolve the autonomy mode through `Project (.nexora/) > Personal (SQLite) > Default`,
-/// enforcing the untrusted-repo ceiling so `.nexora/` can restrict but never widen autonomy.
+/// unifying `agent.access_profile` and legacy `agent.autonomy`, enforcing the
+/// untrusted-repo ceiling so `.nexora/` can restrict but never widen autonomy,
+/// and requiring explicit `agent.full_access_acknowledged = true` before
+/// honoring `FullAutonomous`.
 #[must_use]
 pub(crate) fn resolve_autonomy_mode_for_workspace(
     db: &Database,
     workspace_root: Option<&Path>,
 ) -> AutonomyMode {
+    use crate::application::agent::access::AccessProfile;
+    use crate::application::settings::{
+        autonomy_strictness, is_full_access_acknowledged, SettingSource,
+    };
+
     let snap = crate::application::settings::resolve_settings(db, workspace_root, None);
     if snap.config_notice.is_some() {
         return AutonomyMode::Supervised;
     }
-    let raw = snap
-        .entries
-        .get(nexora_core::config::AUTONOMY_KEY)
-        .and_then(|entry| entry.value.as_deref());
-    parse_autonomy_mode(raw)
+    let acknowledged = is_full_access_acknowledged(db);
+
+    let access_entry = snap.entries.get(nexora_core::config::ACCESS_PROFILE_KEY);
+    let access_mode =
+        match AccessProfile::resolve(access_entry.and_then(|entry| entry.value.as_deref())) {
+            AccessProfile::FullAccess if acknowledged => AutonomyMode::FullAutonomous,
+            AccessProfile::FullAccess | AccessProfile::Standard => AutonomyMode::SemiAutonomous,
+            AccessProfile::Supervised | AccessProfile::ReadOnly => AutonomyMode::Supervised,
+        };
+
+    let autonomy_entry = snap.entries.get(nexora_core::config::AUTONOMY_KEY);
+    let mut autonomy_mode =
+        parse_autonomy_mode(autonomy_entry.and_then(|entry| entry.value.as_deref()));
+    if autonomy_mode == AutonomyMode::FullAutonomous && !acknowledged {
+        autonomy_mode = AutonomyMode::SemiAutonomous;
+    }
+
+    let access_is_default = access_entry.is_none_or(|e| e.source == SettingSource::Default);
+    let autonomy_is_default = autonomy_entry.is_none_or(|e| e.source == SettingSource::Default);
+    if autonomy_is_default {
+        access_mode
+    } else if access_is_default {
+        autonomy_mode
+    } else if autonomy_strictness(access_mode) >= autonomy_strictness(autonomy_mode) {
+        access_mode
+    } else {
+        autonomy_mode
+    }
 }
 
 /// Resolve the persisted autonomy mode from `app_settings` (`agent.autonomy`)
@@ -3118,14 +3149,44 @@ mod tests {
             resolve_autonomy_mode(&db),
             crate::application::agent::approval::AutonomyMode::Supervised
         );
-        // Full
+        // Unacknowledged full_autonomous fails closed to SemiAutonomous
         crate::application::settings::SettingsService::new(&db)
             .write("agent.autonomy", Some("full_autonomous"))
             .expect("write");
         assert_eq!(
             resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::SemiAutonomous
+        );
+        // Acknowledged full_autonomous is honored
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.full_access_acknowledged", Some("true"))
+            .expect("ack");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
             crate::application::agent::approval::AutonomyMode::FullAutonomous
         );
+        // Legacy read_only access_profile maps to Supervised
+        crate::application::settings::SettingsService::new(&db)
+            .delete("agent.autonomy")
+            .expect("delete");
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.access_profile", Some("read_only"))
+            .expect("write read_only");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::Supervised
+        );
+        // Full access via access_profile with acknowledgment resolves to FullAutonomous
+        crate::application::settings::SettingsService::new(&db)
+            .write("agent.access_profile", Some("full_access"))
+            .expect("write full_access");
+        assert_eq!(
+            resolve_autonomy_mode(&db),
+            crate::application::agent::approval::AutonomyMode::FullAutonomous
+        );
+        crate::application::settings::SettingsService::new(&db)
+            .delete("agent.access_profile")
+            .expect("delete");
         // Invalid legacy defaults to semi
         crate::application::settings::SettingsService::new(&db)
             .write("agent.autonomy", Some("legacy"))
@@ -4085,9 +4146,14 @@ mod tests {
                         ..
                     } => {
                         approvals += 1;
-                        assert_ne!(profile, "read_only");
                         assert!(!metadata.checkpoints_available);
                         assert_eq!(metadata.sandbox_posture, "PerCommandConsent");
+                        if profile == "read_only" {
+                            assert_eq!(
+                                metadata.access_profile,
+                                super::super::access::AccessProfile::Supervised
+                            );
+                        }
                         if name == "execute_command" {
                             assert!(!metadata.allow_for_run);
                             assert_eq!(
@@ -4109,11 +4175,8 @@ mod tests {
                     _ => {}
                 }
             }
-            assert_eq!(approvals, if profile == "read_only" { 0 } else { 2 });
-            assert_eq!(
-                workspace.join("approved.txt").exists(),
-                profile != "read_only"
-            );
+            assert_eq!(approvals, 2);
+            assert!(workspace.join("approved.txt").exists());
             assert!(!workspace.join("shell-marker.txt").exists());
             std::fs::remove_dir_all(workspace).unwrap();
         }

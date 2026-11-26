@@ -698,6 +698,7 @@ pub(crate) fn agent_set_mode(
     run_id: i64,
     mode: String,
     registry: State<'_, ManagedRegistry>,
+    db: State<'_, Database>,
 ) -> Result<(), CommandError> {
     let mode = match mode.as_str() {
         "supervised" => AutonomyMode::Supervised,
@@ -710,6 +711,14 @@ pub(crate) fn agent_set_mode(
             ))
         }
     };
+    if mode == AutonomyMode::FullAutonomous
+        && !crate::application::settings::is_full_access_acknowledged(db.inner())
+    {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "full access requires explicit user risk acknowledgment",
+        ));
+    }
     if registry.set_mode(run_id, mode) {
         Ok(())
     } else {

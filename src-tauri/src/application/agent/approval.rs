@@ -395,8 +395,10 @@ impl ApprovalGate {
         if !matches!(
             call.name.as_str(),
             "read_file" | "list_directory" | "search_files" | "write_file" | "edit_file"
-        ) || self.access.profile() != AccessProfile::Standard
-        {
+        ) || !matches!(
+            self.access.profile(),
+            AccessProfile::Standard | AccessProfile::FullAccess
+        ) {
             return false;
         }
         let Some(workspace) = self.lock_state().workspace.clone() else {
@@ -554,9 +556,10 @@ impl ApprovalGate {
                     return Err(denied());
                 }
                 drop(state);
+                let full_access_auto = self.is_full_access_active();
                 if call.name == "execute_command" {
                     let sandboxed = self.access.sandbox_posture(workspace) == "Verified";
-                    if !sandboxed && !once && !group {
+                    if !sandboxed && !once && !group && !full_access_auto {
                         return Err(denied());
                     }
                     super::sandbox::authorized(workspace, sandboxed, || execute(target, started))
@@ -659,46 +662,65 @@ impl ApprovalGate {
         self.signal.notify_all();
     }
 
-    /// Whether `call` would require user approval under the current mode and
-    /// risk class. Does not park.
-    ///
-    /// NEX-SEC-001 deny-floor: `DangerousShell` (`execute_command`) always
-    /// requires explicit consent, even in `FullAutonomous`.
+    /// True when acknowledged `Full access` (`AccessProfile::FullAccess` +
+    /// `AutonomyMode::FullAutonomous`) is actively governing this gate.
+    #[must_use]
+    pub(crate) fn is_full_access_active(&self) -> bool {
+        self.access.profile() == AccessProfile::FullAccess
+            && self.mode() == AutonomyMode::FullAutonomous
+    }
+
+    /// Unified 3-mode effective posture combining live [`AccessProfile`]
+    /// ceiling with [`AutonomyMode`]: always selects the more restrictive of
+    /// the two so live profile or mode downgrades take effect immediately.
+    #[must_use]
+    fn effective_mode(&self) -> AutonomyMode {
+        let profile_mode = match self.access.profile() {
+            AccessProfile::FullAccess => AutonomyMode::FullAutonomous,
+            AccessProfile::Standard => AutonomyMode::SemiAutonomous,
+            AccessProfile::Supervised | AccessProfile::ReadOnly => AutonomyMode::Supervised,
+        };
+        let gate_mode = self.mode();
+        if crate::application::settings::autonomy_strictness(profile_mode)
+            >= crate::application::settings::autonomy_strictness(gate_mode)
+        {
+            profile_mode
+        } else {
+            gate_mode
+        }
+    }
+
+    /// Whether `call` would require user approval under the unified 3-mode
+    /// access policy (`Ask permissions` / `Auto-approve safe` / `Full access`).
+    /// Does not park.
     #[must_use]
     pub(crate) fn needs_approval(&self, call: &ToolCall) -> bool {
         let risk = RiskClass::classify(&call.name);
-        let mode = self.mode();
-        if call.name == "execute_command"
-            && mode != AutonomyMode::Supervised
-            && self.access.profile() == AccessProfile::Standard
-        {
-            let workspace = self.lock_state().workspace.clone();
-            if workspace
-                .as_ref()
-                .is_some_and(|path| self.access.sandbox_posture(path) == "Verified")
-                && super::shell_policy::automatic_general_shell(&call.arguments)
-            {
-                return false;
-            }
+        if matches!(risk, RiskClass::ReadOnly) {
+            return false;
         }
-        match mode {
+        if self.access.profile() == AccessProfile::ReadOnly {
+            return true;
+        }
+        match self.effective_mode() {
             AutonomyMode::Supervised => true,
-            AutonomyMode::SemiAutonomous => {
-                matches!(
-                    risk,
-                    RiskClass::Mutating | RiskClass::DangerousShell | RiskClass::ExternalMcp
-                )
-            }
-            AutonomyMode::FullAutonomous => match risk {
+            AutonomyMode::SemiAutonomous => match risk {
                 RiskClass::ReadOnly => false,
-                RiskClass::DangerousShell | RiskClass::ExternalMcp => true,
                 RiskClass::Mutating => {
                     !(self.access.allows(call)
-                        && self.access.profile() == AccessProfile::Standard
                         && self.has_verified_checkpoints()
                         && self.is_ordinary_workspace_write(call))
                 }
+                RiskClass::DangerousShell => {
+                    let workspace = self.lock_state().workspace.clone();
+                    !(workspace
+                        .as_ref()
+                        .is_some_and(|path| self.access.sandbox_posture(path) == "Verified")
+                        && super::shell_policy::automatic_general_shell(&call.arguments))
+                }
+                RiskClass::ExternalMcp => true,
             },
+            AutonomyMode::FullAutonomous => false,
         }
     }
 
@@ -1112,33 +1134,48 @@ mod tests {
 
     #[test]
     fn full_mode_x_risk_matrix_all_six_behaviors() {
-        // Supervised: both read and mutating need approval.
+        // Mode 1 (Ask permissions / Supervised): workspace reads auto-run;
+        // mutations, shell, and MCP always ask.
         let sup = ApprovalGate::new(AutonomyMode::Supervised);
-        assert!(sup.needs_approval(&tool_call("1", "read_file")));
-        assert!(sup.needs_approval(&tool_call("2", "list_directory")));
+        assert!(!sup.needs_approval(&tool_call("1", "read_file")));
+        assert!(!sup.needs_approval(&tool_call("2", "list_directory")));
         assert!(sup.needs_approval(&tool_call("3", "write_file")));
         assert!(sup.needs_approval(&tool_call("4", "execute_command")));
+        assert!(sup.needs_approval(&tool_call("5", "mcp__demo__ping")));
 
-        // Semi: reads auto, mutating needs approval.
+        // Mode 2 (Auto-approve safe / SemiAutonomous without checkpoints/sandbox):
+        // reads auto; uncheckpointed writes, unverified shell, and MCP ask.
         let semi = ApprovalGate::new(AutonomyMode::SemiAutonomous);
         assert!(!semi.needs_approval(&tool_call("1", "read_file")));
         assert!(!semi.needs_approval(&tool_call("2", "list_directory")));
         assert!(semi.needs_approval(&tool_call("3", "write_file")));
         assert!(semi.needs_approval(&tool_call("4", "execute_command")));
+        assert!(semi.needs_approval(&tool_call("5", "mcp__demo__ping")));
 
-        // Full: everything auto except the NEX-SEC-001 shell deny-floor.
-        let full = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        // FullAutonomous under default Standard access ceiling stays bounded to Auto-approve safe.
+        let full_capped = ApprovalGate::new(AutonomyMode::FullAutonomous);
+        assert!(!full_capped.needs_approval(&tool_call("1", "read_file")));
+        assert!(!full_capped.needs_approval(&tool_call("2", "list_directory")));
+        assert!(full_capped.needs_approval(&tool_call("3", "write_file")));
+        assert!(full_capped.needs_approval(&tool_call("4", "execute_command")));
+        assert!(full_capped.needs_approval(&tool_call("5", "mcp__demo__ping")));
+
+        // Mode 3 (Full access): auto-approves all tool categories without exceptions.
+        let full = ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::FullAccess));
+        assert!(full.is_full_access_active());
         assert!(!full.needs_approval(&tool_call("1", "read_file")));
         assert!(!full.needs_approval(&tool_call("2", "list_directory")));
-        assert!(full.needs_approval(&tool_call("3", "write_file")));
-        assert!(full.needs_approval(&tool_call("4", "execute_command")));
+        assert!(!full.needs_approval(&tool_call("3", "write_file")));
+        assert!(!full.needs_approval(&tool_call("4", "execute_command")));
+        assert!(!full.needs_approval(&tool_call("5", "mcp__demo__ping")));
     }
 
     #[test]
     fn shell_deny_floor_mode_x_tool_matrix() {
-        // NEX-SEC-001 table: every mode x every tool. The shell
-        // (`execute_command`) parks in all three modes; every non-shell
-        // outcome is exactly the pre-fix ladder behavior.
+        // Under Standard (Auto-approve safe) / Supervised ceilings, shell and
+        // non-checkpointed mutations still park in every mode. Under explicit
+        // FullAccess + FullAutonomous, all tools auto-approve.
         let modes = [
             AutonomyMode::Supervised,
             AutonomyMode::SemiAutonomous,
@@ -1151,20 +1188,24 @@ mod tests {
             "write_file",
             "edit_file",
             "execute_command",
+            "mcp__demo__fetch",
             "does_not_exist",
         ];
         for mode in modes {
             let gate = ApprovalGate::new(mode);
             for tool in tools {
                 let needs = gate.needs_approval(&tool_call("t", tool));
-                let expected = match mode {
-                    AutonomyMode::Supervised => true,
-                    AutonomyMode::SemiAutonomous | AutonomyMode::FullAutonomous => {
-                        !matches!(RiskClass::classify(tool), RiskClass::ReadOnly)
-                    }
-                };
+                let expected = !matches!(RiskClass::classify(tool), RiskClass::ReadOnly);
                 assert_eq!(needs, expected, "mode={mode:?} tool={tool}");
             }
+        }
+        let full_access = ApprovalGate::new(AutonomyMode::FullAutonomous)
+            .with_access(AccessContext::fixed(AccessProfile::FullAccess));
+        for tool in tools {
+            assert!(
+                !full_access.needs_approval(&tool_call("t", tool)),
+                "acknowledged Full access must auto-approve {tool}"
+            );
         }
     }
 
@@ -1188,7 +1229,7 @@ mod tests {
     #[test]
     fn parked_approval_resolves_via_respond() {
         let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let call = tool_call("c1", "read_file");
+        let call = tool_call("c1", "write_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call).expect("approved"));
         wait_until_parked(&gate, "c1");
@@ -1296,7 +1337,7 @@ mod tests {
         // Simulate RunControl sharing: gate shares the run's token.
         let token = CancellationToken::new();
         let gate = ApprovalGate::with_token(AutonomyMode::Supervised, token.clone());
-        let call = tool_call("shared", "read_file");
+        let call = tool_call("shared", "write_file");
         let gate2 = gate.clone();
         let handle = thread::spawn(move || gate2.request_approval(&call));
         wait_until_parked(&gate, "shared");
@@ -1326,14 +1367,14 @@ mod tests {
 
     #[test]
     fn runtime_mode_switch_changes_next_decision() {
-        let gate = ApprovalGate::new(AutonomyMode::Supervised);
-        let read = tool_call("r1", "read_file");
-        assert!(gate.needs_approval(&read));
+        let gate = ApprovalGate::new(AutonomyMode::Supervised)
+            .with_access(AccessContext::fixed(AccessProfile::FullAccess));
+        let write = tool_call("w1", "write_file");
+        assert!(gate.needs_approval(&write));
         gate.set_mode(AutonomyMode::FullAutonomous);
-        assert!(!gate.needs_approval(&read));
+        assert!(!gate.needs_approval(&write));
         gate.set_mode(AutonomyMode::SemiAutonomous);
-        assert!(!gate.needs_approval(&read));
-        assert!(gate.needs_approval(&tool_call("w1", "write_file")));
+        assert!(gate.needs_approval(&write));
         // Already-parked request is not auto-resolved by mode switch.
         let gate2 = gate.clone();
         gate.set_mode(AutonomyMode::Supervised);

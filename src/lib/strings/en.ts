@@ -16,15 +16,19 @@ export const en = {
 
   "access.legacyAutonomy": "Legacy autonomy",
   "access.label": "Access profile",
-  "access.read_only": "Read only",
-  "access.standard": "Standard",
-  "access.supervised": "Supervised",
-  "access.hint.read_only":
-    "Workspace reads and search only. Edits and shell are blocked.",
-  "access.hint.standard":
-    "Workspace writes are checkpointed for 1-click undo. Sensitive paths and dangerous commands ask for consent. General shell commands can run automatically only with verified OS isolation.",
+  "access.supervised": "Ask permissions",
+  "access.standard": "Auto-approve safe",
+  "access.full_access": "Full access",
   "access.hint.supervised":
-    "Every edit and shell command requires your approval.",
+    "Workspace reads run automatically. Modifying files, running commands, MCP tools, and internet access ask for approval.",
+  "access.hint.standard":
+    "Safe workspace edits (with 1-click checkpoints) and verified-sandbox commands auto-run. Sensitive paths, unsafe commands, MCP tools, and internet access ask.",
+  "access.hint.full_access":
+    "Auto-approves file edits, shell commands, MCP tools, and internet access without prompting. Explicit deny rules and prompt-injection pauses remain active.",
+  "access.fullAccessConfirmTitle": "Enable Full access?",
+  "access.fullAccessConfirmBody":
+    "In Full access mode, the agent will edit files, run shell commands, call MCP tools, and access the internet without asking for per-action confirmation. Explicit Deny rules, secret protection, budgets, Stop, and prompt-injection pauses remain active.",
+  "access.fullAccessConfirmAction": "Enable Full Access",
   "access.saving": "Saving access profile…",
   "access.saveFailed":
     "Could not save the access profile. The previous profile was restored.",
