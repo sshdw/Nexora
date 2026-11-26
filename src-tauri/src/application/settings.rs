@@ -455,7 +455,11 @@ fn is_secret_redaction_key(key_lower: &str) -> bool {
 }
 
 fn is_secret_field_key(key_lower: &str) -> bool {
-    if is_secret_redaction_key(key_lower) || matches!(key_lower, "token_url" | "authorization_url")
+    if is_secret_redaction_key(key_lower)
+        || matches!(
+            key_lower,
+            "token_url" | "authorization_url" | "max_output_tokens"
+        )
     {
         return false;
     }
@@ -1080,11 +1084,6 @@ fn validate_scoped_write_input(
     }
 
     if let Some(raw_val) = value {
-        if string_has_raw_secret(raw_val) {
-            return Err(ScopedSaveError::SecurityBlocked(
-                "settings cannot store raw credentials or API keys".to_string(),
-            ));
-        }
         if let Ok(parsed_val) = serde_json::from_str::<Value>(raw_val) {
             if value_contains_raw_secret(&parsed_val) {
                 return Err(ScopedSaveError::SecurityBlocked(
@@ -1096,6 +1095,10 @@ fn validate_scoped_write_input(
                     "MCP server configuration cannot enable auto-approve".to_string(),
                 ));
             }
+        } else if string_has_raw_secret(raw_val) {
+            return Err(ScopedSaveError::SecurityBlocked(
+                "settings cannot store raw credentials or API keys".to_string(),
+            ));
         }
         validate_desktop_setting(trimmed_key, Some(raw_val))
             .map_err(ScopedSaveError::InvalidInput)?;

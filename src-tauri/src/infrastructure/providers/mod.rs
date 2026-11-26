@@ -126,6 +126,9 @@ fn provider_schemas() -> Vec<(&'static str, &'static str, &'static [&'static str
         &[],
     ));
     for preset in catalog::openai::OPENAI_COMPAT_PRESETS {
+        if preset.deprecated {
+            continue;
+        }
         schemas.push((preset.name, preset.display_name, preset.models));
     }
     // The user-configured OpenAI-compatible endpoint carries no hardcoded
@@ -144,6 +147,10 @@ mod tests {
     fn supported_providers_list() {
         let providers = supported_providers();
         let names: Vec<&str> = providers.iter().map(|p| p.name.as_str()).collect();
+        assert!(
+            !names.contains(&"xkiro"),
+            "deprecated xkiro must stay hidden from supported_providers()"
+        );
         assert_eq!(
             names,
             vec![
@@ -151,7 +158,6 @@ mod tests {
                 "anthropic",
                 "gemini",
                 "chatgpt_subscription",
-                "xkiro",
                 "openrouter",
                 "nvidia",
                 "opencode_zen",
@@ -168,11 +174,10 @@ mod tests {
         );
         for provider in &providers {
             let expected = match provider.name.as_str() {
-                "gemini" => 7,
-                "xkiro" | "openrouter" => 8,
-                "nvidia" | "opencode_zen" => 5,
+                "openrouter" => 8,
+                "openai" | "gemini" | "nvidia" | "opencode_zen" | "groq" => 5,
+                "qwen" | "moonshot" | "mistral" => 4,
                 "deepseek" | "minimax" => 2,
-                "qwen" | "moonshot" | "groq" | "mistral" => 4,
                 "openai_compat" | "chatgpt_subscription" => 0,
                 _ => 3,
             };
@@ -198,39 +203,39 @@ mod tests {
     fn rate_lookup_known_value_unknown_none() {
         // Known native IDs resolve to their hardcoded estimates.
         assert_eq!(
-            rate_for_model("openai", "gpt-5.6-terra"),
-            Some((5_000_000, 25_000_000))
+            rate_for_model("openai", "gpt-5"),
+            Some((1_250_000, 10_000_000))
         );
         assert_eq!(
             rate_for_model("anthropic", "claude-haiku-4-5-20251001"),
             Some((1_000_000, 5_000_000))
         );
         assert_eq!(
-            rate_for_model("gemini", "gemini-3.6-flash"),
-            Some((1_250_000, 5_000_000))
+            rate_for_model("gemini", "gemini-2.5-flash"),
+            Some((300_000, 2_500_000))
         );
         // The OpenAI-compatible providers ride the shared path: native
         // OpenAI IDs resolve through them too.
         assert_eq!(
-            rate_for_model("openrouter", "gpt-5.6-luna"),
-            Some((500_000, 2_000_000))
+            rate_for_model("openrouter", "o4-mini"),
+            Some((1_100_000, 4_400_000))
         );
         // Unknown models and providers yield None — never a guessed rate.
         assert_eq!(rate_for_model("openai", "mystery-model-9"), None);
         assert_eq!(rate_for_model("openai", "big-pickle"), None);
         assert_eq!(rate_for_model("openai", ""), None);
-        assert_eq!(rate_for_model("nope", "gpt-5.6-terra"), None);
+        assert_eq!(rate_for_model("nope", "gpt-5"), None);
         assert_eq!(rate_for_model("", ""), None);
 
         // The provider-agnostic path agrees for native IDs and stays None
         // for everything else.
         assert_eq!(
-            rate_for_model_id("claude-opus-4-8"),
+            rate_for_model_id("claude-opus-4-20250514"),
             Some((15_000_000, 75_000_000))
         );
         assert_eq!(
-            rate_for_model_id("gemini-3.1-flash-lite"),
-            Some((300_000, 1_200_000))
+            rate_for_model_id("gemini-2.5-flash-lite"),
+            Some((100_000, 400_000))
         );
         assert_eq!(rate_for_model_id("test-model"), None);
         assert_eq!(rate_for_model_id("big-pickle"), None);

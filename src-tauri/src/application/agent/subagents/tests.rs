@@ -304,13 +304,13 @@ fn model_defaults_to_parent_and_validates_m06_supported_efforts() {
     let (m, e) = resolve_model_and_effort(
         None,
         "gemini",
-        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
         Some("high"),
         None,
         None,
     )
     .expect("default succeeds");
-    assert_eq!(m, "gemini-3.1-flash-lite");
+    assert_eq!(m, "gemini-2.5-flash-lite");
     // Lite model does not support effort, so incompatible parent effort is dropped.
     assert_eq!(e, None);
 
@@ -318,32 +318,32 @@ fn model_defaults_to_parent_and_validates_m06_supported_efforts() {
     let (m2, e2) = resolve_model_and_effort(
         None,
         "gemini",
-        "gemini-3.6-flash",
+        "gemini-2.5-flash",
         Some("low"),
         None,
         Some("high"),
     )
-    .expect("high is supported on gemini-3.6-flash");
-    assert_eq!(m2, "gemini-3.6-flash");
+    .expect("high is supported on gemini-2.5-flash");
+    assert_eq!(m2, "gemini-2.5-flash");
     assert_eq!(e2.as_deref(), Some("high"));
 
-    // 3. Explicit unsupported effort on gemini-3.6-flash (`xhigh` not in supported_efforts) fails loudly.
+    // 3. Explicit unsupported effort on gemini-2.5-flash (`xhigh` not in supported_efforts) fails loudly.
     let err_xhigh = resolve_model_and_effort(
         None,
         "gemini",
-        "gemini-3.6-flash",
+        "gemini-2.5-flash",
         None,
         None,
         Some("xhigh"),
     )
-    .expect_err("xhigh must be rejected for gemini-3.6-flash");
+    .expect_err("xhigh must be rejected for gemini-2.5-flash");
     assert!(err_xhigh.contains("not supported"), "got {err_xhigh}");
 
     // 4. Explicit effort on non-thinking lite model fails loudly.
     let err_lite = resolve_model_and_effort(
         None,
         "gemini",
-        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
         None,
         None,
         Some("low"),
@@ -354,17 +354,17 @@ fn model_defaults_to_parent_and_validates_m06_supported_efforts() {
         "got {err_lite}"
     );
 
-    // 5. Explicit model override + valid xhigh on openai gpt-5.6-terra succeeds.
+    // 5. Explicit model override + valid xhigh on openai gpt-5 succeeds.
     let (m3, e3) = resolve_model_and_effort(
         None,
         "openai",
-        "gpt-5.6-luna",
+        "gpt-4o",
         Some("low"),
-        Some("gpt-5.6-terra"),
+        Some("gpt-5"),
         Some("xhigh"),
     )
     .expect("xhigh supported on openai");
-    assert_eq!(m3, "gpt-5.6-terra");
+    assert_eq!(m3, "gpt-5");
     assert_eq!(e3.as_deref(), Some("xhigh"));
 }
 

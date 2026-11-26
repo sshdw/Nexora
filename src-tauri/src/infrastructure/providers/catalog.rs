@@ -15,17 +15,71 @@
 // lint flags as needing backticks. Allow it locally, matching the executors.
 #![allow(clippy::doc_markdown)]
 
+/// Per-model baseline capability specification for curated providers & presets.
+///
+/// Anchors context windows, max output tokens, reasoning efforts, thinking,
+/// attachment, and tool support until overridden by live `/models` metadata
+/// or an explicit user override (`ManualOverride > ApiMetadata >
+/// BuiltInCatalog / FamilyRules > Unknown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BaselineModelSpec {
+    pub model: &'static str,
+    pub context_window: u32,
+    pub max_output_tokens: u32,
+    pub supported_efforts: &'static [&'static str],
+    pub supports_thinking: bool,
+    pub supports_attachments: bool,
+    pub supports_tools: bool,
+}
+
+/// Anthropic baseline specs (model list and rate table remain in `anthropic.rs`).
+pub(crate) mod anthropic {
+    use super::BaselineModelSpec;
+
+    pub(crate) const ANTHROPIC_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "claude-sonnet-4-20250514",
+            context_window: 200_000,
+            max_output_tokens: 64_000,
+            supported_efforts: &["low", "medium", "high", "xhigh"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "claude-haiku-4-5-20251001",
+            context_window: 200_000,
+            max_output_tokens: 64_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "claude-opus-4-20250514",
+            context_window: 200_000,
+            max_output_tokens: 32_000,
+            supported_efforts: &["low", "medium", "high", "xhigh"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+    ];
+}
+
 /// Gemini catalog slice: provider identity, supported models, the
-/// live-verified lite-window subset, and the rate table. Re-exported by
-/// the `gemini` executor module.
+/// live-verified lite-window subset, baseline specs, and the rate table.
+/// Re-exported by the `gemini` executor module.
 pub(crate) mod gemini {
-    /// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
+    use super::BaselineModelSpec;
+
+    /// Internal provider name (DATABASE.md §7.5); the keyring namespace key.
     pub(crate) const PROVIDER_NAME: &str = "gemini";
 
     /// User-facing provider label.
     pub(crate) const PROVIDER_DISPLAY_NAME: &str = "Gemini";
 
-    /// Gemini models currently supported by the provider (DATABASE.md В§7.5:
+    /// Gemini models currently supported by the provider (DATABASE.md §7.5:
     /// model lists are hardcoded in the MVP and managed by the application layer).
     ///
     /// The selected model is passed through unchanged and is never validated
@@ -33,50 +87,76 @@ pub(crate) mod gemini {
     /// this set documents the currently supported models and anchors the
     /// model-selection tests.
     ///
-    /// Live-smoke-gated 1.2.2 set (rotated key, 2026-09-13; D8 rule: chat 200
-    /// keep, tools 200 agent-usable, 429 stays, 404/503 dropped):
-    /// `gemini-3.6-flash` (default), `gemini-3.1-flash-lite`,
-    /// `gemini-3.1-pro-preview` (429), `gemini-flash-lite-latest`,
-    /// `gemini-pro-latest` (429), `gemini-3.5-flash`, `gemini-3.5-flash-lite`.
-    /// Dropped: `gemini-2.5-flash`, `gemini-2.5-flash-lite`, `gemini-2.5-pro`
-    /// (404), `gemini-flash-latest` (503).
-    ///
     /// Pricing is governed by the application-layer pricing policy table
-    /// (DATABASE.md В§7.8); the first entry
-    /// is the provider default consumed as `models[0]` by the selection surface.
-    /// The retired IDs this list replaces: `gemini-1.5-pro`, `gemini-1.5-flash`
-    /// (shut down), and `gemini-2.0-flash` (retired June 1, 2026).
+    /// (DATABASE.md §7.8); the first entry is the provider default consumed as
+    /// `models[0]` by the selection surface.
     pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-        // Default: chat 200 + tools 200.
-        "gemini-3.6-flash",
-        // Chat 200 + tools 200.
-        "gemini-3.1-flash-lite",
-        // Chat 429 stays per D8.
-        "gemini-3.1-pro-preview",
-        // Chat 200 + tools 200.
+        // Default: fast general-purpose model with thinking & tools.
+        "gemini-2.5-flash",
+        // Flagship reasoning/coding model.
+        "gemini-2.5-pro",
+        // Lightweight non-thinking tier.
+        "gemini-2.5-flash-lite",
+        // Rolling lite alias.
         "gemini-flash-lite-latest",
-        // Chat 429 stays per D8.
+        // Rolling pro alias.
         "gemini-pro-latest",
-        // Chat 200 + tools 200.
-        "gemini-3.5-flash",
-        // Chat 200 + tools 200.
-        "gemini-3.5-flash-lite",
     ];
 
     /// The [`SUPPORTED_MODELS`] subset on the live-verified lite window.
     ///
-    /// Live-verified 2026-10-03 via the zero-token `GET
-    /// /v1beta/models/{modelId}` metadata endpoint: every ID here reports
-    /// `inputTokenLimit = 1048576`. Kept as an explicit subset (rather than
-    /// re-derived by callers) so the application context-window table resolves
-    /// the verified clamp without
-    /// restating IDs — a strict subset of [`SUPPORTED_MODELS`] by construction
+    /// Kept as an explicit strict subset of [`SUPPORTED_MODELS`] by construction
     /// (see the `gemini_lite_subset_of_supported` test).
-    pub(crate) const GEMINI_LITE_MODELS: &[&str] = &[
-        "gemini-3.1-flash-lite",
-        "gemini-flash-lite-latest",
-        "gemini-3.5-flash",
-        "gemini-3.5-flash-lite",
+    pub(crate) const GEMINI_LITE_MODELS: &[&str] =
+        &["gemini-2.5-flash-lite", "gemini-flash-lite-latest"];
+
+    /// Baseline capability specifications for native Gemini models.
+    pub(crate) const GEMINI_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "gemini-2.5-flash",
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "gemini-2.5-pro",
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "gemini-2.5-flash-lite",
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "gemini-flash-lite-latest",
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "gemini-pro-latest",
+            context_window: 1_048_576,
+            max_output_tokens: 65_536,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
     ];
 
     /// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
@@ -88,27 +168,26 @@ pub(crate) mod gemini {
     /// Unknown IDs yield `None` from [`crate::infrastructure::providers::gemini::rate_for_model`]: callers fall back to
     /// the policy default, never a guessed rate.
     pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
-        ("gemini-3.6-flash", 1_250_000, 5_000_000),
-        ("gemini-3.1-flash-lite", 300_000, 1_200_000),
-        ("gemini-3.1-pro-preview", 2_500_000, 10_000_000),
-        ("gemini-flash-lite-latest", 300_000, 1_200_000),
-        ("gemini-pro-latest", 2_500_000, 10_000_000),
-        ("gemini-3.5-flash", 1_250_000, 5_000_000),
-        ("gemini-3.5-flash-lite", 300_000, 1_200_000),
+        ("gemini-2.5-flash", 300_000, 2_500_000),
+        ("gemini-2.5-pro", 1_250_000, 10_000_000),
+        ("gemini-2.5-flash-lite", 100_000, 400_000),
+        ("gemini-flash-lite-latest", 100_000, 400_000),
+        ("gemini-pro-latest", 1_250_000, 10_000_000),
     ];
 }
 
 /// OpenAI-family catalog slice: provider identity, supported models, the
-/// rate table, and the four OpenAI-compatible endpoint identities (xKiro,
-/// OpenRouter, NVIDIA NIM, OpenCode Zen) plus the user-configured endpoint
-/// identity. Re-exported by the `openai` executor module.
+/// rate table, and the OpenAI-compatible preset identities plus the
+/// user-configured endpoint identity. Re-exported by the `openai` executor module.
 pub(crate) mod openai {
-    /// Internal provider name (DATABASE.md В§7.5); the keyring namespace key.
+    pub(crate) use super::BaselineModelSpec;
+
+    /// Internal provider name (DATABASE.md §7.5); the keyring namespace key.
     pub(crate) const PROVIDER_NAME: &str = "openai";
     /// User-facing provider label.
     pub(crate) const PROVIDER_DISPLAY_NAME: &str = "OpenAI";
 
-    /// OpenAI models currently supported by the provider (DATABASE.md В§7.5: model
+    /// OpenAI models currently supported by the provider (DATABASE.md §7.5: model
     /// lists are hardcoded in the MVP and managed by the application layer).
     ///
     /// The selected model is passed through unchanged and is never validated
@@ -117,15 +196,15 @@ pub(crate) mod openai {
     /// model-selection surface so the UI can present only supported choices.
     ///
     /// Pricing is governed by the application-layer pricing policy table
-    /// (DATABASE.md В§7.8); the first entry
-    /// is the provider default consumed as `models[0]` by the selection surface.
+    /// (DATABASE.md §7.8); the first entry is the provider default consumed as
+    /// `models[0]` by the selection surface.
     pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-        // Default: best balance of cost and capability.
-        "gpt-5.6-terra",
-        // Fast/cheap tier.
-        "gpt-5.6-luna",
-        // Best-quality flagship tier.
-        "gpt-5.6-sol",
+        // Default: flagship reasoning & coding tier.
+        "gpt-5",   // Multimodal general-purpose tier.
+        "gpt-4o",  // Deep reasoning tier.
+        "o3",      // Fast reasoning tier.
+        "o4-mini", // Long-context coding tier.
+        "gpt-4.1",
     ];
 
     /// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
@@ -137,29 +216,62 @@ pub(crate) mod openai {
     /// Unknown IDs (including every OpenAI-compatible shortlist below) yield
     /// `None` from [`crate::infrastructure::providers::openai::rate_for_model`]: callers fall back to the policy default,
     /// never a guessed rate.
-    ///
-    /// The default tier (`gpt-5.6-terra`) is rated exactly at the conservative
-    /// policy default, so it bills identically rated or unrated.
     pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
-        ("gpt-5.6-terra", 5_000_000, 25_000_000),
-        ("gpt-5.6-luna", 500_000, 2_000_000),
-        ("gpt-5.6-sol", 5_000_000, 20_000_000),
+        ("gpt-5", 1_250_000, 10_000_000),
+        ("gpt-4o", 2_500_000, 10_000_000),
+        ("o3", 2_000_000, 8_000_000),
+        ("o4-mini", 1_100_000, 4_400_000),
+        ("gpt-4.1", 2_000_000, 8_000_000),
     ];
-    /// Per-model baseline capability specification for curated presets.
-    ///
-    /// Anchors context windows, reasoning efforts, thinking, attachment, and
-    /// tool support for flagship models until overridden by live `/models`
-    /// metadata or an explicit user override (`ManualOverride > ApiMetadata >
-    /// BuiltInCatalog > Unknown`).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct BaselineModelSpec {
-        pub model: &'static str,
-        pub context_window: u32,
-        pub supported_efforts: &'static [&'static str],
-        pub supports_thinking: bool,
-        pub supports_attachments: bool,
-        pub supports_tools: bool,
-    }
+
+    /// Baseline capability specifications for native OpenAI models.
+    pub(crate) const OPENAI_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "gpt-5",
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            supported_efforts: &["low", "medium", "high", "xhigh"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "gpt-4o",
+            context_window: 128_000,
+            max_output_tokens: 16_384,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "o3",
+            context_window: 200_000,
+            max_output_tokens: 100_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "o4-mini",
+            context_window: 200_000,
+            max_output_tokens: 100_000,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "gpt-4.1",
+            context_window: 1_047_576,
+            max_output_tokens: 32_768,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+    ];
 
     /// Data-driven descriptor for an OpenAI-compatible provider preset.
     #[derive(Debug, Clone, Copy)]
@@ -171,6 +283,9 @@ pub(crate) mod openai {
         pub extra_headers: &'static [(&'static str, &'static str)],
         pub models: &'static [&'static str],
         pub baseline_specs: &'static [BaselineModelSpec],
+        /// Hidden from the UI / `supported_providers()` when deprecated, while
+        /// keeping executor/keyring compatibility for existing users.
+        pub deprecated: bool,
     }
 
     /// OpenAI-compatible provider identities sharing [`crate::infrastructure::providers::openai::OpenAiExecutor`].
@@ -229,6 +344,53 @@ pub(crate) mod openai {
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
         "openai/gpt-oss-20b",
     ];
+    const NVIDIA_SPECS: &[BaselineModelSpec] = &[
+        BaselineModelSpec {
+            model: "nvidia/nemotron-3-super-120b-a12b",
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "nvidia/nemotron-3-ultra-550b-a55b",
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "meta/llama-3.2-11b-vision-instruct",
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            supported_efforts: &[],
+            supports_thinking: false,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            context_window: 131_072,
+            max_output_tokens: 16_384,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: true,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "openai/gpt-oss-20b",
+            context_window: 131_072,
+            max_output_tokens: 65_536,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+    ];
     pub(crate) const OPENCODE_ZEN_NAME: &str = "opencode_zen";
     pub(crate) const OPENCODE_ZEN_DISPLAY_NAME: &str = "OpenCode Zen";
     pub(crate) const OPENCODE_ZEN_ENDPOINT: &str = "https://opencode.ai/zen/v1/chat/completions";
@@ -243,19 +405,21 @@ pub(crate) mod openai {
     pub(crate) const DEEPSEEK_NAME: &str = "deepseek";
     pub(crate) const DEEPSEEK_DISPLAY_NAME: &str = "DeepSeek";
     pub(crate) const DEEPSEEK_ENDPOINT: &str = "https://api.deepseek.com/v1/chat/completions";
-    pub(crate) const DEEPSEEK_MODELS: &[&str] = &["deepseek-chat", "deepseek-reasoner"];
+    pub(crate) const DEEPSEEK_MODELS: &[&str] = &["deepseek-flash", "deepseek-v4-pro"];
     const DEEPSEEK_SPECS: &[BaselineModelSpec] = &[
         BaselineModelSpec {
-            model: "deepseek-chat",
+            model: "deepseek-flash",
             context_window: 128_000,
+            max_output_tokens: 8_192,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
             supports_tools: true,
         },
         BaselineModelSpec {
-            model: "deepseek-reasoner",
+            model: "deepseek-v4-pro",
             context_window: 128_000,
+            max_output_tokens: 64_000,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -272,6 +436,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "qwen-max",
             context_window: 128_000,
+            max_output_tokens: 8_192,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -280,6 +445,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "qwen-plus",
             context_window: 131_072,
+            max_output_tokens: 16_384,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -288,6 +454,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "qwq-plus",
             context_window: 131_072,
+            max_output_tokens: 16_384,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -296,6 +463,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "qwen-vl-max",
             context_window: 128_000,
+            max_output_tokens: 8_192,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: true,
@@ -311,6 +479,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "glm-4.5",
             context_window: 128_000,
+            max_output_tokens: 96_000,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -319,6 +488,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "glm-4.5-air",
             context_window: 128_000,
+            max_output_tokens: 16_384,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -327,6 +497,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "glm-4-plus",
             context_window: 128_000,
+            max_output_tokens: 4_096,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -342,6 +513,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "MiniMax-M1",
             context_window: 1_000_000,
+            max_output_tokens: 40_000,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -350,6 +522,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "MiniMax-Text-01",
             context_window: 1_000_000,
+            max_output_tokens: 40_000,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -370,6 +543,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "kimi-k2-0711-preview",
             context_window: 128_000,
+            max_output_tokens: 16_384,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -378,6 +552,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "kimi-thinking-preview",
             context_window: 128_000,
+            max_output_tokens: 16_384,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -386,6 +561,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "moonshot-v1-128k",
             context_window: 128_000,
+            max_output_tokens: 8_192,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -394,6 +570,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "moonshot-v1-128k-vision-preview",
             context_window: 128_000,
+            max_output_tokens: 8_192,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: true,
@@ -406,40 +583,54 @@ pub(crate) mod openai {
     pub(crate) const GROQ_ENDPOINT: &str = "https://api.groq.com/openai/v1/chat/completions";
     pub(crate) const GROQ_MODELS: &[&str] = &[
         "llama-3.3-70b-versatile",
-        "deepseek-r1-distill-llama-70b",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "qwen-qwq-32b",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "qwen/qwen3-32b",
+        "llama-3.1-8b-instant",
     ];
     const GROQ_SPECS: &[BaselineModelSpec] = &[
         BaselineModelSpec {
             model: "llama-3.3-70b-versatile",
             context_window: 131_072,
+            max_output_tokens: 32_768,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
             supports_tools: true,
         },
         BaselineModelSpec {
-            model: "deepseek-r1-distill-llama-70b",
+            model: "openai/gpt-oss-120b",
             context_window: 131_072,
+            max_output_tokens: 65_536,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
             supports_tools: true,
         },
         BaselineModelSpec {
-            model: "meta-llama/llama-4-scout-17b-16e-instruct",
+            model: "openai/gpt-oss-20b",
             context_window: 131_072,
-            supported_efforts: &[],
-            supports_thinking: false,
-            supports_attachments: true,
+            max_output_tokens: 65_536,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
+            supports_attachments: false,
             supports_tools: true,
         },
         BaselineModelSpec {
-            model: "qwen-qwq-32b",
+            model: "qwen/qwen3-32b",
             context_window: 131_072,
+            max_output_tokens: 40_960,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
+            supports_attachments: false,
+            supports_tools: true,
+        },
+        BaselineModelSpec {
+            model: "llama-3.1-8b-instant",
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            supported_efforts: &[],
+            supports_thinking: false,
             supports_attachments: false,
             supports_tools: true,
         },
@@ -448,11 +639,12 @@ pub(crate) mod openai {
     pub(crate) const XAI_NAME: &str = "xai";
     pub(crate) const XAI_DISPLAY_NAME: &str = "xAI";
     pub(crate) const XAI_ENDPOINT: &str = "https://api.x.ai/v1/chat/completions";
-    pub(crate) const XAI_MODELS: &[&str] = &["grok-3", "grok-3-mini", "grok-2-vision-1212"];
+    pub(crate) const XAI_MODELS: &[&str] = &["grok-3", "grok-3-mini", "grok-4.7"];
     const XAI_SPECS: &[BaselineModelSpec] = &[
         BaselineModelSpec {
             model: "grok-3",
             context_window: 131_072,
+            max_output_tokens: 32_768,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -461,16 +653,18 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "grok-3-mini",
             context_window: 131_072,
+            max_output_tokens: 32_768,
             supported_efforts: &["low", "high"],
             supports_thinking: true,
             supports_attachments: false,
             supports_tools: true,
         },
         BaselineModelSpec {
-            model: "grok-2-vision-1212",
-            context_window: 32_768,
-            supported_efforts: &[],
-            supports_thinking: false,
+            model: "grok-4.7",
+            context_window: 256_000,
+            max_output_tokens: 65_536,
+            supported_efforts: &["low", "medium", "high"],
+            supports_thinking: true,
             supports_attachments: true,
             supports_tools: true,
         },
@@ -489,6 +683,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "mistral-large-latest",
             context_window: 131_072,
+            max_output_tokens: 16_384,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -497,6 +692,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "magistral-medium-latest",
             context_window: 128_000,
+            max_output_tokens: 40_960,
             supported_efforts: &["low", "medium", "high"],
             supports_thinking: true,
             supports_attachments: false,
@@ -505,6 +701,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "codestral-latest",
             context_window: 256_000,
+            max_output_tokens: 32_768,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: false,
@@ -513,6 +710,7 @@ pub(crate) mod openai {
         BaselineModelSpec {
             model: "pixtral-large-latest",
             context_window: 131_072,
+            max_output_tokens: 16_384,
             supported_efforts: &[],
             supports_thinking: false,
             supports_attachments: true,
@@ -530,6 +728,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: XKIRO_MODELS,
             baseline_specs: &[],
+            deprecated: true,
         },
         OpenAiPresetDescriptor {
             name: OPENROUTER_NAME,
@@ -539,6 +738,7 @@ pub(crate) mod openai {
             extra_headers: OPENROUTER_HEADERS,
             models: OPENROUTER_MODELS,
             baseline_specs: &[],
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: NVIDIA_NAME,
@@ -547,7 +747,8 @@ pub(crate) mod openai {
             host: "integrate.api.nvidia.com",
             extra_headers: &[],
             models: NVIDIA_MODELS,
-            baseline_specs: &[],
+            baseline_specs: NVIDIA_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: OPENCODE_ZEN_NAME,
@@ -557,6 +758,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: OPENCODE_ZEN_MODELS,
             baseline_specs: &[],
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: DEEPSEEK_NAME,
@@ -566,6 +768,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: DEEPSEEK_MODELS,
             baseline_specs: DEEPSEEK_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: QWEN_NAME,
@@ -575,6 +778,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: QWEN_MODELS,
             baseline_specs: QWEN_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: ZAI_NAME,
@@ -584,6 +788,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: ZAI_MODELS,
             baseline_specs: ZAI_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: MINIMAX_NAME,
@@ -593,6 +798,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: MINIMAX_MODELS,
             baseline_specs: MINIMAX_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: MOONSHOT_NAME,
@@ -602,6 +808,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: MOONSHOT_MODELS,
             baseline_specs: MOONSHOT_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: GROQ_NAME,
@@ -611,6 +818,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: GROQ_MODELS,
             baseline_specs: GROQ_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: XAI_NAME,
@@ -620,6 +828,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: XAI_MODELS,
             baseline_specs: XAI_SPECS,
+            deprecated: false,
         },
         OpenAiPresetDescriptor {
             name: MISTRAL_NAME,
@@ -629,6 +838,7 @@ pub(crate) mod openai {
             extra_headers: &[],
             models: MISTRAL_MODELS,
             baseline_specs: MISTRAL_SPECS,
+            deprecated: false,
         },
     ];
 
@@ -650,6 +860,25 @@ pub(crate) mod openai {
             .baseline_specs
             .iter()
             .find(|spec| spec.model == model_id)
+    }
+
+    /// Look up a baseline capability spec across native (`openai`, `anthropic`,
+    /// `gemini`) and curated OpenAI-compatible preset catalogs.
+    #[must_use]
+    pub(crate) fn find_builtin_model_spec(
+        connection_id: &str,
+        model_id: &str,
+    ) -> Option<&'static BaselineModelSpec> {
+        match connection_id {
+            PROVIDER_NAME => OPENAI_SPECS.iter().find(|spec| spec.model == model_id),
+            "anthropic" => super::anthropic::ANTHROPIC_SPECS
+                .iter()
+                .find(|spec| spec.model == model_id),
+            super::gemini::PROVIDER_NAME => super::gemini::GEMINI_SPECS
+                .iter()
+                .find(|spec| spec.model == model_id),
+            other => find_preset_model_spec(other, model_id),
+        }
     }
 
     /// Look up a baseline context window by model ID across all presets.

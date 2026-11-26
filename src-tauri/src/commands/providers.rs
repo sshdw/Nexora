@@ -16,8 +16,8 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::application::capabilities::{
     list_all_model_capabilities, refresh_connection_metadata, resolve_model_capabilities,
-    set_manual_override, set_scoped_manual_override, ConnectionModelCapabilities,
-    ModelCapabilityOverride,
+    set_manual_override, set_scoped_manual_override, test_connection, ConnectionModelCapabilities,
+    ConnectionTestResult, ModelCapabilityOverride,
 };
 use crate::application::providers::ProviderHealth;
 use crate::application::providers::ProviderService;
@@ -211,6 +211,38 @@ pub(crate) async fn refresh_provider_model_metadata(
         Err(_) => Err(CommandError::new(
             ErrorKind::Request,
             "provider metadata refresh failed",
+        )),
+    }
+}
+
+/// Run a bounded (10s) zero-token connectivity & `/models` discovery diagnostic
+/// for `connection_id` (optionally overriding `compat_url` for `openai_compat`).
+///
+/// Always returns a secret-free [`ConnectionTestResult`] — never echoes API
+/// keys, URLs with userinfo, or raw HTTP response bodies.
+#[tauri::command]
+pub(crate) async fn test_provider_connection(
+    app: AppHandle,
+    connection_id: String,
+    compat_url: Option<String>,
+) -> Result<ConnectionTestResult, CommandError> {
+    if connection_id.trim().is_empty() {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "connection_id is required",
+        ));
+    }
+    let handle = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let db = handle.state::<Database>();
+        test_connection(db.inner(), connection_id.trim(), compat_url.as_deref())
+    })
+    .await;
+    match outcome {
+        Ok(res) => Ok(res),
+        Err(_) => Err(CommandError::new(
+            ErrorKind::Request,
+            "provider connection test failed",
         )),
     }
 }

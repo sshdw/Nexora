@@ -396,16 +396,16 @@ mod tests {
     #[test]
     fn rate_lookup_known_value_unknown_none() {
         // Known native IDs resolve to their hardcoded estimates.
-        assert_eq!(rate_for_id("gpt-5.6-luna"), Some((500_000, 2_000_000)));
+        assert_eq!(rate_for_id("o4-mini"), Some((1_100_000, 4_400_000)));
         assert_eq!(
-            rate_for_provider_model("gemini", "gemini-3.6-flash"),
-            Some((1_250_000, 5_000_000))
+            rate_for_provider_model("gemini", "gemini-2.5-flash"),
+            Some((300_000, 2_500_000))
         );
         // Unknown IDs and providers yield None — never a guessed rate.
         assert_eq!(rate_for_id("test-model"), None);
         assert_eq!(rate_for_id("big-pickle"), None);
         assert_eq!(rate_for_id(""), None);
-        assert_eq!(rate_for_provider_model("nope", "gpt-5.6-terra"), None);
+        assert_eq!(rate_for_provider_model("nope", "gpt-5"), None);
         assert_eq!(rate_for_provider_model("openai", "mystery-model-9"), None);
     }
 
@@ -418,16 +418,16 @@ mod tests {
         };
         // Listed native IDs bill their table estimate, not a guessed rate.
         assert_eq!(
-            cost_for_model_usage("gpt-5.6-luna", usage),
-            500_000 + 2_000_000
+            cost_for_model_usage("o4-mini", usage),
+            1_100_000 + 4_400_000
         );
         assert_eq!(
             cost_for_model_usage("claude-haiku-4-5-20251001", usage),
             1_000_000 + 5_000_000
         );
         assert_eq!(
-            cost_micro_for_model("gemini-3.1-flash-lite", 1_000_000, 1_000_000),
-            300_000 + 1_200_000
+            cost_micro_for_model("gemini-2.5-flash-lite", 1_000_000, 1_000_000),
+            100_000 + 400_000
         );
         // Unlisted IDs keep the conservative policy default.
         assert_eq!(
@@ -444,7 +444,7 @@ mod tests {
             output_tokens: 0,
             cached_tokens: 0,
         };
-        assert_eq!(cost_for_model_usage("gpt-5.6-terra", zero), 0);
+        assert_eq!(cost_for_model_usage("gpt-5", zero), 0);
         assert_eq!(cost_for_model_usage("test-model", zero), 0);
     }
 
@@ -466,8 +466,8 @@ mod tests {
             POLICY_DEFAULT_INPUT_MICRO_PER_1M / 2
         );
         assert!(
-            cost_for_model_usage("claude-sonnet-5", half_cached)
-                < cost_for_model_usage("claude-sonnet-5", uncached)
+            cost_for_model_usage("claude-sonnet-4-20250514", half_cached)
+                < cost_for_model_usage("claude-sonnet-4-20250514", uncached)
         );
     }
 }

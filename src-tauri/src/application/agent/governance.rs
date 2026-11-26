@@ -521,17 +521,15 @@ mod tests {
         };
         // Default (no hook): the live rate-table estimate for the model ID —
         // listed IDs bill their table rate, unlisted IDs the policy default.
-        // (`gpt-5.6-terra` is rated exactly at the policy default, so it
-        // bills identically either way.)
         let plain = RunBudget::new(10, Some(1_000_000));
         assert!(!plain.has_cost_hook());
         assert_eq!(
-            plain.cost_for("gpt-5.6-luna", usage),
-            pricing::cost_micro_with_rate(1_000_000, 1_000_000, 500_000, 2_000_000)
+            plain.cost_for("o4-mini", usage),
+            pricing::cost_micro_with_rate(1_000_000, 1_000_000, 1_100_000, 4_400_000)
         );
         assert_eq!(
-            plain.cost_for("gpt-5.6-terra", usage),
-            pricing::cost_micro(1_000_000, 1_000_000)
+            plain.cost_for("gpt-5", usage),
+            pricing::cost_micro_with_rate(1_000_000, 1_000_000, 1_250_000, 10_000_000)
         );
         assert_eq!(
             plain.cost_for("test-model", usage),
@@ -541,7 +539,7 @@ mod tests {
         // listed ones.
         let hooked = RunBudget::new(10, Some(1_000_000)).with_cost_hook(|_| 42);
         assert!(hooked.has_cost_hook());
-        assert_eq!(hooked.cost_for("gpt-5.6-luna", usage), 42);
+        assert_eq!(hooked.cost_for("o4-mini", usage), 42);
         assert_eq!(hooked.cost_for("test-model", usage), 42);
     }
 

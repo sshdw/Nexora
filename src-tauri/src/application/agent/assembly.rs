@@ -767,7 +767,7 @@ mod tests {
     fn full_input<'a>(tools: &'a [ToolOutput], history: Option<&'a str>) -> AssemblyInput<'a> {
         AssemblyInput {
             provider: "openai",
-            model: "gpt-5.6-terra",
+            model: "gpt-4o",
             context_limit: None,
             state: RunState::Running,
             stage: Some(PipelineStage::Act),
@@ -1012,7 +1012,7 @@ mod tests {
         let tools = [tool_output("read_file", "abc")];
         let listed = AssemblyInput {
             provider: "openai",
-            model: "gpt-5.6-terra",
+            model: "gpt-5",
             context_limit: None,
             state: RunState::Running,
             stage: None,
@@ -1045,7 +1045,7 @@ mod tests {
         // The listing-side counterpart agrees: tool-gated recommendations
         // keep the listed model and exclude the unknown ID.
         let recommended = model_catalog::recommended_models("openai", true);
-        assert!(recommended.contains(&"gpt-5.6-terra".to_string()));
+        assert!(recommended.contains(&"gpt-5".to_string()));
         assert!(!recommended.contains(&"mystery-model-9".to_string()));
     }
 
@@ -1064,7 +1064,7 @@ mod tests {
         let history = "h".repeat(500_000);
         let input = AssemblyInput {
             provider: "gemini",
-            model: "gemini-3.1-flash-lite",
+            model: "gemini-2.5-flash-lite",
             context_limit: None,
             state: RunState::Running,
             stage: Some(PipelineStage::Review),

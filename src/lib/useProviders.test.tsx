@@ -46,6 +46,7 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
       connection_id: string;
       model_id: string;
       context_window: number | null;
+      max_output_tokens: number | null;
       supported_efforts: string[];
       supports_thinking: boolean;
       supports_attachments: boolean;
@@ -72,6 +73,7 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
         connection_id: string;
         model_id: string;
         context_window: number | null;
+        max_output_tokens: number | null;
         supported_efforts: string[];
         supports_thinking: boolean;
         supports_attachments: boolean;
@@ -150,6 +152,7 @@ const { mockInvoke, failNext, state } = vi.hoisted(() => {
               connection_id: connectionId,
               model_id: modelId,
               context_window: 200_000,
+              max_output_tokens: 64_000,
               supported_efforts: ["low", "medium", "high"],
               supports_thinking: true,
               supports_attachments: true,
@@ -476,6 +479,7 @@ describe("useProviders — select", () => {
         connection_id: "openai_compat",
         model_id: "discovered-llama-3.3",
         context_window: 131_072,
+        max_output_tokens: 32_768,
         supported_efforts: ["low", "high"],
         supports_thinking: true,
         supports_attachments: false,
