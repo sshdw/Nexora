@@ -36,38 +36,26 @@ const supported = [
   {
     name: "openai",
     display_name: "OpenAI",
-    models: ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"],
+    models: ["gpt-5", "gpt-4o", "o3", "o4-mini", "gpt-4.1"],
   },
   {
     name: "anthropic",
     display_name: "Anthropic",
-    models: ["claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-opus-4-8"],
+    models: [
+      "claude-sonnet-4-20250514",
+      "claude-haiku-4-5-20251001",
+      "claude-opus-4-20250514",
+    ],
   },
   {
     name: "gemini",
     display_name: "Gemini",
     models: [
-      "gemini-3.6-flash",
-      "gemini-3.1-flash-lite",
-      "gemini-3.1-pro-preview",
+      "gemini-2.5-flash",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash-lite",
       "gemini-flash-lite-latest",
       "gemini-pro-latest",
-      "gemini-3.5-flash",
-      "gemini-3.5-flash-lite",
-    ],
-  },
-  {
-    name: "xkiro",
-    display_name: "xKiro",
-    models: [
-      "deepseek/deepseek-v4-flash",
-      "qwen/qwen3.5-omni-plus:free",
-      "minimax/minimax-m3:free",
-      "minimax/minimax-m2.7:free",
-      "qwen/qwen3.5-plus:free",
-      "qwen/qwen3.6-plus:free",
-      "qwen/qwen3.7-plus:free",
-      "deepseek/deepseek-v4-pro",
     ],
   },
   {
@@ -141,15 +129,16 @@ const supported = [
     display_name: "Groq",
     models: [
       "llama-3.3-70b-versatile",
-      "deepseek-r1-distill-llama-70b",
-      "meta-llama/llama-4-scout-17b-16e-instruct",
-      "qwen-qwq-32b",
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b",
+      "qwen/qwen3-32b",
+      "llama-3.1-8b-instant",
     ],
   },
   {
     name: "xai",
     display_name: "xAI",
-    models: ["grok-3", "grok-3-mini", "grok-2-vision-1212"],
+    models: ["grok-3", "grok-3-mini", "grok-4.7"],
   },
   {
     name: "mistral",
@@ -1142,6 +1131,7 @@ async function invoke(
         string,
         {
           context_window?: number | null;
+          max_output_tokens?: number | null;
           supported_efforts?: string[] | null;
           supports_thinking?: boolean | null;
           supports_attachments?: boolean | null;
@@ -1157,6 +1147,7 @@ async function invoke(
               connection_id: connId,
               model_id: modelId,
               context_window: null,
+              max_output_tokens: null,
               supported_efforts: [] as string[],
               supports_thinking: false,
               supports_attachments: false,
@@ -1169,6 +1160,7 @@ async function invoke(
                 connection_id: connId,
                 model_id: modelId,
                 context_window: 1000000,
+                max_output_tokens: 65536,
                 supported_efforts: [] as string[],
                 supports_thinking: false,
                 supports_attachments: true,
@@ -1180,6 +1172,7 @@ async function invoke(
                 connection_id: connId,
                 model_id: modelId,
                 context_window: connId === "gemini" ? 1000000 : 200000,
+                max_output_tokens: 64000,
                 supported_efforts:
                   connId === "gemini" || modelId.includes("haiku")
                     ? ["low", "medium", "high"]
@@ -1198,6 +1191,10 @@ async function invoke(
             ov.context_window !== undefined
               ? ov.context_window
               : base.context_window,
+          max_output_tokens:
+            ov.max_output_tokens !== undefined
+              ? ov.max_output_tokens
+              : base.max_output_tokens,
           supported_efforts:
             ov.supported_efforts !== undefined && ov.supported_efforts !== null
               ? ov.supported_efforts

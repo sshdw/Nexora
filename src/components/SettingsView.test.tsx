@@ -54,6 +54,7 @@ const { mockInvoke, failNext, confirmFail, state } = vi.hoisted(() => {
       string,
       {
         context_window?: number | null;
+        max_output_tokens?: number | null;
         supported_efforts?: string[] | null;
         supports_thinking?: boolean | null;
         supports_attachments?: boolean | null;
@@ -122,6 +123,7 @@ const { mockInvoke, failNext, confirmFail, state } = vi.hoisted(() => {
       connection_id: connectionId,
       model_id: modelId,
       context_window: overrideSpec?.context_window ?? 128_000,
+      max_output_tokens: overrideSpec?.max_output_tokens ?? 16_384,
       supported_efforts: overrideSpec?.supported_efforts ?? [
         "low",
         "medium",
@@ -608,17 +610,16 @@ describe("SettingsView — in-page search", () => {
   });
 });
 
-describe("SettingsView — 16 provider presets & openai_compat endpoint validation", () => {
-  it("lists all 16 connections and enforces strict HTTPS endpoint validation for openai_compat", async () => {
+describe("SettingsView — 15 active provider presets & openai_compat endpoint validation", () => {
+  it("lists all 15 active connections (excluding deprecated xkiro) and enforces strict HTTPS endpoint validation for openai_compat", async () => {
     state.supported = [
-      { name: "openai", display_name: "OpenAI", models: ["gpt-5.6-terra"] },
-      { name: "anthropic", display_name: "Anthropic", models: ["claude-sonnet-5"] },
-      { name: "gemini", display_name: "Gemini", models: ["gemini-3.6-flash"] },
-      { name: "xkiro", display_name: "xKiro", models: ["deepseek/deepseek-v4-flash"] },
+      { name: "openai", display_name: "OpenAI", models: ["gpt-5", "gpt-4o"] },
+      { name: "anthropic", display_name: "Anthropic", models: ["claude-sonnet-4-20250514"] },
+      { name: "gemini", display_name: "Gemini", models: ["gemini-2.5-flash"] },
       { name: "openrouter", display_name: "OpenRouter", models: ["inclusionai/ling-3.0-flash-fin:free"] },
       { name: "nvidia", display_name: "NVIDIA NIM", models: ["nvidia/nemotron-3-super-120b-a12b"] },
       { name: "opencode_zen", display_name: "OpenCode Zen", models: ["ling-3.0-flash-fin-free"] },
-      { name: "deepseek", display_name: "DeepSeek", models: ["deepseek-chat", "deepseek-reasoner"] },
+      { name: "deepseek", display_name: "DeepSeek", models: ["deepseek-flash", "deepseek-v4-pro"] },
       { name: "qwen", display_name: "Alibaba / Qwen", models: ["qwen-max"] },
       { name: "zai", display_name: "ZAI", models: ["glm-4.5"] },
       { name: "minimax", display_name: "MiniMax", models: ["MiniMax-M1"] },
@@ -641,8 +642,9 @@ describe("SettingsView — 16 provider presets & openai_compat endpoint validati
     const providerSelect = screen.getByLabelText("Provider");
     fireEvent.click(providerSelect);
     const options = screen.getAllByRole("option");
-    // 1 placeholder + 16 connections = 17 options.
-    expect(options.length).toBe(17);
+    // 1 placeholder + 15 active connections (xkiro deprecated/hidden) = 16 options.
+    expect(options.length).toBe(16);
+    expect(options.some((opt) => opt.textContent?.includes("xKiro"))).toBe(false);
     for (const label of [
       "DeepSeek",
       "Alibaba / Qwen",

@@ -729,10 +729,10 @@ mod tests {
     }
 
     #[test]
-    fn keyring_namespaces_isolate_all_seventeen_providers() {
+    fn keyring_namespaces_isolate_all_supported_providers() {
         let backend = InMemoryBackend::new();
         let providers = crate::infrastructure::providers::supported_providers();
-        assert_eq!(providers.len(), 17);
+        assert_eq!(providers.len(), 16);
 
         for (idx, provider) in providers.iter().enumerate() {
             let secret = format!("sk-isolated-{idx}-{}", provider.name);

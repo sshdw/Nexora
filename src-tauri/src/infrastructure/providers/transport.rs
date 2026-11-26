@@ -152,6 +152,16 @@ pub(crate) enum PostOutcome {
     Failure(ErrorSnapshot),
 }
 
+/// Secret-free transport failure category for connection diagnostic probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportProbeError {
+    Timeout,
+    TlsError,
+    NotRunning,
+    DnsOrProxy,
+    Cancelled,
+}
+
 /// One parsed Server-Sent Event frame (`event:` optional + joined `data:` lines).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SseFrame {
@@ -487,6 +497,67 @@ impl HttpClient {
         }
     }
 
+    /// Send a single bounded `GET` diagnostic probe with both connect and
+    /// request timeout, classifying transport errors into a secret-free
+    /// [`TransportProbeError`] without ever surfacing URLs or raw bodies.
+    pub(crate) fn get_json_probe(
+        &self,
+        token: &CancellationToken,
+        url: &str,
+        credential: Option<Credential<'_>>,
+        extra_headers: &[(&'static str, &'static str)],
+        extra_headers_owned: &[(String, String)],
+        timeout: Duration,
+    ) -> Result<PostOutcome, TransportProbeError> {
+        if token.is_cancelled() {
+            return Err(TransportProbeError::Cancelled);
+        }
+        let client = reqwest::Client::builder()
+            .connect_timeout(timeout)
+            .timeout(timeout)
+            .build()
+            .unwrap_or_else(|_| self.inner.clone());
+        let url_owned = url.to_string();
+        let owned_cred = credential.map(OwnedCredential::from);
+        let extra = extra_headers.to_vec();
+        let extra_owned = extra_headers_owned.to_vec();
+        let (tx, rx) = mpsc::channel();
+        let handle = tauri::async_runtime::spawn(async move {
+            let outcome = get_once_probe(
+                &client,
+                &url_owned,
+                owned_cred,
+                &extra,
+                &extra_owned,
+                timeout,
+            )
+            .await;
+            let _ = tx.send(outcome);
+        });
+        loop {
+            match rx.recv_timeout(FLIGHT_POLL_INTERVAL) {
+                Ok(outcome) => {
+                    if token.is_cancelled() {
+                        return Err(TransportProbeError::Cancelled);
+                    }
+                    return outcome;
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if token.is_cancelled() {
+                        handle.abort();
+                        return Err(TransportProbeError::Cancelled);
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    if token.is_cancelled() {
+                        return Err(TransportProbeError::Cancelled);
+                    }
+                    return Err(TransportProbeError::DnsOrProxy);
+                }
+            }
+        }
+    }
+
     /// Send an SSE streaming `POST` request with deterministic retry/backoff on
     /// pre-stream errors (`429`/`5xx`/network) and immediate cancellation drop.
     ///
@@ -796,6 +867,96 @@ async fn get_once(
         header_retry_after,
         body,
     }
+}
+
+async fn get_once_probe(
+    client: &reqwest::Client,
+    url: &str,
+    credential: Option<OwnedCredential>,
+    extra_headers: &[(&'static str, &'static str)],
+    extra_headers_owned: &[(String, String)],
+    timeout: Duration,
+) -> Result<PostOutcome, TransportProbeError> {
+    let builder = apply_request_auth_headers(
+        client.get(url).header("accept", "application/json"),
+        credential.as_ref(),
+        extra_headers,
+        extra_headers_owned,
+        Some(timeout),
+    );
+    let response = match builder.send().await {
+        Ok(response) => response,
+        Err(err) => return Err(classify_reqwest_probe_error(&err)),
+    };
+    let status = response.status().as_u16();
+    if response.status().is_success() {
+        return match response.bytes().await {
+            Ok(bytes) => Ok(PostOutcome::Success(bytes.to_vec())),
+            Err(err) => Err(classify_reqwest_probe_error(&err)),
+        };
+    }
+    let header_retry_after = parse_retry_after_header(response.headers());
+    let body = match response.bytes().await {
+        Ok(bytes) => bounded_body(bytes.as_ref()),
+        Err(_) => Vec::new(),
+    };
+    Ok(PostOutcome::Failure(ErrorSnapshot {
+        status,
+        retry_after_secs: header_retry_after.or_else(|| extract_retry_after(&body)),
+        is_context_length_exceeded: body_signals_context_length(status, &body),
+    }))
+}
+
+fn classify_reqwest_probe_error(err: &reqwest::Error) -> TransportProbeError {
+    let mut io_kind = None;
+    let mut lowered_chain = String::new();
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(source) = cur {
+        if io_kind.is_none() {
+            if let Some(io_err) = source.downcast_ref::<std::io::Error>() {
+                io_kind = Some(io_err.kind());
+            }
+        }
+        // Inspect the source chain strictly inside this private classifier;
+        // the string is dropped immediately and never returned or logged.
+        lowered_chain.push(' ');
+        lowered_chain.push_str(&source.to_string().to_ascii_lowercase());
+        cur = source.source();
+    }
+    classify_probe_error_details(err.is_timeout(), err.is_connect(), io_kind, &lowered_chain)
+}
+
+/// Pure, secret-free classifier mapping transport error signals to a
+/// [`TransportProbeError`] category.
+pub(crate) fn classify_probe_error_details(
+    is_timeout: bool,
+    _is_connect: bool,
+    io_kind: Option<std::io::ErrorKind>,
+    lowered_chain: &str,
+) -> TransportProbeError {
+    if is_timeout || matches!(io_kind, Some(std::io::ErrorKind::TimedOut)) {
+        return TransportProbeError::Timeout;
+    }
+    if matches!(io_kind, Some(std::io::ErrorKind::ConnectionRefused))
+        || lowered_chain.contains("connection refused")
+        || lowered_chain.contains("actively refused")
+    {
+        return TransportProbeError::NotRunning;
+    }
+    if lowered_chain.contains("timed out") || lowered_chain.contains("timeout") {
+        return TransportProbeError::Timeout;
+    }
+    if lowered_chain.contains("tls")
+        || lowered_chain.contains("ssl")
+        || lowered_chain.contains("certificate")
+        || lowered_chain.contains("handshake")
+        || lowered_chain.contains("rustls")
+        || lowered_chain.contains("unknown issuer")
+        || lowered_chain.contains("invalid peer")
+    {
+        return TransportProbeError::TlsError;
+    }
+    TransportProbeError::DnsOrProxy
 }
 
 #[allow(clippy::too_many_arguments)]

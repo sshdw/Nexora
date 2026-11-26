@@ -198,6 +198,7 @@ export interface ConnectionModelCapabilities {
   connection_id: string;
   model_id: string;
   context_window: number | null;
+  max_output_tokens: number | null;
   supported_efforts: string[];
   supports_thinking: boolean;
   supports_attachments: boolean;
@@ -208,6 +209,7 @@ export interface ConnectionModelCapabilities {
 
 export interface ModelCapabilityOverride {
   context_window?: number | null;
+  max_output_tokens?: number | null;
   supported_efforts?: string[] | null;
   supports_thinking?: boolean | null;
   supports_attachments?: boolean | null;
@@ -272,4 +274,34 @@ export function refreshProviderModelMetadata(
     "refresh_provider_model_metadata",
     { connectionId }
   );
+}
+
+/** Secret-free diagnostic category returned by `test_provider_connection`. */
+export type ConnectionTestCategory =
+  | "ok"
+  | "auth_failed"
+  | "timeout"
+  | "dns_or_proxy"
+  | "tls_error"
+  | "not_running"
+  | "http_error";
+
+/** Secret-free diagnostic result returned by `test_provider_connection`. */
+export interface ConnectionTestResult {
+  ok: boolean;
+  latency_ms: number;
+  discovered_count: number;
+  category: ConnectionTestCategory;
+  hint: string;
+}
+
+/** Probe a provider connection with a 10s timeout and return secret-free diagnostics. */
+export function testProviderConnection(
+  connectionId: string,
+  compatUrl?: string | null
+): Promise<ConnectionTestResult> {
+  return invoke<ConnectionTestResult>("test_provider_connection", {
+    connectionId,
+    compatUrl: compatUrl ?? null,
+  });
 }

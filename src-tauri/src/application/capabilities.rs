@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use nexora_core::config::MODEL_CAPABILITY_OVERRIDES_KEY;
 use nexora_core::provider::{ExecutorError, ReasoningEffort};
@@ -13,7 +14,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::infrastructure::database::Database;
 use crate::infrastructure::providers::catalog::gemini::GEMINI_LITE_MODELS;
-use crate::infrastructure::providers::metadata::{fetch_connection_metadata, ApiModelMetadata};
+use crate::infrastructure::providers::metadata::{
+    fetch_connection_metadata, probe_connection_metadata, ApiModelMetadata, MetadataProbeError,
+};
+use crate::infrastructure::providers::openai::CompatConfig;
 use crate::infrastructure::providers::supported_providers;
 
 use super::compat::CompatEndpointService;
@@ -42,6 +46,7 @@ pub(crate) struct ConnectionModelCapabilities {
     pub connection_id: String,
     pub model_id: String,
     pub context_window: Option<u32>,
+    pub max_output_tokens: Option<u32>,
     pub supported_efforts: Vec<String>,
     pub supports_thinking: bool,
     pub supports_attachments: bool,
@@ -56,6 +61,8 @@ pub(crate) struct ModelCapabilityOverride {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub context_window: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_output_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub supported_efforts: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub supports_thinking: Option<bool>,
@@ -69,11 +76,36 @@ impl ModelCapabilityOverride {
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.context_window.is_none()
+            && self.max_output_tokens.is_none()
             && self.supported_efforts.is_none()
             && self.supports_thinking.is_none()
             && self.supports_attachments.is_none()
             && self.supports_tools.is_none()
     }
+}
+
+/// Secret-free diagnostic category returned by `test_provider_connection`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ConnectionTestCategory {
+    Ok,
+    AuthFailed,
+    Timeout,
+    DnsOrProxy,
+    TlsError,
+    NotRunning,
+    HttpError,
+}
+
+/// Secret-free diagnostic result returned by `test_provider_connection`.
+/// Never echoes API keys, URLs with userinfo, or raw HTTP bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ConnectionTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub discovered_count: usize,
+    pub category: ConnectionTestCategory,
+    pub hint: String,
 }
 
 fn override_map_key(connection_id: &str, model_id: &str) -> String {
@@ -225,30 +257,39 @@ pub(crate) fn set_scoped_manual_override(
     Ok(resolve_model_capabilities(db, connection_id, model_id))
 }
 
+fn from_baseline_spec(
+    connection_id: &str,
+    model_id: &str,
+    spec: &crate::infrastructure::providers::catalog::BaselineModelSpec,
+) -> ConnectionModelCapabilities {
+    ConnectionModelCapabilities {
+        connection_id: connection_id.to_string(),
+        model_id: model_id.to_string(),
+        context_window: Some(spec.context_window),
+        max_output_tokens: Some(spec.max_output_tokens),
+        supported_efforts: spec
+            .supported_efforts
+            .iter()
+            .copied()
+            .map(ToString::to_string)
+            .collect(),
+        supports_thinking: spec.supports_thinking,
+        supports_attachments: spec.supports_attachments,
+        supports_tools: spec.supports_tools,
+        provenance: CapabilityProvenance::BuiltInCatalog,
+        has_manual_override: false,
+    }
+}
+
 fn built_in_catalog_entry(
     connection_id: &str,
     model_id: &str,
 ) -> Option<ConnectionModelCapabilities> {
-    if let Some(spec) = crate::infrastructure::providers::catalog::openai::find_preset_model_spec(
+    if let Some(spec) = crate::infrastructure::providers::catalog::openai::find_builtin_model_spec(
         connection_id,
         model_id,
     ) {
-        return Some(ConnectionModelCapabilities {
-            connection_id: connection_id.to_string(),
-            model_id: model_id.to_string(),
-            context_window: Some(spec.context_window),
-            supported_efforts: spec
-                .supported_efforts
-                .iter()
-                .copied()
-                .map(ToString::to_string)
-                .collect(),
-            supports_thinking: spec.supports_thinking,
-            supports_attachments: spec.supports_attachments,
-            supports_tools: spec.supports_tools,
-            provenance: CapabilityProvenance::BuiltInCatalog,
-            has_manual_override: false,
-        });
+        return Some(from_baseline_spec(connection_id, model_id, spec));
     }
 
     let is_listed = supported_providers()
@@ -320,6 +361,7 @@ fn built_in_catalog_entry(
         connection_id: connection_id.to_string(),
         model_id: model_id.to_string(),
         context_window,
+        max_output_tokens: None,
         supported_efforts,
         supports_thinking,
         supports_attachments,
@@ -329,11 +371,147 @@ fn built_in_catalog_entry(
     })
 }
 
+/// Prefix/pattern family rules applied strictly as a lower-precedence fallback
+/// behind `ManualOverride` and concrete `ApiMetadata` fields. Never overrides
+/// explicit `ApiMetadata` `false` or `ManualOverride`.
+fn family_rules_entry(connection_id: &str, model_id: &str) -> Option<ConnectionModelCapabilities> {
+    let normalized = model_id.trim().to_ascii_lowercase();
+    let bare = normalized
+        .rsplit_once('/')
+        .map_or(normalized.as_str(), |(_, tail)| tail);
+    let bare = bare.split(':').next().unwrap_or(bare);
+
+    let spec = match_family_rule(bare)?;
+    Some(ConnectionModelCapabilities {
+        connection_id: connection_id.to_string(),
+        model_id: model_id.to_string(),
+        context_window: Some(spec.context_window),
+        max_output_tokens: Some(spec.max_output_tokens),
+        supported_efforts: spec
+            .supported_efforts
+            .iter()
+            .copied()
+            .map(ToString::to_string)
+            .collect(),
+        supports_thinking: spec.supports_thinking,
+        supports_attachments: spec.supports_attachments,
+        supports_tools: spec.supports_tools,
+        provenance: CapabilityProvenance::BuiltInCatalog,
+        has_manual_override: false,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct FamilyRuleSpec {
+    context_window: u32,
+    max_output_tokens: u32,
+    supported_efforts: &'static [&'static str],
+    supports_thinking: bool,
+    supports_attachments: bool,
+    supports_tools: bool,
+}
+
+const LMH: &[&str] = &["low", "medium", "high"];
+const LMHX: &[&str] = &["low", "medium", "high", "xhigh"];
+const LH: &[&str] = &["low", "high"];
+
+const fn rule(
+    context_window: u32,
+    max_output_tokens: u32,
+    supported_efforts: &'static [&'static str],
+    supports_thinking: bool,
+    supports_attachments: bool,
+    supports_tools: bool,
+) -> FamilyRuleSpec {
+    FamilyRuleSpec {
+        context_window,
+        max_output_tokens,
+        supported_efforts,
+        supports_thinking,
+        supports_attachments,
+        supports_tools,
+    }
+}
+
+/// Ordered prefix table (more-specific prefixes precede shorter ones).
+const FAMILY_RULES: &[(&str, FamilyRuleSpec)] = &[
+    ("gpt-5", rule(400_000, 128_000, LMHX, true, true, true)),
+    ("o3", rule(200_000, 100_000, LMH, true, true, true)),
+    ("o4", rule(200_000, 100_000, LMH, true, true, true)),
+    ("gpt-4.1", rule(1_047_576, 32_768, &[], false, true, true)),
+    ("gpt-4o", rule(128_000, 16_384, &[], false, true, true)),
+    (
+        "claude-opus-4",
+        rule(200_000, 32_000, LMHX, true, true, true),
+    ),
+    (
+        "claude-haiku-4",
+        rule(200_000, 64_000, LMH, true, true, true),
+    ),
+    (
+        "claude-sonnet-4",
+        rule(200_000, 64_000, LMHX, true, true, true),
+    ),
+    ("claude-4", rule(200_000, 64_000, LMHX, true, true, true)),
+    ("claude-3-7", rule(200_000, 64_000, LMH, true, true, true)),
+    ("claude-3.7", rule(200_000, 64_000, LMH, true, true, true)),
+    ("claude-3-5", rule(200_000, 8_192, &[], false, true, true)),
+    ("claude-3.5", rule(200_000, 8_192, &[], false, true, true)),
+    (
+        "gemini-2.5-flash-lite",
+        rule(1_048_576, 65_536, &[], false, true, true),
+    ),
+    (
+        "gemini-flash-lite",
+        rule(1_048_576, 65_536, &[], false, true, true),
+    ),
+    ("gemini-2.5", rule(1_048_576, 65_536, LMH, true, true, true)),
+    ("gemini-3", rule(1_048_576, 65_536, LMH, true, true, true)),
+    (
+        "deepseek-reasoner",
+        rule(128_000, 64_000, LMH, true, false, true),
+    ),
+    ("deepseek-r1", rule(128_000, 64_000, LMH, true, false, true)),
+    (
+        "deepseek-v4-pro",
+        rule(128_000, 64_000, LMH, true, false, true),
+    ),
+    (
+        "deepseek-chat",
+        rule(128_000, 8_192, &[], false, false, true),
+    ),
+    ("deepseek-v3", rule(128_000, 8_192, &[], false, false, true)),
+    (
+        "deepseek-flash",
+        rule(128_000, 8_192, &[], false, false, true),
+    ),
+    ("grok-4", rule(256_000, 65_536, LMH, true, true, true)),
+    ("grok-3-mini", rule(131_072, 32_768, LH, true, false, true)),
+    ("grok-3", rule(131_072, 32_768, &[], false, false, true)),
+    ("qwen3", rule(131_072, 32_768, LMH, true, false, true)),
+    ("qwq", rule(131_072, 32_768, LMH, true, false, true)),
+    ("magistral", rule(128_000, 40_960, LMH, true, false, true)),
+    ("codestral", rule(256_000, 32_768, &[], false, false, true)),
+    ("pixtral", rule(131_072, 16_384, &[], false, true, true)),
+    (
+        "mistral-large",
+        rule(131_072, 16_384, &[], false, false, true),
+    ),
+];
+
+fn match_family_rule(bare: &str) -> Option<FamilyRuleSpec> {
+    FAMILY_RULES
+        .iter()
+        .find(|(prefix, _)| bare.starts_with(prefix))
+        .map(|(_, spec)| *spec)
+}
+
 fn unknown_capabilities(connection_id: &str, model_id: &str) -> ConnectionModelCapabilities {
     ConnectionModelCapabilities {
         connection_id: connection_id.to_string(),
         model_id: model_id.to_string(),
         context_window: None,
+        max_output_tokens: None,
         supported_efforts: Vec::new(),
         supports_thinking: false,
         supports_attachments: false,
@@ -348,11 +526,15 @@ fn resolve_capabilities_with_overrides(
     model_id: &str,
     overrides: &BTreeMap<String, ModelCapabilityOverride>,
 ) -> ConnectionModelCapabilities {
-    // 1. Built-in verified catalog or Unknown.
+    // 1. Built-in verified catalog, then prefix FamilyRules, then honest Unknown.
     let mut resolved = built_in_catalog_entry(connection_id, model_id)
+        .or_else(|| family_rules_entry(connection_id, model_id))
         .unwrap_or_else(|| unknown_capabilities(connection_id, model_id));
 
-    // 2. Zero-token Provider API Metadata overrides built-in/unknown where specified.
+    // 2. Zero-token Provider API Metadata merges per-field: `Some(v)` overrides
+    //    lower layers (including explicit `false`), while `None` falls through to
+    //    `BuiltInCatalog` / `FamilyRules`. Thin `{ id }` responses with all fields
+    //    `None` do not clobber lower-layer values or provenance.
     let api_meta = {
         let guard = metadata_cache()
             .lock()
@@ -365,8 +547,13 @@ fn resolve_capabilities_with_overrides(
         if let Some(cw) = meta.context_window {
             resolved.context_window = Some(cw);
         }
-        if let Some(efforts) = meta.supported_efforts {
-            resolved.supported_efforts = normalize_efforts(&efforts);
+        if let Some(mot) = meta.max_output_tokens {
+            resolved.max_output_tokens = Some(mot);
+        }
+        if let Some(efforts) = &meta.supported_efforts {
+            resolved.supported_efforts = normalize_efforts(efforts);
+        } else if meta.supports_thinking == Some(false) {
+            resolved.supported_efforts.clear();
         }
         if let Some(thinking) = meta.supports_thinking {
             resolved.supports_thinking = thinking;
@@ -377,14 +564,19 @@ fn resolve_capabilities_with_overrides(
         if let Some(tools) = meta.supports_tools {
             resolved.supports_tools = tools;
         }
-        resolved.provenance = CapabilityProvenance::ApiMetadata;
+        if meta.has_any_field() {
+            resolved.provenance = CapabilityProvenance::ApiMetadata;
+        }
     }
 
-    // 3. User Manual Override (`app_settings`) strictly wins above all.
+    // 3. User Manual Override (`app_settings` / `.nexora/config.json`) strictly wins above all.
     if let Some(ov) = overrides.get(&override_map_key(connection_id, model_id)) {
         if !ov.is_empty() {
             if let Some(cw) = ov.context_window {
                 resolved.context_window = Some(cw);
+            }
+            if let Some(mot) = ov.max_output_tokens {
+                resolved.max_output_tokens = Some(mot);
             }
             if let Some(efforts) = &ov.supported_efforts {
                 resolved.supported_efforts = normalize_efforts(efforts);
@@ -533,6 +725,210 @@ fn refresh_connection_metadata_with_execution(
         .collect())
 }
 
+/// Map a secret-free [`MetadataProbeError`] into `(category, hint)`.
+/// Never echoes API keys, URLs with userinfo, or raw HTTP bodies.
+#[must_use]
+pub(crate) fn classify_probe_error(
+    err: MetadataProbeError,
+) -> (ConnectionTestCategory, &'static str) {
+    match err {
+        MetadataProbeError::AuthFailed => (
+            ConnectionTestCategory::AuthFailed,
+            "Authentication failed (HTTP 401/403 or missing API key). Verify your credential in Settings.",
+        ),
+        MetadataProbeError::Timeout => (
+            ConnectionTestCategory::Timeout,
+            "Connection timed out after 10 seconds. Check network connectivity, proxy settings, or endpoint availability.",
+        ),
+        MetadataProbeError::DnsOrProxy => (
+            ConnectionTestCategory::DnsOrProxy,
+            "Could not resolve host or reach endpoint through network/proxy. Check DNS and proxy settings.",
+        ),
+        MetadataProbeError::TlsError => (
+            ConnectionTestCategory::TlsError,
+            "TLS handshake or certificate verification failed. Verify HTTPS configuration and system certificates.",
+        ),
+        MetadataProbeError::NotRunning => (
+            ConnectionTestCategory::NotRunning,
+            "Connection refused. Ensure the local or remote provider server is running and listening.",
+        ),
+        MetadataProbeError::HttpStatus(429) => (
+            ConnectionTestCategory::HttpError,
+            "Provider returned HTTP 429 (rate limited). Wait briefly and retry.",
+        ),
+        MetadataProbeError::HttpStatus(404) => (
+            ConnectionTestCategory::HttpError,
+            "Provider /models endpoint returned HTTP 404. Verify the base URL path.",
+        ),
+        MetadataProbeError::HttpStatus(500..=599) => (
+            ConnectionTestCategory::HttpError,
+            "Provider returned a server error (HTTP 5xx). Retry shortly.",
+        ),
+        MetadataProbeError::HttpStatus(_) => (
+            ConnectionTestCategory::HttpError,
+            "Provider rejected the probe with an HTTP error status. Check endpoint configuration.",
+        ),
+        MetadataProbeError::UnexpectedResponse => (
+            ConnectionTestCategory::HttpError,
+            "Provider responded, but the /models payload was not valid JSON.",
+        ),
+        MetadataProbeError::InvalidConfig => (
+            ConnectionTestCategory::HttpError,
+            "Provider endpoint configuration is invalid. Use https:// (or loopback http://) with no embedded credentials.",
+        ),
+    }
+}
+
+fn is_loopback_http_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("http://localhost")
+        || lower.starts_with("http://127.0.0.1")
+        || lower.starts_with("http://[::1]")
+}
+
+fn resolve_test_compat_target(
+    db: &Database,
+    connection_id: &str,
+    compat_url_override: Option<&str>,
+) -> Result<MetadataTarget, MetadataProbeError> {
+    if connection_id != "openai_compat" {
+        return Ok(MetadataTarget::default());
+    }
+    if let Some(raw_url) = compat_url_override.map(str::trim).filter(|u| !u.is_empty()) {
+        let mut cfg = CompatEndpointService::new(db)
+            .read_config()
+            .unwrap_or_else(|_| CompatConfig {
+                base_url: String::new(),
+                model: "probe".to_string(),
+                organization: None,
+                headers: Vec::new(),
+                supports_tools: true,
+            });
+        cfg.base_url = raw_url.to_string();
+        if cfg.model.trim().is_empty() {
+            cfg.model = "probe".to_string();
+        }
+        cfg.validate()
+            .map_err(|_| MetadataProbeError::InvalidConfig)?;
+        let mut headers = cfg.headers.clone();
+        if let Some(organization) = cfg
+            .organization
+            .as_deref()
+            .map(str::trim)
+            .filter(|org| !org.is_empty())
+        {
+            headers.push(("OpenAI-Organization".to_string(), organization.to_string()));
+        }
+        return Ok(MetadataTarget {
+            compat_url: Some(cfg.normalized_endpoint()),
+            compat_headers: headers,
+        });
+    }
+    compat_metadata_target(db, connection_id).map_err(|_| MetadataProbeError::InvalidConfig)
+}
+
+/// Probe connectivity and `/models` discovery for `connection_id` with a 10s
+/// timeout, returning a secret-free [`ConnectionTestResult`].
+pub(crate) fn test_connection(
+    db: &Database,
+    connection_id: &str,
+    compat_url: Option<&str>,
+) -> ConnectionTestResult {
+    test_connection_with_execution(
+        db,
+        &RequestExecutionService::new(db),
+        connection_id,
+        compat_url,
+    )
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn test_connection_with_execution(
+    db: &Database,
+    execution: &RequestExecutionService<'_>,
+    connection_id: &str,
+    compat_url: Option<&str>,
+) -> ConnectionTestResult {
+    let started = Instant::now();
+    if connection_id == crate::infrastructure::providers::chatgpt_plan::PROVIDER_NAME {
+        return ConnectionTestResult {
+            ok: false,
+            latency_ms: elapsed_ms(started),
+            discovered_count: 0,
+            category: ConnectionTestCategory::HttpError,
+            hint: "Use ChatGPT OAuth status or refresh in Settings to verify this subscription connection.".to_string(),
+        };
+    }
+
+    let target = match resolve_test_compat_target(db, connection_id, compat_url) {
+        Ok(target) => target,
+        Err(err) => {
+            let (category, hint) = classify_probe_error(err);
+            return ConnectionTestResult {
+                ok: false,
+                latency_ms: elapsed_ms(started),
+                discovered_count: 0,
+                category,
+                hint: hint.to_string(),
+            };
+        }
+    };
+
+    let credential = if let Ok(cred) = execution.resolve_credential(connection_id) {
+        Some(cred)
+    } else {
+        let allow_anonymous = connection_id == "openai_compat"
+            && target
+                .compat_url
+                .as_deref()
+                .is_some_and(is_loopback_http_url);
+        if allow_anonymous {
+            None
+        } else {
+            let (category, hint) = classify_probe_error(MetadataProbeError::AuthFailed);
+            return ConnectionTestResult {
+                ok: false,
+                latency_ms: elapsed_ms(started),
+                discovered_count: 0,
+                category,
+                hint: hint.to_string(),
+            };
+        }
+    };
+
+    match probe_connection_metadata(
+        connection_id,
+        credential.as_deref(),
+        target.compat_url.as_deref(),
+        &target.compat_headers,
+    ) {
+        Ok(discovered) => {
+            let count = discovered.len();
+            cache_api_metadata(connection_id, &discovered);
+            ConnectionTestResult {
+                ok: true,
+                latency_ms: elapsed_ms(started),
+                discovered_count: count,
+                category: ConnectionTestCategory::Ok,
+                hint: format!("Connected ({count} models discovered)."),
+            }
+        }
+        Err(err) => {
+            let (category, hint) = classify_probe_error(err);
+            ConnectionTestResult {
+                ok: false,
+                latency_ms: elapsed_ms(started),
+                discovered_count: 0,
+                category,
+                hint: hint.to_string(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,7 +981,7 @@ mod tests {
     #[test]
     fn capability_precedence_is_manual_override_gt_api_metadata_gt_builtin_gt_unknown() {
         // Keep the cache write separate from the model used by context statistics tests.
-        let model_id = "gpt-5.6-sol";
+        let model_id = "gpt-5";
         let _guard = TEST_CACHE_MUTEX
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -596,12 +992,14 @@ mod tests {
         let unknown = resolve_model_capabilities(&db, "openai_compat", "local-custom-llama");
         assert_eq!(unknown.provenance, CapabilityProvenance::Unknown);
         assert_eq!(unknown.context_window, None);
+        assert_eq!(unknown.max_output_tokens, None);
         assert!(unknown.supported_efforts.is_empty());
         assert!(!unknown.supports_thinking);
 
         // 2. Built-in verified catalog -> BuiltInCatalog provenance.
-        let builtin = resolve_model_capabilities(&db, "gemini", "gemini-3.1-flash-lite");
+        let builtin = resolve_model_capabilities(&db, "gemini", "gemini-2.5-flash-lite");
         assert_eq!(builtin.provenance, CapabilityProvenance::BuiltInCatalog);
+        assert_eq!(builtin.max_output_tokens, Some(65_536));
         assert!(builtin.supported_efforts.is_empty());
         assert!(!builtin.supports_thinking);
 
@@ -610,6 +1008,8 @@ mod tests {
             builtin_thinking.provenance,
             CapabilityProvenance::BuiltInCatalog
         );
+        assert_eq!(builtin_thinking.context_window, Some(400_000));
+        assert_eq!(builtin_thinking.max_output_tokens, Some(128_000));
         assert!(builtin_thinking.supports_thinking);
         assert_eq!(
             builtin_thinking.supported_efforts,
@@ -622,6 +1022,7 @@ mod tests {
             &[ApiModelMetadata {
                 model_id: model_id.to_string(),
                 context_window: Some(512_000),
+                max_output_tokens: Some(64_000),
                 supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
                 supports_thinking: Some(true),
                 supports_attachments: Some(true),
@@ -631,6 +1032,7 @@ mod tests {
         let api_resolved = resolve_model_capabilities(&db, "openai", model_id);
         assert_eq!(api_resolved.provenance, CapabilityProvenance::ApiMetadata);
         assert_eq!(api_resolved.context_window, Some(512_000));
+        assert_eq!(api_resolved.max_output_tokens, Some(64_000));
         assert_eq!(api_resolved.supported_efforts, vec!["low", "high"]);
 
         // 4. Manual Override (`app_settings`) strictly beats API Metadata and BuiltInCatalog.
@@ -640,6 +1042,7 @@ mod tests {
             model_id,
             Some(ModelCapabilityOverride {
                 context_window: Some(128_000),
+                max_output_tokens: Some(16_384),
                 supported_efforts: Some(vec!["medium".to_string()]),
                 supports_thinking: Some(false),
                 supports_attachments: None,
@@ -650,6 +1053,7 @@ mod tests {
         assert_eq!(manual.provenance, CapabilityProvenance::ManualOverride);
         assert!(manual.has_manual_override);
         assert_eq!(manual.context_window, Some(128_000));
+        assert_eq!(manual.max_output_tokens, Some(16_384));
         assert_eq!(manual.supported_efforts, vec!["medium"]);
         assert!(!manual.supports_thinking);
 
@@ -659,6 +1063,7 @@ mod tests {
         assert_eq!(cleared.provenance, CapabilityProvenance::ApiMetadata);
         assert!(!cleared.has_manual_override);
         assert_eq!(cleared.context_window, Some(512_000));
+        assert_eq!(cleared.max_output_tokens, Some(64_000));
         clear_api_metadata_cache();
     }
 
@@ -840,6 +1245,105 @@ mod tests {
         clear_api_metadata_cache();
     }
 
+    const EXPECTED_PRESET_BASELINES: &[(&str, &str, u32, u32, bool, bool, bool)] = &[
+        (
+            "deepseek",
+            "deepseek-flash",
+            128_000,
+            8_192,
+            false,
+            false,
+            true,
+        ),
+        (
+            "deepseek",
+            "deepseek-v4-pro",
+            128_000,
+            64_000,
+            true,
+            false,
+            true,
+        ),
+        ("qwen", "qwen-max", 128_000, 8_192, false, false, true),
+        ("qwen", "qwq-plus", 131_072, 16_384, true, false, true),
+        ("qwen", "qwen-vl-max", 128_000, 8_192, false, true, true),
+        ("zai", "glm-4.5", 128_000, 96_000, true, false, true),
+        (
+            "minimax",
+            "MiniMax-M1",
+            1_000_000,
+            40_000,
+            true,
+            false,
+            true,
+        ),
+        (
+            "moonshot",
+            "kimi-thinking-preview",
+            128_000,
+            16_384,
+            true,
+            false,
+            true,
+        ),
+        (
+            "moonshot",
+            "moonshot-v1-128k-vision-preview",
+            128_000,
+            8_192,
+            false,
+            true,
+            true,
+        ),
+        (
+            "groq",
+            "llama-3.3-70b-versatile",
+            131_072,
+            32_768,
+            false,
+            false,
+            true,
+        ),
+        (
+            "groq",
+            "openai/gpt-oss-120b",
+            131_072,
+            65_536,
+            true,
+            false,
+            true,
+        ),
+        ("xai", "grok-3-mini", 131_072, 32_768, true, false, true),
+        ("xai", "grok-4.7", 256_000, 65_536, true, true, true),
+        (
+            "mistral",
+            "codestral-latest",
+            256_000,
+            32_768,
+            false,
+            false,
+            true,
+        ),
+        (
+            "mistral",
+            "magistral-medium-latest",
+            128_000,
+            40_960,
+            true,
+            false,
+            true,
+        ),
+        (
+            "mistral",
+            "pixtral-large-latest",
+            131_072,
+            16_384,
+            false,
+            true,
+            true,
+        ),
+    ];
+
     #[test]
     fn all_eight_new_presets_have_verified_baseline_capabilities() {
         let _guard = TEST_CACHE_MUTEX
@@ -848,71 +1352,13 @@ mod tests {
         clear_api_metadata_cache();
         let db = in_memory_db();
 
-        let expected: &[(&str, &str, u32, bool, bool, bool)] = &[
-            ("deepseek", "deepseek-chat", 128_000, false, false, true),
-            ("deepseek", "deepseek-reasoner", 128_000, true, false, true),
-            ("qwen", "qwen-max", 128_000, false, false, true),
-            ("qwen", "qwq-plus", 131_072, true, false, true),
-            ("qwen", "qwen-vl-max", 128_000, false, true, true),
-            ("zai", "glm-4.5", 128_000, true, false, true),
-            ("minimax", "MiniMax-M1", 1_000_000, true, false, true),
-            (
-                "moonshot",
-                "kimi-thinking-preview",
-                128_000,
-                true,
-                false,
-                true,
-            ),
-            (
-                "moonshot",
-                "moonshot-v1-128k-vision-preview",
-                128_000,
-                false,
-                true,
-                true,
-            ),
-            (
-                "groq",
-                "llama-3.3-70b-versatile",
-                131_072,
-                false,
-                false,
-                true,
-            ),
-            (
-                "groq",
-                "deepseek-r1-distill-llama-70b",
-                131_072,
-                true,
-                false,
-                true,
-            ),
-            ("xai", "grok-3-mini", 131_072, true, false, true),
-            ("xai", "grok-2-vision-1212", 32_768, false, true, true),
-            ("mistral", "codestral-latest", 256_000, false, false, true),
-            (
-                "mistral",
-                "magistral-medium-latest",
-                128_000,
-                true,
-                false,
-                true,
-            ),
-            (
-                "mistral",
-                "pixtral-large-latest",
-                131_072,
-                false,
-                true,
-                true,
-            ),
-        ];
-
-        for &(conn, model, window, thinking, attachments, tools) in expected {
+        for &(conn, model, window, max_out, thinking, attachments, tools) in
+            EXPECTED_PRESET_BASELINES
+        {
             let resolved = resolve_model_capabilities(&db, conn, model);
             assert_eq!(resolved.provenance, CapabilityProvenance::BuiltInCatalog);
             assert_eq!(resolved.context_window, Some(window), "{conn}/{model}");
+            assert_eq!(resolved.max_output_tokens, Some(max_out), "{conn}/{model}");
             assert_eq!(resolved.supports_thinking, thinking, "{conn}/{model}");
             assert_eq!(resolved.supports_attachments, attachments, "{conn}/{model}");
             assert_eq!(resolved.supports_tools, tools, "{conn}/{model}");
@@ -936,24 +1382,27 @@ mod tests {
         cache_api_metadata(
             "deepseek",
             &[ApiModelMetadata {
-                model_id: "deepseek-reasoner".to_string(),
+                model_id: "deepseek-v4-pro".to_string(),
                 context_window: Some(256_000),
+                max_output_tokens: Some(32_000),
                 supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
                 supports_thinking: Some(true),
                 supports_attachments: Some(false),
                 supports_tools: Some(true),
             }],
         );
-        let from_api = resolve_model_capabilities(&db, "deepseek", "deepseek-reasoner");
+        let from_api = resolve_model_capabilities(&db, "deepseek", "deepseek-v4-pro");
         assert_eq!(from_api.provenance, CapabilityProvenance::ApiMetadata);
         assert_eq!(from_api.context_window, Some(256_000));
+        assert_eq!(from_api.max_output_tokens, Some(32_000));
 
         set_manual_override(
             &db,
             "deepseek",
-            "deepseek-reasoner",
+            "deepseek-v4-pro",
             Some(ModelCapabilityOverride {
                 context_window: Some(64_000),
+                max_output_tokens: None,
                 supported_efforts: Some(vec!["medium".to_string()]),
                 supports_thinking: Some(true),
                 supports_attachments: Some(false),
@@ -961,12 +1410,14 @@ mod tests {
             }),
         )
         .expect("set manual override");
-        let from_override = resolve_model_capabilities(&db, "deepseek", "deepseek-reasoner");
+        let from_override = resolve_model_capabilities(&db, "deepseek", "deepseek-v4-pro");
         assert_eq!(
             from_override.provenance,
             CapabilityProvenance::ManualOverride
         );
         assert_eq!(from_override.context_window, Some(64_000));
+        // Unspecified override field falls through from ApiMetadata.
+        assert_eq!(from_override.max_output_tokens, Some(32_000));
         assert_eq!(from_override.supported_efforts, vec!["medium".to_string()]);
         clear_api_metadata_cache();
     }
@@ -1003,6 +1454,7 @@ mod tests {
             "gpt-5.2",
             Some(ModelCapabilityOverride {
                 context_window: Some(32_000),
+                max_output_tokens: None,
                 supported_efforts: Some(vec!["low".to_string()]),
                 supports_thinking: Some(false),
                 supports_attachments: Some(true),
@@ -1019,6 +1471,7 @@ mod tests {
             "gpt-5.2",
             Some(ModelCapabilityOverride {
                 context_window: Some(64_000),
+                max_output_tokens: Some(16_384),
                 supported_efforts: Some(vec!["low".to_string(), "high".to_string()]),
                 supports_thinking: Some(true),
                 supports_attachments: Some(true),
@@ -1027,6 +1480,7 @@ mod tests {
         )
         .expect("set project override");
         assert_eq!(proj.context_window, Some(64_000));
+        assert_eq!(proj.max_output_tokens, Some(16_384));
         assert_eq!(proj.provenance, CapabilityProvenance::ManualOverride);
 
         // Clearing the Project override falls back cleanly to Personal 32_000.
@@ -1042,6 +1496,287 @@ mod tests {
         assert_eq!(cleared.provenance, CapabilityProvenance::ManualOverride);
 
         let _ = std::fs::remove_dir_all(&ws);
+        clear_api_metadata_cache();
+    }
+
+    #[test]
+    fn thin_api_metadata_falls_through_per_field_to_builtin_and_family_rules() {
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        clear_api_metadata_cache();
+        let db = in_memory_db();
+
+        // Thin /v1/models entry (all None) for an exact catalog model (`gpt-4o`)
+        // must NOT overwrite BuiltInCatalog fields or provenance.
+        cache_api_metadata(
+            "openai",
+            &[
+                ApiModelMetadata {
+                    model_id: "gpt-4o".to_string(),
+                    context_window: None,
+                    max_output_tokens: None,
+                    supported_efforts: None,
+                    supports_thinking: None,
+                    supports_attachments: None,
+                    supports_tools: None,
+                },
+                // Thin entry for an unlisted dated variant resolved via FamilyRules.
+                ApiModelMetadata {
+                    model_id: "gpt-4o-2024-11-20".to_string(),
+                    context_window: None,
+                    max_output_tokens: None,
+                    supported_efforts: None,
+                    supports_thinking: None,
+                    supports_attachments: None,
+                    supports_tools: None,
+                },
+                // Partial API metadata supplies context_window only; remaining
+                // fields fall through to FamilyRules while provenance upgrades to ApiMetadata.
+                ApiModelMetadata {
+                    model_id: "claude-sonnet-4-20260101".to_string(),
+                    context_window: Some(1_000_000),
+                    max_output_tokens: None,
+                    supported_efforts: None,
+                    supports_thinking: None,
+                    supports_attachments: None,
+                    supports_tools: None,
+                },
+            ],
+        );
+
+        let exact = resolve_model_capabilities(&db, "openai", "gpt-4o");
+        assert_eq!(exact.provenance, CapabilityProvenance::BuiltInCatalog);
+        assert_eq!(exact.context_window, Some(128_000));
+        assert_eq!(exact.max_output_tokens, Some(16_384));
+        assert!(exact.supports_tools);
+        assert!(exact.supports_attachments);
+        assert!(!exact.supports_thinking);
+
+        let dated = resolve_model_capabilities(&db, "openai", "gpt-4o-2024-11-20");
+        assert_eq!(dated.provenance, CapabilityProvenance::BuiltInCatalog);
+        assert_eq!(dated.context_window, Some(128_000));
+        assert_eq!(dated.max_output_tokens, Some(16_384));
+        assert!(dated.supports_tools);
+        assert!(dated.supports_attachments);
+
+        let partial = resolve_model_capabilities(&db, "openai", "claude-sonnet-4-20260101");
+        assert_eq!(partial.provenance, CapabilityProvenance::ApiMetadata);
+        assert_eq!(partial.context_window, Some(1_000_000));
+        assert_eq!(partial.max_output_tokens, Some(64_000));
+        assert!(partial.supports_thinking);
+        assert!(partial.supports_tools);
+        assert!(partial.supports_attachments);
+        assert_eq!(
+            partial.supported_efforts,
+            vec!["low", "medium", "high", "xhigh"]
+        );
+
+        // Legacy DeepSeek aliases stay covered by FamilyRules.
+        let legacy_ds = resolve_model_capabilities(&db, "deepseek", "deepseek-reasoner");
+        assert_eq!(legacy_ds.provenance, CapabilityProvenance::BuiltInCatalog);
+        assert_eq!(legacy_ds.context_window, Some(128_000));
+        assert_eq!(legacy_ds.max_output_tokens, Some(64_000));
+        assert!(legacy_ds.supports_thinking);
+
+        clear_api_metadata_cache();
+    }
+
+    #[test]
+    fn family_rules_never_override_explicit_api_false_or_manual_override() {
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        clear_api_metadata_cache();
+        let db = in_memory_db();
+
+        // FamilyRules would say `gpt-5*` supports tools=true, thinking=true, attachments=true.
+        // Explicit API `false` must strictly win over FamilyRules.
+        cache_api_metadata(
+            "openai",
+            &[ApiModelMetadata {
+                model_id: "gpt-5-restricted".to_string(),
+                context_window: None,
+                max_output_tokens: None,
+                supported_efforts: None,
+                supports_thinking: Some(false),
+                supports_attachments: Some(false),
+                supports_tools: Some(false),
+            }],
+        );
+        let api_false = resolve_model_capabilities(&db, "openai", "gpt-5-restricted");
+        assert_eq!(api_false.provenance, CapabilityProvenance::ApiMetadata);
+        // Omitted fields fall through to FamilyRules...
+        assert_eq!(api_false.context_window, Some(400_000));
+        assert_eq!(api_false.max_output_tokens, Some(128_000));
+        // ...while explicit false is never overridden by FamilyRules, and efforts clear.
+        assert!(!api_false.supports_thinking);
+        assert!(api_false.supported_efforts.is_empty());
+        assert!(!api_false.supports_attachments);
+        assert!(!api_false.supports_tools);
+
+        // ManualOverride strictly beats API false.
+        let manual = set_manual_override(
+            &db,
+            "openai",
+            "gpt-5-restricted",
+            Some(ModelCapabilityOverride {
+                supports_tools: Some(true),
+                ..ModelCapabilityOverride::default()
+            }),
+        )
+        .expect("manual override");
+        assert_eq!(manual.provenance, CapabilityProvenance::ManualOverride);
+        assert!(manual.supports_tools);
+        assert!(!manual.supports_thinking);
+
+        clear_api_metadata_cache();
+    }
+
+    #[test]
+    fn test_connection_classifies_all_error_categories() {
+        use crate::infrastructure::providers::transport::{
+            classify_probe_error_details, TransportProbeError,
+        };
+        use std::io::ErrorKind;
+
+        assert_eq!(
+            classify_probe_error_details(true, false, None, ""),
+            TransportProbeError::Timeout
+        );
+        assert_eq!(
+            classify_probe_error_details(false, true, Some(ErrorKind::ConnectionRefused), ""),
+            TransportProbeError::NotRunning
+        );
+        assert_eq!(
+            classify_probe_error_details(false, true, None, "rustls invalid peer certificate"),
+            TransportProbeError::TlsError
+        );
+        assert_eq!(
+            classify_probe_error_details(false, true, None, "failed to lookup address information"),
+            TransportProbeError::DnsOrProxy
+        );
+
+        for (err, expected) in [
+            (
+                MetadataProbeError::AuthFailed,
+                ConnectionTestCategory::AuthFailed,
+            ),
+            (MetadataProbeError::Timeout, ConnectionTestCategory::Timeout),
+            (
+                MetadataProbeError::DnsOrProxy,
+                ConnectionTestCategory::DnsOrProxy,
+            ),
+            (
+                MetadataProbeError::TlsError,
+                ConnectionTestCategory::TlsError,
+            ),
+            (
+                MetadataProbeError::NotRunning,
+                ConnectionTestCategory::NotRunning,
+            ),
+            (
+                MetadataProbeError::HttpStatus(502),
+                ConnectionTestCategory::HttpError,
+            ),
+            (
+                MetadataProbeError::UnexpectedResponse,
+                ConnectionTestCategory::HttpError,
+            ),
+            (
+                MetadataProbeError::InvalidConfig,
+                ConnectionTestCategory::HttpError,
+            ),
+        ] {
+            assert_eq!(classify_probe_error(err).0, expected);
+        }
+    }
+
+    #[test]
+    fn test_connection_loopback_probe_and_secret_free_hints() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let _guard = TEST_CACHE_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        clear_api_metadata_cache();
+
+        let db = in_memory_db();
+        let creds = Arc::new(StubCredentialSource::new(Some("sk-top-secret-key-999")));
+        let sources = ExecutionSources::with_test_sources(
+            Arc::new(ExecutorRegistry::new()),
+            Arc::clone(&creds) as Arc<dyn CredentialSource>,
+        );
+        let execution = RequestExecutionService::with_sources(&db, sources);
+
+        // Embedded userinfo URL is rejected without echoing URL or credentials.
+        let bad = test_connection_with_execution(
+            &db,
+            &execution,
+            "openai_compat",
+            Some("https://alice:supersecret@example.com/v1"),
+        );
+        assert!(!bad.ok);
+        assert_eq!(bad.category, ConnectionTestCategory::HttpError);
+        assert!(!bad.hint.contains("supersecret"));
+        assert!(!bad.hint.contains("alice"));
+        assert!(!bad.hint.contains("sk-top-secret-key-999"));
+
+        // Live loopback 200 OK returns ok=true + discovered_count, and 401 returns
+        // auth_failed without echoing raw HTTP body or secret.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let server = std::thread::spawn(move || {
+            for idx in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buf = [0u8; 1024];
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+                let _ = stream.read(&mut buf);
+                let (status_line, body) = if idx == 0 {
+                    (
+                        "HTTP/1.1 200 OK",
+                        r#"{"data":[{"id":"gpt-5"},{"id":"gpt-4o"}]}"#,
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 401 Unauthorized",
+                        r#"{"error":"RAW_LEAK_MARKER_401"}"#,
+                    )
+                };
+                let resp = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let ok_res = test_connection_with_execution(
+            &db,
+            &execution,
+            "openai_compat",
+            Some(&format!("http://{addr}/v1")),
+        );
+        assert!(ok_res.ok);
+        assert_eq!(ok_res.category, ConnectionTestCategory::Ok);
+        assert_eq!(ok_res.discovered_count, 2);
+
+        let auth_res = test_connection_with_execution(
+            &db,
+            &execution,
+            "openai_compat",
+            Some(&format!("http://{addr}/v1")),
+        );
+        assert!(!auth_res.ok);
+        assert_eq!(auth_res.category, ConnectionTestCategory::AuthFailed);
+        assert_eq!(auth_res.discovered_count, 0);
+        assert!(!auth_res.hint.contains("RAW_LEAK_MARKER_401"));
+        assert!(!auth_res.hint.contains("sk-top-secret-key-999"));
+
+        server.join().expect("server thread joins");
         clear_api_metadata_cache();
     }
 }

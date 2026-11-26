@@ -565,7 +565,7 @@ mod tests {
                 "assistant",
                 "hi there",
                 Some(provider_id),
-                Some("gpt-5.6-terra"),
+                Some("gpt-4o"),
             )
             .expect("assistant message");
         messages
@@ -579,14 +579,14 @@ mod tests {
         assert_eq!(stats.assistant_message_count, 1);
         assert_eq!(stats.provider.as_deref(), Some("openai"));
         assert_eq!(stats.provider_display.as_deref(), Some("OpenAI"));
-        assert_eq!(stats.model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(stats.model.as_deref(), Some("gpt-4o"));
         assert_eq!(stats.context_limit, OPENAI_CONTEXT_LIMIT);
         // No persisted usage: zeros + n/a flag, never a silent estimate.
         assert!(!stats.has_token_data);
         assert_eq!(stats.total_tokens, 0);
         assert_eq!(
             stats.total_cost_micro_usd,
-            cost_micro_for_model("gpt-5.6-terra", 0, 0)
+            cost_micro_for_model("gpt-4o", 0, 0)
         );
         assert_eq!(stats.total_cost_micro_usd, 0);
         assert!(
@@ -594,9 +594,9 @@ mod tests {
             "usage must be ~0 with no persisted tokens, got {}",
             stats.usage_percent
         );
-        // Sanity: the pricing path used here matches the policy rate helper.
+        // Sanity: the pricing path used here matches the policy rate helper for unlisted IDs.
         assert_eq!(
-            cost_micro_for_model("gpt-5.6-terra", 1_000_000, 0),
+            cost_micro_for_model("unlisted-policy-model", 1_000_000, 0),
             POLICY_DEFAULT_INPUT_MICRO_PER_1M
         );
     }
@@ -705,36 +705,29 @@ mod tests {
     fn assert_supported_model_lists_pinned() {
         assert_eq!(
             openai::SUPPORTED_MODELS,
-            &["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"]
+            &["gpt-5", "gpt-4o", "o3", "o4-mini", "gpt-4.1"]
         );
         assert_eq!(
             anthropic::SUPPORTED_MODELS,
             &[
-                "claude-sonnet-5",
+                "claude-sonnet-4-20250514",
                 "claude-haiku-4-5-20251001",
-                "claude-opus-4-8",
+                "claude-opus-4-20250514",
             ]
         );
         assert_eq!(
             gemini::SUPPORTED_MODELS,
             &[
-                "gemini-3.6-flash",
-                "gemini-3.1-flash-lite",
-                "gemini-3.1-pro-preview",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash-lite",
                 "gemini-flash-lite-latest",
                 "gemini-pro-latest",
-                "gemini-3.5-flash",
-                "gemini-3.5-flash-lite",
             ]
         );
         assert_eq!(
             gemini::GEMINI_LITE_MODELS,
-            &[
-                "gemini-3.1-flash-lite",
-                "gemini-flash-lite-latest",
-                "gemini-3.5-flash",
-                "gemini-3.5-flash-lite",
-            ]
+            &["gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
         );
         assert_eq!(
             openai::XKIRO_MODELS,
@@ -845,13 +838,19 @@ mod tests {
         for model in openai::XKIRO_MODELS
             .iter()
             .chain(openai::OPENROUTER_MODELS)
-            .chain(openai::NVIDIA_MODELS)
             .chain(openai::OPENCODE_ZEN_MODELS)
         {
             assert_eq!(
                 model_context_limit(model),
                 Some(OPENAI_CONTEXT_LIMIT),
                 "compat model {model} rides the OpenAI-compatible path"
+            );
+        }
+        for model in openai::NVIDIA_MODELS {
+            assert_eq!(
+                model_context_limit(model),
+                Some(131_072),
+                "nvidia model {model} resolves to its BaselineModelSpec window"
             );
         }
         // Unlisted IDs keep the old behavior: honest unknown from the model
@@ -1099,22 +1098,22 @@ mod tests {
         // The model arm owns the value even when the provider disagrees:
         // cross-wired combos still resolve to the model's own window.
         assert_eq!(
-            context_limit_for(Some("openai"), Some("claude-sonnet-5")),
+            context_limit_for(Some("openai"), Some("claude-sonnet-4-20250514")),
             ANTHROPIC_CONTEXT_LIMIT,
             "claude id under the openai provider"
         );
         assert_eq!(
-            context_limit_for(Some("anthropic"), Some("gpt-5.6-terra")),
+            context_limit_for(Some("anthropic"), Some("gpt-5")),
             OPENAI_CONTEXT_LIMIT,
             "gpt id under the anthropic provider"
         );
         assert_eq!(
-            context_limit_for(Some("openai"), Some("gemini-3.6-flash")),
+            context_limit_for(Some("openai"), Some("gemini-2.5-flash")),
             GEMINI_CONTEXT_LIMIT,
             "gemini id under the openai provider"
         );
         assert_eq!(
-            context_limit_for(Some("unknown-provider"), Some("gemini-3.6-flash")),
+            context_limit_for(Some("unknown-provider"), Some("gemini-2.5-flash")),
             GEMINI_CONTEXT_LIMIT,
             "known model id wins over an unknown provider"
         );
@@ -1183,13 +1182,9 @@ mod tests {
         .expect("tool step");
 
         // Known model resolves authoritative window from capabilities catalog.
-        let known = conversation_context_stats_for_selection(
-            &db,
-            id,
-            Some("openai"),
-            Some("gpt-5.6-terra"),
-        )
-        .expect("known stats");
+        let known =
+            conversation_context_stats_for_selection(&db, id, Some("openai"), Some("gpt-4o"))
+                .expect("known stats");
         assert_eq!(known.context_window, Some(OPENAI_CONTEXT_LIMIT));
         assert_eq!(
             known.context_window_provenance,

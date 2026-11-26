@@ -1052,7 +1052,7 @@ mod tests {
     fn sample_request() -> AiRequest {
         AiRequest {
             provider: PROVIDER_NAME.to_string(),
-            model: "gemini-3.6-flash".to_string(),
+            model: "gemini-2.5-flash".to_string(),
             messages: std::sync::Arc::new(vec![
                 AiMessage {
                     role: AiRole::System,
@@ -1084,18 +1084,16 @@ mod tests {
 
     #[test]
     fn supported_models_include_sample_model() {
-        assert_eq!(SUPPORTED_MODELS[0], "gemini-3.6-flash");
-        assert_eq!(SUPPORTED_MODELS.len(), 7);
+        assert_eq!(SUPPORTED_MODELS[0], "gemini-2.5-flash");
+        assert_eq!(SUPPORTED_MODELS.len(), 5);
         assert_eq!(
             SUPPORTED_MODELS,
             &[
-                "gemini-3.6-flash",
-                "gemini-3.1-flash-lite",
-                "gemini-3.1-pro-preview",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash-lite",
                 "gemini-flash-lite-latest",
                 "gemini-pro-latest",
-                "gemini-3.5-flash",
-                "gemini-3.5-flash-lite",
             ]
         );
         let request = sample_request();
@@ -1105,11 +1103,11 @@ mod tests {
     #[test]
     fn tools_smoke_agent_usable_ids_are_supported() {
         for model in [
-            "gemini-3.6-flash",
-            "gemini-3.1-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash-lite",
             "gemini-flash-lite-latest",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
+            "gemini-pro-latest",
         ] {
             assert!(
                 SUPPORTED_MODELS.contains(&model),
@@ -1585,7 +1583,7 @@ mod tests {
         // The selected model is embedded in the generateContent endpoint path
         // (FR-004 model selection passes through unchanged).
         assert!(
-            request_line.contains("POST /models/gemini-3.6-flash:generateContent"),
+            request_line.contains("POST /models/gemini-2.5-flash:generateContent"),
             "request line must embed the selected model: {request_line}"
         );
 

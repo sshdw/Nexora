@@ -201,6 +201,7 @@ const SNAPSHOT: readonly string[] = [
   "terminalPtySpawn",
   "terminalPtyWrite",
   "terminalRun",
+  "testProviderConnection",
   "testgenDrafts",
   "updateCheck",
   "updateDebtItemStatus",
@@ -363,5 +364,22 @@ it("routes the interactive PTY terminal IPC wrappers with camelCase args", async
   await barrel.terminalPtyKill("sess-1");
   expect(invoke).toHaveBeenLastCalledWith("terminal_pty_kill", {
     sessionId: "sess-1",
+  });
+});
+
+it("routes testProviderConnection with camelCase connectionId and compatUrl", async () => {
+  await barrel.testProviderConnection("openai");
+  expect(invoke).toHaveBeenLastCalledWith("test_provider_connection", {
+    connectionId: "openai",
+    compatUrl: null,
+  });
+
+  await barrel.testProviderConnection(
+    "openai_compat",
+    "https://proxy.example.com/v1"
+  );
+  expect(invoke).toHaveBeenLastCalledWith("test_provider_connection", {
+    connectionId: "openai_compat",
+    compatUrl: "https://proxy.example.com/v1",
   });
 });

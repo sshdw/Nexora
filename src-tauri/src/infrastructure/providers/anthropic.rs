@@ -92,12 +92,12 @@ const DEFAULT_MAX_TOKENS: u32 = 1024;
 /// (`claude-3-5-sonnet-20240620`, the previous sole entry, was retired
 /// October 28, 2025).
 pub(crate) const SUPPORTED_MODELS: &[&str] = &[
-    // Default: best cost/quality balance, 200k enforced context (conservative default).
-    "claude-sonnet-5",
+    // Default: best cost/quality balance, 200k context, 64k max output.
+    "claude-sonnet-4-20250514",
     // Fast/cheap tier.
     "claude-haiku-4-5-20251001",
     // Best-quality flagship tier.
-    "claude-opus-4-8",
+    "claude-opus-4-20250514",
 ];
 
 /// Estimated cost rates per 1M tokens, micro-USD (`(model, input, output)`).
@@ -109,9 +109,9 @@ pub(crate) const SUPPORTED_MODELS: &[&str] = &[
 /// Unknown IDs yield `None` from [`rate_for_model`]: callers fall back to
 /// the policy default, never a guessed rate.
 pub(crate) const MODEL_RATES: &[(&str, u64, u64)] = &[
-    ("claude-sonnet-5", 3_000_000, 15_000_000),
+    ("claude-sonnet-4-20250514", 3_000_000, 15_000_000),
     ("claude-haiku-4-5-20251001", 1_000_000, 5_000_000),
-    ("claude-opus-4-8", 15_000_000, 75_000_000),
+    ("claude-opus-4-20250514", 15_000_000, 75_000_000),
 ];
 
 /// Look up the estimated rate for a native Anthropic model ID.
