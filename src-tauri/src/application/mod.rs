@@ -55,4 +55,5 @@ pub mod system;
 pub mod terminal;
 pub mod testgen;
 pub mod version_control;
+pub(crate) mod web;
 pub mod workspace;
