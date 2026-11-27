@@ -47,6 +47,7 @@ use crate::application::search::SearchError;
 use crate::application::settings::ScopedSaveError;
 use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
+use crate::application::web::WebError;
 use crate::infrastructure::providers::chatgpt_oauth::ChatGptOAuthError;
 
 /// Stable, secret-free error categories the frontend can branch on.
@@ -636,6 +637,28 @@ impl From<ChatGptOAuthError> for CommandError {
             | ChatGptOAuthError::OtherInstance
             | ChatGptOAuthError::RevocationUnconfirmed
             | ChatGptOAuthError::Cancelled => Self::new(ErrorKind::Request, err.to_string()),
+        }
+    }
+}
+
+impl From<WebError> for CommandError {
+    fn from(err: WebError) -> Self {
+        match err {
+            WebError::InvalidUrl(_) | WebError::BlockedHost => {
+                Self::new(ErrorKind::InvalidInput, err.to_string())
+            }
+            WebError::UnsupportedMediaType | WebError::UnsupportedContentEncoding => {
+                Self::new(ErrorKind::UnsupportedFormat, err.to_string())
+            }
+            WebError::DnsResolutionFailed
+            | WebError::RedirectDisallowed
+            | WebError::ResponseTooLarge
+            | WebError::DecompressedTooLarge
+            | WebError::DecompressionFailed
+            | WebError::HttpStatus { .. }
+            | WebError::Timeout
+            | WebError::Cancelled
+            | WebError::Transport(_) => Self::new(ErrorKind::Request, err.to_string()),
         }
     }
 }
