@@ -49,10 +49,16 @@ pub(crate) enum RiskClass {
     /// consent — even in `FullAutonomous`.
     DangerousShell,
     /// User-added MCP tools (`mcp__<server>__<tool>`): external processes or
-    /// remote HTTP endpoints whose side effects cannot be statically bounded
-    /// (Invariant 4). ALWAYS requires explicit per-call user consent — NEVER
-    /// auto-approved in any autonomy mode or via sticky/stored rules.
+    /// remote HTTP endpoints whose side effects cannot be statically bounded.
+    /// Requires per-call consent in `Supervised` and `Standard`; auto-approved
+    /// only under acknowledged `FullAccess` (`FullAutonomous`).
     ExternalMcp,
+    /// Native read-only external web tools (`web_search`, `web_fetch`):
+    /// requires per-call host-bound consent in `Supervised` and `Standard`
+    /// (never eligible for sticky group reuse or persistent allow rules);
+    /// auto-approved under acknowledged `FullAccess` (`FullAutonomous`) while
+    /// preserving `Deny`-wins, SSRF pinning, and `scan_observation` holds.
+    ExternalWebRead,
 }
 
 impl RiskClass {
@@ -64,6 +70,7 @@ impl RiskClass {
             other if super::permissions::is_subagent_tool(other) => Self::ReadOnly,
             "execute_command" => Self::DangerousShell,
             other if super::permissions::is_mcp_tool(other) => Self::ExternalMcp,
+            other if super::permissions::is_web_tool(other) => Self::ExternalWebRead,
             _ => Self::Mutating,
         }
     }
@@ -180,6 +187,7 @@ pub(crate) struct ApprovalMetadata {
     pub allow_for_run: bool,
     pub sensitive_write: bool,
     pub shell: Option<super::shell_policy::ShellAnalysis>,
+    pub web_target_host: Option<String>,
 }
 
 /// Response correlation is server-owned. Provider IDs remain only in tool
@@ -220,6 +228,7 @@ struct GateState {
     preset: RunPreset,
     dispatch_store: Option<PermissionStore>,
     checkpoint_store: Option<CheckpointStore>,
+    web_search_host: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +262,7 @@ impl ApprovalGate {
                 preset: RunPreset::Coding,
                 dispatch_store: None,
                 checkpoint_store: None,
+                web_search_host: None,
             })),
             signal: Arc::new(Condvar::new()),
             access: AccessContext::fixed(AccessProfile::Standard),
@@ -275,6 +285,7 @@ impl ApprovalGate {
                 preset: RunPreset::Coding,
                 dispatch_store: None,
                 checkpoint_store: None,
+                web_search_host: None,
             })),
             signal: Arc::new(Condvar::new()),
             access: AccessContext::fixed(AccessProfile::Standard),
@@ -295,6 +306,9 @@ impl ApprovalGate {
         self.lock_state().checkpoint_store = store;
         let verified = self.has_verified_checkpoints();
         self.access.set_checkpoints(verified);
+    }
+    pub(crate) fn bind_web_search_host(&self, host: Option<String>) {
+        self.lock_state().web_search_host = host;
     }
     pub(crate) fn has_verified_checkpoints(&self) -> bool {
         let (workspace, store) = {
@@ -349,6 +363,10 @@ impl ApprovalGate {
     }
     pub(crate) fn access(&self) -> &AccessContext {
         &self.access
+    }
+    #[must_use]
+    pub(crate) fn is_read_only(&self) -> bool {
+        self.access.profile() == AccessProfile::ReadOnly
     }
     pub(crate) fn bind_workspace(&self, workspace: &Path) {
         let changed = self.lock_state().workspace.as_deref() != Some(workspace);
@@ -460,6 +478,20 @@ impl ApprovalGate {
         if let Some(analysis) = shell.as_mut() {
             analysis.sandbox_posture = posture;
         }
+        let web_target_host = match call.name.as_str() {
+            "web_fetch" => args
+                .get("url")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|raw| crate::application::web::safety::validate_fetch_url(raw).ok())
+                .map(|validated| validated.host().to_string()),
+            "web_search" => Some(
+                self.lock_state()
+                    .web_search_host
+                    .clone()
+                    .unwrap_or_else(|| "html.duckduckgo.com".to_string()),
+            ),
+            _ => None,
+        };
         ApprovalMetadata {
             access_profile: self.access.profile(),
             sandbox_posture: posture,
@@ -467,6 +499,7 @@ impl ApprovalGate {
             allow_for_run: self.reusable(call),
             sensitive_write,
             shell,
+            web_target_host,
         }
     }
     pub(crate) fn has_current_consent(&self, call: &ToolCall) -> bool {
@@ -718,7 +751,7 @@ impl ApprovalGate {
                         .is_some_and(|path| self.access.sandbox_posture(path) == "Verified")
                         && super::shell_policy::automatic_general_shell(&call.arguments))
                 }
-                RiskClass::ExternalMcp => true,
+                RiskClass::ExternalMcp | RiskClass::ExternalWebRead => true,
             },
             AutonomyMode::FullAutonomous => false,
         }
@@ -1022,6 +1055,7 @@ impl ApprovalGate {
                 allow_for_run: false,
                 sensitive_write: false,
                 shell: None,
+                web_target_host: None,
             },
         };
         drop(state);

@@ -228,7 +228,7 @@ fn extract_code_language(attrs: &[(String, String)]) -> Option<String> {
 // HTML entity decoder
 // ---------------------------------------------------------------------------
 
-fn decode_entities(input: &str) -> String {
+pub(crate) fn decode_entities(input: &str) -> String {
     if !input.contains('&') {
         return input.to_owned();
     }

@@ -40,6 +40,11 @@ export const en = {
   "agent.packagesUnknown":
     "Package list is incomplete or determined at runtime.",
   "agent.sensitiveWrite": "Sensitive file · this approval applies once",
+  "agent.webReadOnlyMeta":
+    "Read-only external web content · host: {host} · applies once",
+  "agent.actWebSearch": "Searched web",
+  "agent.actWebFetch": "Fetched web page",
+  "agent.urlTitle": "URL",
   "agent.category.GeneralShell": "Shell command",
   "agent.category.DependencyInstall": "Dependency installation",
   "agent.category.PublishOrRemote": "Publishing or remote changes",
@@ -648,6 +653,39 @@ export const en = {
   "settings.spendPh": "Empty = no limit",
   "settings.spendHint":
     "Empty = no limit. 1 USD = 1000000 micro-USD. Applies to new runs.",
+  "settings.webAccessTitle": "Web access",
+  "settings.webAccessHint":
+    "Allow non-Plan agent runs to search the web and fetch public pages. Off by default; per-call host consent applies outside Full access.",
+  "settings.webEnabledLabel": "Enable web search & fetch tools",
+  "settings.webEnabledHint":
+    "Exposes web_search and web_fetch to agent runs (never exposed in Plan mode). Project .nexora/config.json cannot enable this.",
+  "settings.webBackendLabel": "Search backend",
+  "settings.webBackendHint":
+    "DuckDuckGo works without an API key. Keyed backends store keys in your OS keyring only.",
+  "settings.webBackend.ddg": "DuckDuckGo (keyless default)",
+  "settings.webBackend.tavily": "Tavily (API key)",
+  "settings.webBackend.brave": "Brave Search (API key)",
+  "settings.webBackend.exa": "Exa (API key)",
+  "settings.webBackend.searxng": "SearXNG (self-hosted URL)",
+  "settings.webApiKeyLabel": "Search backend API key",
+  "settings.webApiKeyHint":
+    "Stored exclusively in the OS secure keyring and never shown again after saving.",
+  "settings.webKeySaved": "Search API key saved to OS keyring.",
+  "settings.webKeyRemoved": "Search API key removed from OS keyring.",
+  "settings.webSearxngLabel": "SearXNG base URL",
+  "settings.webSearxngPh": "http://127.0.0.1:8080 or https://search.example.org",
+  "settings.webSearxngHint":
+    "Must be https:// (public host) or http:// on localhost/loopback. Project config cannot override this.",
+  "settings.webSave": "Save",
+  "settings.webMaxResultsLabel": "Max search results per call",
+  "settings.webMaxResultsHint": "Bounded between 1 and 8 results (default 5).",
+  "settings.webMaxResultsInvalid":
+    "Max search results must be an integer between 1 and 8.",
+  "settings.webMaxCharsLabel": "Max extracted characters per fetch",
+  "settings.webMaxCharsHint":
+    "Bounded between 1000 and 48000 characters (default 20000).",
+  "settings.webMaxCharsInvalid":
+    "Max extracted characters must be an integer between 1000 and 48000.",
   "settings.workspaceHint":
     "The folder the agent's tools are scoped to. Change it from the sidebar folder picker; the 5 most recent folders are kept there.",
   "settings.currentRoot": "Current root",

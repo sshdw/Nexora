@@ -605,6 +605,7 @@ type MockRunQuestion = {
 };
 const mockRunQuestions: MockRunQuestion[] = [];
 const mockRunPlans: RunPlan[] = [];
+const mockWebSearchCreds = new Set<string>();
 let mockNextPlanId = 1;
 
 function spawnSimpleMockContinuationOrImpl(params: {
@@ -1986,6 +1987,7 @@ async function invoke(
             allow_for_run: profile === "standard",
             sensitive_write: false,
             shell: null,
+            web_target_host: null,
           };
           active.pendingApproval = {
             requested_at: now(),
@@ -3432,6 +3434,48 @@ async function invoke(
         emitTerminalPtyExit(sessionId, 0);
       }
       return existed;
+    }
+    case "get_web_access_config": {
+      const enabled = settings.get("agent.web.enabled") === "true";
+      const searchBackend = settings.get("agent.web.search_backend") ?? "ddg";
+      const searxngUrl = settings.get("agent.web.searxng_url") ?? null;
+      const maxResults = Number.parseInt(
+        settings.get("agent.web.max_results") ?? "5",
+        10
+      );
+      const maxChars = Number.parseInt(
+        settings.get("agent.web.max_chars") ?? "20000",
+        10
+      );
+      return {
+        enabled,
+        search_backend: searchBackend,
+        searxng_url: searxngUrl,
+        max_results: Number.isFinite(maxResults) ? maxResults : 5,
+        max_chars: Number.isFinite(maxChars) ? maxChars : 20000,
+        has_tavily_key: mockWebSearchCreds.has("tavily"),
+        has_brave_key: mockWebSearchCreds.has("brave"),
+        has_exa_key: mockWebSearchCreds.has("exa"),
+      };
+    }
+    case "set_web_search_credential": {
+      const backend = String(args.backend ?? "");
+      const apiKey = String(args.apiKey ?? "").trim();
+      if (!["tavily", "brave", "exa"].includes(backend) || !apiKey) {
+        throw {
+          kind: "invalidInput",
+          message: "invalid web search credential request",
+        };
+      }
+      mockWebSearchCreds.add(backend);
+      return null;
+    }
+    case "remove_web_search_credential": {
+      mockWebSearchCreds.delete(String(args.backend ?? ""));
+      return null;
+    }
+    case "has_web_search_credential": {
+      return mockWebSearchCreds.has(String(args.backend ?? ""));
     }
     case "mcp_list_servers": {
       const raw = settings.get("mcp.servers");

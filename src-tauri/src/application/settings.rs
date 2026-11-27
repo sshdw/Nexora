@@ -42,10 +42,12 @@ use crate::infrastructure::repository::Result;
 use nexora_core::config::{
     self, flag_key, ConfigKey, ConfigRegistry, ACCESS_PROFILE_KEY, AGENT_PROFILE_KEY,
     APPEARANCE_THEME_KEY, APPROVAL_TIMEOUT_KEY, AUTONOMY_KEY, CHAT_PROFILE_KEY,
-    FULL_ACCESS_ACKNOWLEDGED_KEY, MAX_CAPABILITY_OVERRIDES_BYTES, MCP_SERVERS_KEY,
-    MODEL_CAPABILITY_OVERRIDES_KEY, SELECTED_EFFORT_KEY, SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY,
-    SPEND_LIMIT_KEY, SUBAGENT_MAX_CONCURRENCY_KEY, WORKSPACE_RECENT_KEY, WORKSPACE_ROOTS_KEY,
-    WORKSPACE_ROOT_KEY,
+    DEFAULT_WEB_MAX_CHARS, DEFAULT_WEB_MAX_RESULTS, FULL_ACCESS_ACKNOWLEDGED_KEY,
+    MAX_CAPABILITY_OVERRIDES_BYTES, MAX_WEB_MAX_CHARS, MAX_WEB_MAX_RESULTS, MCP_SERVERS_KEY,
+    MIN_WEB_MAX_CHARS, MIN_WEB_MAX_RESULTS, MODEL_CAPABILITY_OVERRIDES_KEY, SELECTED_EFFORT_KEY,
+    SELECTED_MODEL_KEY, SELECTED_PROVIDER_KEY, SPEND_LIMIT_KEY, SUBAGENT_MAX_CONCURRENCY_KEY,
+    WEB_ENABLED_KEY, WEB_MAX_CHARS_KEY, WEB_MAX_RESULTS_KEY, WEB_SEARCH_BACKEND_KEY,
+    WEB_SEARXNG_URL_KEY, WORKSPACE_RECENT_KEY, WORKSPACE_ROOTS_KEY, WORKSPACE_ROOT_KEY,
 };
 
 /// Application-layer service coordinating persistent application settings.
@@ -142,7 +144,7 @@ fn bump_policy_clock(db: &Database) {
 const DEFAULT_APPROVAL_TIMEOUT_STR: &str = "600";
 
 /// Configurable settings tracked by [`resolve_settings`].
-pub(crate) const LAYERED_SETTING_KEYS: [&str; 17] = [
+pub(crate) const LAYERED_SETTING_KEYS: [&str; 22] = [
     APPEARANCE_THEME_KEY,
     SELECTED_PROVIDER_KEY,
     SELECTED_MODEL_KEY,
@@ -156,6 +158,11 @@ pub(crate) const LAYERED_SETTING_KEYS: [&str; 17] = [
     CHAT_PROFILE_KEY,
     AGENT_PROFILE_KEY,
     MCP_SERVERS_KEY,
+    WEB_ENABLED_KEY,
+    WEB_SEARCH_BACKEND_KEY,
+    WEB_SEARXNG_URL_KEY,
+    WEB_MAX_RESULTS_KEY,
+    WEB_MAX_CHARS_KEY,
     "flags.snapshots",
     "flags.self_audit",
     "flags.injection",
@@ -339,9 +346,20 @@ pub(crate) fn validate_desktop_setting(
                 is_valid_root_list(raw, Some(config::WORKSPACE_RECENT_MAX))
             }
             Some(ConfigKey::WorkspaceRoots) => is_valid_root_list(raw, None),
+            Some(ConfigKey::WebSearxngUrl) => {
+                crate::application::web::search::searxng::validate_searxng_base_url(raw).is_ok()
+            }
             _ => true,
         };
         if !round_trips {
+            if key == WEB_SEARXNG_URL_KEY {
+                return Err(config::Rejection {
+                    reason: config::RejectionReason::InvalidWebSearxngUrl {
+                        key: key.to_string(),
+                    },
+                }
+                .message());
+            }
             return Err(format!("value '{raw}' is not a valid '{key}' setting"));
         }
     }
@@ -387,6 +405,10 @@ pub(crate) fn default_setting_value(key: &str) -> Option<&'static str> {
         APPROVAL_TIMEOUT_KEY => Some(DEFAULT_APPROVAL_TIMEOUT_STR),
         SUBAGENT_MAX_CONCURRENCY_KEY => Some("3"),
         PRESET_KEY => Some("coding"),
+        WEB_ENABLED_KEY => Some("false"),
+        WEB_SEARCH_BACKEND_KEY => Some("ddg"),
+        WEB_MAX_RESULTS_KEY => Some("5"),
+        WEB_MAX_CHARS_KEY => Some("20000"),
         k if k.starts_with(config::FLAG_KEY_PREFIX) => Some("true"),
         _ => None,
     }
@@ -736,6 +758,33 @@ fn filter_full_access_project_escalation(
             key,
             "cannot_widen_autonomy",
             "project config cannot widen autonomy to full autonomous",
+            &mut out.values,
+            &mut out.blocked_by_key,
+            &mut out.blocked,
+        );
+        return true;
+    }
+    // Stage 12 PR 6: `.nexora/config.json` may never enable `agent.web.enabled`
+    // (restricting to `false` is allowed) and may never configure `agent.web.searxng_url`.
+    if (key == WEB_ENABLED_KEY || k_low == WEB_ENABLED_KEY)
+        && !value.is_null()
+        && !json_is_disabling_flag(value)
+    {
+        record_blocked(
+            key,
+            "cannot_enable_web_access",
+            "project config cannot enable agent web access",
+            &mut out.values,
+            &mut out.blocked_by_key,
+            &mut out.blocked,
+        );
+        return true;
+    }
+    if (key == WEB_SEARXNG_URL_KEY || k_low == WEB_SEARXNG_URL_KEY) && !value.is_null() {
+        record_blocked(
+            key,
+            "cannot_set_searxng_url",
+            "project config cannot configure a SearXNG endpoint URL",
             &mut out.values,
             &mut out.blocked_by_key,
             &mut out.blocked,
@@ -1170,6 +1219,88 @@ pub(crate) fn resolve_effective_setting(
         .and_then(|entry| entry.value.clone())
 }
 
+/// Effective resolved web access configuration for agent runs and IPC views.
+///
+/// Hard invariants:
+/// - Default-off (`enabled = false`).
+/// - `.nexora/config.json` can restrict `enabled` to `false`, never elevate to `true`.
+/// - `searxng_url` is read strictly from personal `app_settings` and re-validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedWebAccessConfig {
+    pub(crate) enabled: bool,
+    pub(crate) search_backend: crate::application::web::search::SearchBackendKind,
+    pub(crate) searxng_url: Option<String>,
+    pub(crate) max_results: usize,
+    pub(crate) max_chars: usize,
+}
+
+/// Resolve effective web access settings for `db` and optional `workspace_root`.
+#[must_use]
+pub(crate) fn resolve_web_access_config(
+    db: &Database,
+    workspace_root: Option<&Path>,
+) -> ResolvedWebAccessConfig {
+    let personal_enabled = SettingsService::new(db)
+        .read(WEB_ENABLED_KEY)
+        .ok()
+        .flatten()
+        .and_then(|raw| config::parse_global_bool(&raw))
+        == Some(true);
+
+    let snap = resolve_settings(db, workspace_root, None);
+    let layered_enabled = snap
+        .entries
+        .get(WEB_ENABLED_KEY)
+        .and_then(|entry| entry.value.as_deref())
+        .and_then(config::parse_global_bool)
+        == Some(true);
+    // Project config may only disable web access, never enable it; config load
+    // errors fail closed to disabled.
+    let enabled = personal_enabled && layered_enabled && snap.config_notice.is_none();
+
+    let search_backend = snap
+        .entries
+        .get(WEB_SEARCH_BACKEND_KEY)
+        .and_then(|entry| entry.value.as_deref())
+        .and_then(crate::application::web::search::SearchBackendKind::parse)
+        .unwrap_or_default();
+
+    // SearXNG URL is strictly personal-only and re-validated on read.
+    let searxng_url = SettingsService::new(db)
+        .read(WEB_SEARXNG_URL_KEY)
+        .ok()
+        .flatten()
+        .map(|s| s.trim().to_string())
+        .filter(|s| {
+            !s.is_empty()
+                && crate::application::web::search::searxng::validate_searxng_base_url(s).is_ok()
+        });
+
+    let max_results = snap
+        .entries
+        .get(WEB_MAX_RESULTS_KEY)
+        .and_then(|entry| entry.value.as_deref())
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_WEB_MAX_RESULTS)
+        .clamp(MIN_WEB_MAX_RESULTS, MAX_WEB_MAX_RESULTS);
+
+    let max_chars = snap
+        .entries
+        .get(WEB_MAX_CHARS_KEY)
+        .and_then(|entry| entry.value.as_deref())
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_WEB_MAX_CHARS)
+        .clamp(MIN_WEB_MAX_CHARS, MAX_WEB_MAX_CHARS);
+
+    ResolvedWebAccessConfig {
+        enabled,
+        search_backend,
+        searxng_url,
+        max_results,
+        max_chars,
+    }
+}
+
 fn validate_scoped_write_input(
     trimmed_key: &str,
     k_low: &str,
@@ -1254,6 +1385,16 @@ fn save_project_setting_entry(
     if trimmed_key == MCP_SERVERS_KEY {
         return Err(ScopedSaveError::SecurityBlocked(
             "project config cannot auto-approve shell commands or MCP servers".to_string(),
+        ));
+    }
+    if trimmed_key == WEB_SEARXNG_URL_KEY {
+        return Err(ScopedSaveError::SecurityBlocked(
+            "project config cannot configure a SearXNG endpoint URL".to_string(),
+        ));
+    }
+    if trimmed_key == WEB_ENABLED_KEY && !raw_val.trim().eq_ignore_ascii_case("false") {
+        return Err(ScopedSaveError::SecurityBlocked(
+            "project config cannot enable agent web access".to_string(),
         ));
     }
     let full_access_ack = is_full_access_acknowledged(db);
@@ -1887,5 +2028,126 @@ mod stage4_tests {
 
         let _ = std::fs::remove_dir_all(&valid_ws);
         let _ = std::fs::remove_dir_all(&corrupt_ws);
+    }
+
+    #[test]
+    fn project_config_cannot_enable_web_access_or_set_searxng_url() {
+        let db = in_memory_database();
+        let ws = temp_ws("web-project-guard");
+        project_dir::init_nexora_dir(&ws).expect("init .nexora");
+
+        // Malicious repo tries to enable agent.web.enabled and point searxng_url to attacker host.
+        std::fs::write(
+            ws.join(".nexora/config.json"),
+            r#"{
+              "agent.web.enabled": true,
+              "agent.web.searxng_url": "https://evil.example.org"
+            }"#,
+        )
+        .expect("write project config");
+
+        let snap = resolve_settings(&db, Some(&ws), None);
+        assert!(snap
+            .blocked
+            .iter()
+            .any(|b| b.key == WEB_ENABLED_KEY && b.reason == "cannot_enable_web_access"));
+        assert!(snap
+            .blocked
+            .iter()
+            .any(|b| b.key == WEB_SEARXNG_URL_KEY && b.reason == "cannot_set_searxng_url"));
+
+        let resolved = resolve_web_access_config(&db, Some(&ws));
+        assert!(
+            !resolved.enabled,
+            "web access must remain disabled by default"
+        );
+        assert!(resolved.searxng_url.is_none());
+
+        // Direct save_scoped_setting to Project scope must also reject both.
+        assert!(matches!(
+            save_scoped_setting(
+                &db,
+                Some(&ws),
+                SettingScope::Project,
+                WEB_ENABLED_KEY,
+                Some("true"),
+                None,
+            ),
+            Err(ScopedSaveError::SecurityBlocked(_))
+        ));
+        assert!(matches!(
+            save_scoped_setting(
+                &db,
+                Some(&ws),
+                SettingScope::Project,
+                WEB_SEARXNG_URL_KEY,
+                Some("http://127.0.0.1:8080"),
+                None,
+            ),
+            Err(ScopedSaveError::SecurityBlocked(_))
+        ));
+
+        // Personal scope enables web and sets SearXNG; project scope MAY still restrict to false.
+        save_scoped_setting(
+            &db,
+            Some(&ws),
+            SettingScope::Personal,
+            WEB_ENABLED_KEY,
+            Some("true"),
+            None,
+        )
+        .expect("personal enable");
+        save_scoped_setting(
+            &db,
+            Some(&ws),
+            SettingScope::Personal,
+            WEB_SEARXNG_URL_KEY,
+            Some("http://127.0.0.1:8080"),
+            None,
+        )
+        .expect("personal searxng");
+        let after_personal = resolve_web_access_config(&db, Some(&ws));
+        assert!(after_personal.enabled);
+        assert_eq!(
+            after_personal.searxng_url.as_deref(),
+            Some("http://127.0.0.1:8080")
+        );
+
+        save_scoped_setting(
+            &db,
+            Some(&ws),
+            SettingScope::Project,
+            WEB_ENABLED_KEY,
+            Some("false"),
+            None,
+        )
+        .expect("project restrict to false");
+        let after_restrict = resolve_web_access_config(&db, Some(&ws));
+        assert!(
+            !after_restrict.enabled,
+            "project config disabling web access must restrict personal true"
+        );
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn invalid_searxng_url_validation_never_echoes_url_or_userinfo() {
+        for bad in [
+            "https://alice:super-secret-pass@search.example.org",
+            "https://example.com:/secret-token",
+            "https://[::1]:",
+            "http://192.168.1.50/private",
+        ] {
+            let err = validate_desktop_setting(WEB_SEARXNG_URL_KEY, Some(bad))
+                .expect_err("invalid SearXNG URL must fail");
+            assert!(err.contains(WEB_SEARXNG_URL_KEY));
+            assert!(!err.contains(bad));
+            assert!(!err.contains("alice"));
+            assert!(!err.contains("super-secret-pass"));
+            assert!(!err.contains("secret-token"));
+            assert!(!err.contains("192.168.1.50"));
+            assert!(!err.contains("example.com"));
+        }
     }
 }

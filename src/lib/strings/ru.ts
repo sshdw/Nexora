@@ -44,6 +44,11 @@ export const ru: Record<StringKey, string> = {
   "agent.packagesUnknown":
     "Список пакетов неполон или определяется при выполнении.",
   "agent.sensitiveWrite": "Защищённый файл · разрешение действует один раз",
+  "agent.webReadOnlyMeta":
+    "Внешний веб-контент (только чтение) · хост: {host} · действует один раз",
+  "agent.actWebSearch": "Поиск в сети",
+  "agent.actWebFetch": "Загрузка страницы",
+  "agent.urlTitle": "URL",
   "agent.category.GeneralShell": "Команда оболочки",
   "agent.category.DependencyInstall": "Установка зависимостей",
   "agent.category.PublishOrRemote": "Публикация или удалённые изменения",
@@ -600,6 +605,39 @@ export const ru: Record<StringKey, string> = {
   "settings.spendPh": "Пусто = без лимита",
   "settings.spendHint":
     "Пусто = без лимита. 1 USD = 1000000 микро-USD. Применяется к новым запускам.",
+  "settings.webAccessTitle": "Доступ в сеть",
+  "settings.webAccessHint":
+    "Разрешить запускам агента (кроме режима Plan) искать в сети и загружать публичные страницы. По умолчанию выключено; вне режима Полного доступа требуется согласие с привязкой к хосту.",
+  "settings.webEnabledLabel": "Включить инструменты веб-поиска и загрузки",
+  "settings.webEnabledHint":
+    "Добавляет web_search и web_fetch для запусков агента (никогда не доступны в режиме Plan). Файл .nexora/config.json не может включить эту опцию.",
+  "settings.webBackendLabel": "Поисковый бэкенд",
+  "settings.webBackendHint":
+    "DuckDuckGo работает без API-ключа. Ключи остальных бэкендов хранятся только в системном хранилище ключей.",
+  "settings.webBackend.ddg": "DuckDuckGo (без ключа, по умолчанию)",
+  "settings.webBackend.tavily": "Tavily (API-ключ)",
+  "settings.webBackend.brave": "Brave Search (API-ключ)",
+  "settings.webBackend.exa": "Exa (API-ключ)",
+  "settings.webBackend.searxng": "SearXNG (свой URL)",
+  "settings.webApiKeyLabel": "API-ключ поискового бэкенда",
+  "settings.webApiKeyHint":
+    "Хранится только в защищённом хранилище ОС и не отображается повторно после сохранения.",
+  "settings.webKeySaved": "API-ключ поиска сохранён в системное хранилище.",
+  "settings.webKeyRemoved": "API-ключ поиска удалён из системного хранилища.",
+  "settings.webSearxngLabel": "Базовый URL SearXNG",
+  "settings.webSearxngPh": "http://127.0.0.1:8080 или https://search.example.org",
+  "settings.webSearxngHint":
+    "Должен использовать https:// (публичный хост) или http:// только на localhost/loopback. Конфиг проекта не может его переопределить.",
+  "settings.webSave": "Сохранить",
+  "settings.webMaxResultsLabel": "Макс. результатов поиска за вызов",
+  "settings.webMaxResultsHint": "В диапазоне от 1 до 8 (по умолчанию 5).",
+  "settings.webMaxResultsInvalid":
+    "Количество результатов должно быть целым числом от 1 до 8.",
+  "settings.webMaxCharsLabel": "Макс. символов извлечённого текста",
+  "settings.webMaxCharsHint":
+    "В диапазоне от 1000 до 48000 символов (по умолчанию 20000).",
+  "settings.webMaxCharsInvalid":
+    "Лимит символов должен быть целым числом от 1000 до 48000.",
   "settings.workspaceHint":
     "Папка, которой ограничены инструменты агента. Меняется через выбор папки в боковой панели; там же хранятся 5 последних папок.",
   "settings.currentRoot": "Текущий корень",

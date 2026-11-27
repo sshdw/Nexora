@@ -45,6 +45,7 @@ const { mockInvoke, failNext, confirmFail, state } = vi.hoisted(() => {
     supported: [] as { name: string; display_name: string; models: string[] }[],
     configured: [] as { id: number; name: string; display_name: string }[],
     credentialed: new Set<string>(),
+    webCreds: new Set<string>(),
     settings: new Map<string, string | null>(),
     projectSettings: new Map<string, string | null>(),
     blocked: [] as { key: string; reason: string; detail: string }[],
@@ -332,6 +333,32 @@ const { mockInvoke, failNext, confirmFail, state } = vi.hoisted(() => {
         }
         case "refresh_provider_model_metadata":
           return [];
+        case "get_web_access_config":
+          return {
+            enabled: state.settings.get("agent.web.enabled") === "true",
+            search_backend:
+              state.settings.get("agent.web.search_backend") ?? "ddg",
+            searxng_url: state.settings.get("agent.web.searxng_url") ?? null,
+            max_results: Number.parseInt(
+              state.settings.get("agent.web.max_results") ?? "5",
+              10
+            ),
+            max_chars: Number.parseInt(
+              state.settings.get("agent.web.max_chars") ?? "20000",
+              10
+            ),
+            has_tavily_key: state.webCreds.has("tavily"),
+            has_brave_key: state.webCreds.has("brave"),
+            has_exa_key: state.webCreds.has("exa"),
+          };
+        case "set_web_search_credential":
+          state.webCreds.add((args as { backend: string }).backend);
+          return null;
+        case "remove_web_search_credential":
+          state.webCreds.delete((args as { backend: string }).backend);
+          return null;
+        case "has_web_search_credential":
+          return state.webCreds.has((args as { backend: string }).backend);
         default:
           throw new Error(`unexpected command ${command}`);
       }
@@ -360,6 +387,7 @@ beforeEach(() => {
   ];
   state.configured = [];
   state.credentialed = new Set<string>();
+  state.webCreds = new Set<string>();
   state.settings = new Map<string, string | null>();
   state.projectSettings = new Map<string, string | null>();
   state.blocked = [];
@@ -927,5 +955,48 @@ describe("SettingsView — Stage 4 provenance, scope & capability overrides", ()
     // Returning to Credentials keeps the error cleared after tab switch.
     fireEvent.click(railButton("Credentials"));
     expect(screen.queryByText(errText)).toBeNull();
+  });
+
+  it("manages Web Access toggle, backend selection, and OS-keyring search keys in Agent settings", async () => {
+    renderSettings();
+    await waitFor(() =>
+      expect(railButton("Agent & budgets")).toBeInTheDocument()
+    );
+    fireEvent.click(railButton("Agent & budgets"));
+
+    const toggle = await screen.findByRole("switch", {
+      name: /Enable web search & fetch tools/i,
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("set_setting", {
+        key: "agent.web.enabled",
+        value: "true",
+      })
+    );
+
+    const backendSelect = screen.getByLabelText(/Search backend/i);
+    fireEvent.change(backendSelect, { target: { value: "tavily" } });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("set_setting", {
+        key: "agent.web.search_backend",
+        value: "tavily",
+      })
+    );
+
+    const keyInput = await screen.findByLabelText(/Search backend API key/i);
+    fireEvent.change(keyInput, { target: { value: "tvly-secret-123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("set_web_search_credential", {
+        backend: "tavily",
+        apiKey: "tvly-secret-123",
+      })
+    );
+    // Secret must be cleared from the input state after saving.
+    await waitFor(() => expect(keyInput).toHaveValue(""));
+    expect(screen.getByText("Credential saved")).toBeInTheDocument();
   });
 });

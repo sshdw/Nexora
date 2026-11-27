@@ -46,3 +46,4 @@ export * from "./ipc/flags";
 export * from "./ipc/system";
 export * from "./ipc/mcp";
 export * from "./ipc/sandbox";
+export * from "./ipc/web";

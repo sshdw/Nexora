@@ -47,6 +47,7 @@ use crate::application::search::SearchError;
 use crate::application::settings::ScopedSaveError;
 use crate::application::system::SystemError;
 use crate::application::version_control::{CommitMessageError, VersionControlError};
+use crate::application::web::search::SearchError as WebSearchError;
 use crate::application::web::WebError;
 use crate::infrastructure::providers::chatgpt_oauth::ChatGptOAuthError;
 
@@ -659,6 +660,27 @@ impl From<WebError> for CommandError {
             | WebError::Timeout
             | WebError::Cancelled
             | WebError::Transport(_) => Self::new(ErrorKind::Request, err.to_string()),
+        }
+    }
+}
+
+impl From<WebSearchError> for CommandError {
+    fn from(err: WebSearchError) -> Self {
+        match err {
+            WebSearchError::InvalidQuery(_) | WebSearchError::InvalidConfig(_) => {
+                Self::new(ErrorKind::InvalidInput, err.to_string())
+            }
+            WebSearchError::CredentialStoreUnavailable => {
+                Self::new(ErrorKind::Credential, err.to_string())
+            }
+            WebSearchError::MissingApiKey(_)
+            | WebSearchError::RateLimitedOrBlocked(_)
+            | WebSearchError::HttpStatus { .. }
+            | WebSearchError::ParseFailed(_)
+            | WebSearchError::Timeout
+            | WebSearchError::Cancelled
+            | WebSearchError::Transport(_) => Self::new(ErrorKind::Request, err.to_string()),
+            WebSearchError::Web(web_err) => Self::from(web_err),
         }
     }
 }

@@ -76,6 +76,7 @@ const SNAPSHOT: readonly string[] = [
   "getResolvedSettings",
   "getSetting",
   "getSandboxStatus",
+  "getWebAccessConfig",
   "getWorkspaceRoot",
   "ghActionLog",
   "ghActions",
@@ -105,6 +106,7 @@ const SNAPSHOT: readonly string[] = [
   "gitStashPush",
   "gitUnstage",
   "hasProviderCredential",
+  "hasWebSearchCredential",
   "heartbeatTaskLock",
   "importConversation",
   "importDebtFromAudit",
@@ -166,6 +168,7 @@ const SNAPSHOT: readonly string[] = [
   "removePermissionRule",
   "removeProvider",
   "removeProviderCredential",
+  "removeWebSearchCredential",
   "renameConversation",
   "reorderWorkQueue",
   "repoAudit",
@@ -187,6 +190,7 @@ const SNAPSHOT: readonly string[] = [
   "setCompatConfig",
   "setModelCapabilityOverride",
   "setSetting",
+  "setWebSearchCredential",
   "setWorkspaceRoot",
   "snapshotDatabase",
   "spendDashboard",
@@ -381,5 +385,26 @@ it("routes testProviderConnection with camelCase connectionId and compatUrl", as
   expect(invoke).toHaveBeenLastCalledWith("test_provider_connection", {
     connectionId: "openai_compat",
     compatUrl: "https://proxy.example.com/v1",
+  });
+});
+
+it("routes Web Access IPC wrappers with camelCase arguments", async () => {
+  await barrel.getWebAccessConfig();
+  expect(invoke).toHaveBeenLastCalledWith("get_web_access_config");
+
+  await barrel.setWebSearchCredential("tavily", "tvly-test-key");
+  expect(invoke).toHaveBeenLastCalledWith("set_web_search_credential", {
+    backend: "tavily",
+    apiKey: "tvly-test-key",
+  });
+
+  await barrel.hasWebSearchCredential("brave");
+  expect(invoke).toHaveBeenLastCalledWith("has_web_search_credential", {
+    backend: "brave",
+  });
+
+  await barrel.removeWebSearchCredential("exa");
+  expect(invoke).toHaveBeenLastCalledWith("remove_web_search_credential", {
+    backend: "exa",
   });
 });

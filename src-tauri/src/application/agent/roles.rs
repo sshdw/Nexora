@@ -135,7 +135,9 @@ impl TaskCapability {
         if super::permissions::is_subagent_tool(tool) {
             return true;
         }
-        if matches!(self, Self::FullAccess) && super::permissions::is_mcp_tool(tool) {
+        if matches!(self, Self::FullAccess)
+            && (super::permissions::is_mcp_tool(tool) || super::permissions::is_web_tool(tool))
+        {
             return true;
         }
         self.allowed_tools().contains(&tool)

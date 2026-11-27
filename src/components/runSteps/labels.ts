@@ -169,6 +169,8 @@ const TOOL_VERBS: Record<string, StringKey> = {
   list_directory: "agent.actList",
   execute_command: "agent.actRun",
   ask_user_question: "agent.actAskUser",
+  web_search: "agent.actWebSearch",
+  web_fetch: "agent.actWebFetch",
 };
 
 /** Whether this tool has a verb of its own. An UNKNOWN tool has to keep
@@ -226,6 +228,9 @@ export function stepTarget(
   const query = typeof args.query === "string" ? args.query : null;
   if (query !== null)
     return { text: query, title: tr(getLocale(), "agent.queryTitle") };
+  const url = typeof args.url === "string" ? args.url : null;
+  if (url !== null)
+    return { text: url, title: tr(getLocale(), "agent.urlTitle") };
   return null;
 }
 
@@ -425,6 +430,9 @@ export function formatApprovalTarget(argumentsJson: string): string | null {
   }
   if (typeof args.query === "string" && args.query.trim()) {
     return args.query.trim();
+  }
+  if (typeof args.url === "string" && args.url.trim()) {
+    return args.url.trim();
   }
   return null;
 }

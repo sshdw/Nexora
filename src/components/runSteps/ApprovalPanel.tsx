@@ -149,6 +149,13 @@ function ApprovalPanel({ run, onResolveApproval }: ApprovalPanelProps) {
         {pending.metadata?.sensitive_write && (
           <p className="nex-agent-approval-meta">{t("agent.sensitiveWrite")}</p>
         )}
+        {pending.metadata?.web_target_host && (
+          <p className="nex-agent-approval-meta">
+            {t("agent.webReadOnlyMeta", {
+              host: pending.metadata.web_target_host,
+            })}
+          </p>
+        )}
         {targetSummary ? (
           <div className="nex-agent-approval-target nex-tag-mono">
             {targetSummary}
@@ -171,6 +178,8 @@ function ApprovalPanel({ run, onResolveApproval }: ApprovalPanelProps) {
             {t("agent.allowOnce")}
           </Button>
           {pending.name !== "execute_command" &&
+            pending.name !== "web_search" &&
+            pending.name !== "web_fetch" &&
             pending.metadata?.allow_for_run && (
               <Button
                 variant="quiet"

@@ -1376,6 +1376,15 @@ fn spawn_run(
                     {
                         runner = runner.with_mcp_runtime(Arc::new(mcp_runtime));
                     }
+                    let web_cfg = crate::application::settings::resolve_web_access_config(
+                        &db,
+                        Some(&workspace_root),
+                    );
+                    if web_cfg.enabled {
+                        runner = runner.with_web_runtime(Arc::new(
+                            crate::application::agent::tools::LiveWebToolRuntime::new(web_cfg),
+                        ));
+                    }
                 }
                 if let Some(instructions) = discovered_instructions {
                     runner = runner.with_project_instructions(instructions);

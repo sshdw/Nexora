@@ -52,6 +52,7 @@ import SegmentedGroup from "./SegmentedGroup";
 import AppearanceSection from "./settings/AppearanceSection";
 import ProviderSection from "./settings/ProviderSection";
 import AgentSection from "./settings/AgentSection";
+import WebAccessSection from "./settings/WebAccessSection";
 import WorkspaceSection from "./settings/WorkspaceSection";
 import CredentialsSection from "./settings/CredentialsSection";
 import McpSection from "./settings/McpSection";
@@ -152,6 +153,22 @@ const STATIC_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
       "micro-usd",
       "micro usd",
       "run cost",
+    ],
+  },
+  {
+    group: "agent",
+    title: "Web access",
+    keywords: [
+      "web",
+      "search",
+      "fetch",
+      "internet",
+      "duckduckgo",
+      "ddg",
+      "tavily",
+      "brave",
+      "exa",
+      "searxng",
     ],
   },
   {
@@ -887,6 +904,10 @@ export default function SettingsView({
             }
             effectiveAutonomy={effectiveAutonomy}
             resolvedEntries={resolvedEntries}
+          />
+          <WebAccessSection
+            resolvedEntries={resolvedEntries}
+            onSettingsChanged={() => void refreshResolvedSettings()}
           />
           </>
         );

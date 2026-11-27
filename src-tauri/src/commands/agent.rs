@@ -1068,6 +1068,12 @@ fn validate_new_rule(
             "persistent allow is not available for MCP tools",
         ));
     }
+    if effect == "allow" && permissions::is_web_tool_pattern(tool_pattern) {
+        return Err(CommandError::new(
+            ErrorKind::InvalidInput,
+            "persistent allow is not available for web tools",
+        ));
+    }
     Ok(())
 }
 
@@ -1950,6 +1956,24 @@ mod tests {
             .expect("MCP deny rule valid");
         validate_new_rule("coding", "mcp__github__search", Some("*"), "ask")
             .expect("MCP ask rule valid");
+    }
+
+    #[test]
+    fn web_tools_never_get_persistent_allow() {
+        for pattern in ["web_search", "web_fetch", "web_*"] {
+            let err = validate_new_rule("coding", pattern, Some("*"), "allow")
+                .expect_err("web persistent allow must be rejected");
+            assert_eq!(err.kind, ErrorKind::InvalidInput);
+            assert!(safe_message(&err));
+            assert!(
+                !err.message.contains(pattern),
+                "rejection must use fixed vocabulary without echoing pattern"
+            );
+        }
+        // Deny and ask rules remain valid for web tools (including host-scoped deny).
+        validate_new_rule("coding", "web_fetch", Some("evil.com"), "deny")
+            .expect("web deny rule valid");
+        validate_new_rule("coding", "web_search", Some("*"), "ask").expect("web ask rule valid");
     }
 
     #[test]

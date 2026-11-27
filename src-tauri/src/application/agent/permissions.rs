@@ -168,33 +168,37 @@ impl PermissionStore {
             lexical.as_deref(),
             RiskClass::classify(&call.name),
         );
-        let canonical = (|| {
-            let mut args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
-            let field = match call.name.as_str() {
-                "execute_command" => "cwd",
-                "search_files"
-                    if args
-                        .get("directory")
-                        .and_then(serde_json::Value::as_str)
-                        .is_some() =>
-                {
-                    "directory"
-                }
-                _ => "path",
-            };
-            let target =
-                super::tools::path_safety::tool_scope(workspace, &call.name, &args).ok()?;
-            let root = super::tools::path_safety::canonical_root(workspace);
-            let relative: std::path::PathBuf = target
-                .components()
-                .skip(root.components().count())
-                .collect();
-            args.as_object_mut()?.insert(
-                field.into(),
-                serde_json::Value::String(relative.to_string_lossy().replace('\\', "/")),
-            );
-            extract_path(&call.name, &args.to_string())
-        })();
+        let canonical = if is_web_tool(&call.name) {
+            None
+        } else {
+            (|| {
+                let mut args: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+                let field = match call.name.as_str() {
+                    "execute_command" => "cwd",
+                    "search_files"
+                        if args
+                            .get("directory")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some() =>
+                    {
+                        "directory"
+                    }
+                    _ => "path",
+                };
+                let target =
+                    super::tools::path_safety::tool_scope(workspace, &call.name, &args).ok()?;
+                let root = super::tools::path_safety::canonical_root(workspace);
+                let relative: std::path::PathBuf = target
+                    .components()
+                    .skip(root.components().count())
+                    .collect();
+                args.as_object_mut()?.insert(
+                    field.into(),
+                    serde_json::Value::String(relative.to_string_lossy().replace('\\', "/")),
+                );
+                extract_path(&call.name, &args.to_string())
+            })()
+        };
         let second = self.decide(
             preset,
             &call.name,
@@ -381,6 +385,11 @@ pub(crate) fn extract_path(tool_name: &str, arguments_json: &str) -> Option<Stri
             }
             Some(normalize_rel(&normalize_dir(cwd)))
         }
+        "web_fetch" => {
+            let raw_url = args.get("url")?.as_str()?;
+            let validated = crate::application::web::safety::validate_fetch_url(raw_url).ok()?;
+            Some(validated.host().to_string())
+        }
         _ => None,
     }
 }
@@ -460,6 +469,21 @@ pub(crate) const SUBAGENT_TOOL_NAMES: &[&str] = &[
     "list_subagents",
 ];
 
+/// Native web tool names (`Stage 12 PR 6`, default-off).
+pub(crate) const WEB_TOOL_NAMES: &[&str] = &["web_search", "web_fetch"];
+
+/// Whether `name` is one of the native web tools (`web_search`, `web_fetch`).
+#[must_use]
+pub(crate) fn is_web_tool(name: &str) -> bool {
+    WEB_TOOL_NAMES.contains(&name)
+}
+
+/// Whether `tool_pattern` targets a web tool or web tool prefix (`web_*`).
+#[must_use]
+pub(crate) fn is_web_tool_pattern(tool_pattern: &str) -> bool {
+    is_web_tool(tool_pattern) || tool_pattern.starts_with("web_")
+}
+
 /// Whether `name` is one of the parent-only subagent orchestration tools.
 #[must_use]
 pub(crate) fn is_subagent_tool(name: &str) -> bool {
@@ -490,10 +514,13 @@ pub(crate) fn is_mcp_tool_pattern(tool_pattern: &str) -> bool {
 }
 
 /// Whether persistent `allow` rules are forbidden for `tool_pattern`
-/// (`execute_command`, wildcard `*`, or any MCP tool / `mcp__*` pattern).
+/// (`execute_command`, wildcard `*`, any MCP tool / `mcp__*`, or any web tool / `web_*`).
 #[must_use]
 pub(crate) fn is_persistent_allow_forbidden(tool_pattern: &str) -> bool {
-    tool_pattern == "execute_command" || tool_pattern == "*" || is_mcp_tool_pattern(tool_pattern)
+    tool_pattern == "execute_command"
+        || tool_pattern == "*"
+        || is_mcp_tool_pattern(tool_pattern)
+        || is_web_tool_pattern(tool_pattern)
 }
 
 // ---------------------------------------------------------------------------

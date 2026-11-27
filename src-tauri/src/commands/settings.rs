@@ -126,9 +126,20 @@ fn validate_setting(key: &str, value: Option<&str>) -> Result<(), CommandError> 
                 is_valid_root_list(raw, Some(nexora_core::config::WORKSPACE_RECENT_MAX))
             }
             Some(nexora_core::config::ConfigKey::WorkspaceRoots) => is_valid_root_list(raw, None),
+            Some(nexora_core::config::ConfigKey::WebSearxngUrl) => {
+                crate::application::web::search::searxng::validate_searxng_base_url(raw).is_ok()
+            }
             _ => true,
         };
         if !round_trips {
+            if key == nexora_core::config::WEB_SEARXNG_URL_KEY {
+                let rejection = nexora_core::config::Rejection {
+                    reason: nexora_core::config::RejectionReason::InvalidWebSearxngUrl {
+                        key: key.to_string(),
+                    },
+                };
+                return Err(CommandError::new(rejection.kind(), rejection.message()));
+            }
             return Err(CommandError::new(
                 ErrorKind::InvalidInput,
                 format!("value '{raw}' is not a valid '{key}' setting"),
@@ -784,5 +795,28 @@ mod tests {
         assert!(validate_setting(MODEL_CAPABILITY_OVERRIDES_KEY, None).is_ok());
         assert_rejected(MODEL_CAPABILITY_OVERRIDES_KEY, "not-json");
         assert_rejected(MODEL_CAPABILITY_OVERRIDES_KEY, "[]");
+    }
+
+    #[test]
+    fn searxng_url_rejection_never_echoes_url_or_credentials() {
+        use nexora_core::config::WEB_SEARXNG_URL_KEY;
+
+        for bad in [
+            "https://alice:top-secret-pw@search.example.org/path",
+            "https://example.com:/secret-path",
+            "https://[::1]:",
+            "http://192.168.1.50:8080/private",
+        ] {
+            let err = validate_setting(WEB_SEARXNG_URL_KEY, Some(bad))
+                .expect_err("invalid SearXNG URL must be rejected");
+            assert_eq!(err.kind, ErrorKind::InvalidInput);
+            assert!(err.message.contains(WEB_SEARXNG_URL_KEY));
+            assert!(!err.message.contains(bad));
+            assert!(!err.message.contains("alice"));
+            assert!(!err.message.contains("top-secret-pw"));
+            assert!(!err.message.contains("secret-path"));
+            assert!(!err.message.contains("192.168.1.50"));
+            assert!(!err.message.contains("example.com"));
+        }
     }
 }
