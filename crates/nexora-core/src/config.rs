@@ -65,6 +65,18 @@ pub const SPEND_LIMIT_KEY: &str = "agent.spend_limit_micro_usd";
 pub const APPROVAL_TIMEOUT_KEY: &str = "agent.approval_timeout_secs";
 /// Settings key holding the per-run maximum concurrent subagents (`1..=6`, default `3`).
 pub const SUBAGENT_MAX_CONCURRENCY_KEY: &str = "agent.subagent_max_concurrency";
+/// Settings key controlling whether agent web tools (`web_search`, `web_fetch`)
+/// are enabled (default `false`; `.nexora/config.json` may never enable this).
+pub const WEB_ENABLED_KEY: &str = "agent.web.enabled";
+/// Settings key selecting the web search backend (`ddg`, `tavily`, `brave`, `exa`, `searxng`).
+pub const WEB_SEARCH_BACKEND_KEY: &str = "agent.web.search_backend";
+/// Settings key storing the validated HTTPS-or-loopback `SearXNG` base URL
+/// (personal `app_settings` only; never configurable from `.nexora/config.json`).
+pub const WEB_SEARXNG_URL_KEY: &str = "agent.web.searxng_url";
+/// Settings key bounding search results per call (`1..=8`, default `5`).
+pub const WEB_MAX_RESULTS_KEY: &str = "agent.web.max_results";
+/// Settings key bounding extracted characters per `web_fetch` call (`1000..=48000`, default `20000`).
+pub const WEB_MAX_CHARS_KEY: &str = "agent.web.max_chars";
 /// Settings key holding the chosen workspace root.
 pub const WORKSPACE_ROOT_KEY: &str = "agent.workspace_root";
 /// Settings key holding the recent-workspace ring (JSON array).
@@ -115,11 +127,28 @@ pub const DEFAULT_SUBAGENT_MAX_CONCURRENCY: usize = 3;
 /// Maximum configurable concurrent subagents per parent run (`M19`).
 pub const MAX_SUBAGENT_MAX_CONCURRENCY: usize = 6;
 
+/// Supported web search backend names (`Stage 12 PR 6`).
+pub const VALID_WEB_SEARCH_BACKENDS: [&str; 5] = ["ddg", "tavily", "brave", "exa", "searxng"];
+/// Minimum configurable web search result cap.
+pub const MIN_WEB_MAX_RESULTS: usize = 1;
+/// Default web search result cap.
+pub const DEFAULT_WEB_MAX_RESULTS: usize = 5;
+/// Maximum configurable web search result cap.
+pub const MAX_WEB_MAX_RESULTS: usize = 8;
+/// Minimum configurable extracted character cap for `web_fetch`.
+pub const MIN_WEB_MAX_CHARS: usize = 1_000;
+/// Default extracted character cap for `web_fetch`.
+pub const DEFAULT_WEB_MAX_CHARS: usize = 20_000;
+/// Maximum configurable extracted character cap for `web_fetch`.
+pub const MAX_WEB_MAX_CHARS: usize = 48_000;
+/// Maximum length of a `SearXNG` base URL.
+pub const MAX_SEARXNG_URL_LEN: usize = 2048;
+
 /// Longest accepted custom model identifier.
 pub const MAX_MODEL_LEN: usize = 200;
 
 /// Every writable setting key that is not a `flags.*` flag.
-pub const BASE_KEYS: [&str; 17] = [
+pub const BASE_KEYS: [&str; 22] = [
     APPEARANCE_THEME_KEY,
     SELECTED_PROVIDER_KEY,
     SELECTED_MODEL_KEY,
@@ -131,6 +160,11 @@ pub const BASE_KEYS: [&str; 17] = [
     SPEND_LIMIT_KEY,
     APPROVAL_TIMEOUT_KEY,
     SUBAGENT_MAX_CONCURRENCY_KEY,
+    WEB_ENABLED_KEY,
+    WEB_SEARCH_BACKEND_KEY,
+    WEB_SEARXNG_URL_KEY,
+    WEB_MAX_RESULTS_KEY,
+    WEB_MAX_CHARS_KEY,
     WORKSPACE_ROOT_KEY,
     WORKSPACE_RECENT_KEY,
     WORKSPACE_ROOTS_KEY,
@@ -179,6 +213,16 @@ pub enum ConfigKey {
     ApprovalTimeout,
     /// [`SUBAGENT_MAX_CONCURRENCY_KEY`]
     SubagentMaxConcurrency,
+    /// [`WEB_ENABLED_KEY`]
+    WebEnabled,
+    /// [`WEB_SEARCH_BACKEND_KEY`]
+    WebSearchBackend,
+    /// [`WEB_SEARXNG_URL_KEY`]
+    WebSearxngUrl,
+    /// [`WEB_MAX_RESULTS_KEY`]
+    WebMaxResults,
+    /// [`WEB_MAX_CHARS_KEY`]
+    WebMaxChars,
     /// [`WORKSPACE_ROOT_KEY`]
     WorkspaceRoot,
     /// [`WORKSPACE_RECENT_KEY`]
@@ -219,6 +263,11 @@ impl ConfigKey {
             Self::SpendLimit => Some(SPEND_LIMIT_KEY),
             Self::ApprovalTimeout => Some(APPROVAL_TIMEOUT_KEY),
             Self::SubagentMaxConcurrency => Some(SUBAGENT_MAX_CONCURRENCY_KEY),
+            Self::WebEnabled => Some(WEB_ENABLED_KEY),
+            Self::WebSearchBackend => Some(WEB_SEARCH_BACKEND_KEY),
+            Self::WebSearxngUrl => Some(WEB_SEARXNG_URL_KEY),
+            Self::WebMaxResults => Some(WEB_MAX_RESULTS_KEY),
+            Self::WebMaxChars => Some(WEB_MAX_CHARS_KEY),
             Self::WorkspaceRoot => Some(WORKSPACE_ROOT_KEY),
             Self::WorkspaceRecent => Some(WORKSPACE_RECENT_KEY),
             Self::WorkspaceRoots => Some(WORKSPACE_ROOTS_KEY),
@@ -274,6 +323,11 @@ pub fn classify_key(key: &str) -> Option<ConfigKey> {
         SPEND_LIMIT_KEY => Some(ConfigKey::SpendLimit),
         APPROVAL_TIMEOUT_KEY => Some(ConfigKey::ApprovalTimeout),
         SUBAGENT_MAX_CONCURRENCY_KEY => Some(ConfigKey::SubagentMaxConcurrency),
+        WEB_ENABLED_KEY => Some(ConfigKey::WebEnabled),
+        WEB_SEARCH_BACKEND_KEY => Some(ConfigKey::WebSearchBackend),
+        WEB_SEARXNG_URL_KEY => Some(ConfigKey::WebSearxngUrl),
+        WEB_MAX_RESULTS_KEY => Some(ConfigKey::WebMaxResults),
+        WEB_MAX_CHARS_KEY => Some(ConfigKey::WebMaxChars),
         WORKSPACE_ROOT_KEY => Some(ConfigKey::WorkspaceRoot),
         WORKSPACE_RECENT_KEY => Some(ConfigKey::WorkspaceRecent),
         WORKSPACE_ROOTS_KEY => Some(ConfigKey::WorkspaceRoots),
@@ -341,6 +395,12 @@ pub enum RejectionReason {
         /// The rejected key.
         key: String,
     },
+    /// The `SearXNG` base URL was rejected without echoing the value, because a
+    /// misconfigured URL may carry embedded credentials or private endpoints.
+    InvalidWebSearxngUrl {
+        /// The rejected key.
+        key: String,
+    },
 }
 
 /// A rejected setting write.
@@ -357,10 +417,12 @@ impl Rejection {
     /// - unknown / secret-adjacent key: `setting key '<key>' is not supported`
     /// - out-of-domain value: `value '<value>' is not a valid '<key>' setting`
     /// - MCP server list: `value for '<key>' is not a valid MCP server list`
+    /// - `SearXNG` base URL: `value for '<key>' must be a valid https:// public URL or explicit localhost/loopback URL`
     ///
-    /// The MCP arm deliberately omits the value: an MCP server entry may
-    /// carry an environment variable holding a secret, and an echo would leak
-    /// it into logs, a CLI stream, or the IPC payload.
+    /// The MCP and `SearXNG` URL arms deliberately omit the value: an MCP
+    /// server entry may carry an environment variable holding a secret, and a
+    /// URL may carry embedded credentials or private hostnames, so echoing it
+    /// would leak sensitive material into logs, a CLI stream, or IPC payloads.
     #[must_use]
     pub fn message(&self) -> String {
         match &self.reason {
@@ -372,6 +434,11 @@ impl Rejection {
             }
             RejectionReason::InvalidMcpServers { key } => {
                 format!("value for '{key}' is not a valid MCP server list")
+            }
+            RejectionReason::InvalidWebSearxngUrl { key } => {
+                format!(
+                    "value for '{key}' must be a valid https:// public URL or explicit localhost/loopback URL"
+                )
             }
         }
     }
@@ -479,6 +546,118 @@ pub fn is_valid_subagent_max_concurrency(value: &str) -> bool {
     )
 }
 
+/// Domain check for [`WEB_SEARCH_BACKEND_KEY`].
+#[must_use]
+pub fn is_valid_web_search_backend(value: &str) -> bool {
+    VALID_WEB_SEARCH_BACKENDS.contains(&value)
+}
+
+/// Domain check for [`WEB_MAX_RESULTS_KEY`]: a trimmed integer in `1..=8`.
+#[must_use]
+pub fn is_valid_web_max_results(value: &str) -> bool {
+    matches!(
+        value.trim().parse::<usize>(),
+        Ok(limit) if (MIN_WEB_MAX_RESULTS..=MAX_WEB_MAX_RESULTS).contains(&limit)
+    )
+}
+
+/// Domain check for [`WEB_MAX_CHARS_KEY`]: a trimmed integer in `1000..=48000`.
+#[must_use]
+pub fn is_valid_web_max_chars(value: &str) -> bool {
+    matches!(
+        value.trim().parse::<usize>(),
+        Ok(limit) if (MIN_WEB_MAX_CHARS..=MAX_WEB_MAX_CHARS).contains(&limit)
+    )
+}
+
+/// Syntactic check for [`WEB_SEARXNG_URL_KEY`]: HTTPS or explicit loopback HTTP
+/// (`localhost`, `127.0.0.1`, `[::1]`), no userinfo/query/fragment/control/backslash.
+#[must_use]
+pub fn is_valid_searxng_url(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_SEARXNG_URL_LEN
+        || trimmed.chars().any(char::is_control)
+        || trimmed.contains('\\')
+        || trimmed.contains('?')
+        || trimmed.contains('#')
+    {
+        return false;
+    }
+    let (is_https, rest) = if let Some(r) = trimmed.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = trimmed.strip_prefix("http://") {
+        (false, r)
+    } else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(after_bracket) = authority.strip_prefix('[') {
+        let Some((ipv6, port_part)) = after_bracket.split_once(']') else {
+            return false;
+        };
+        if !port_part.is_empty()
+            && port_part
+                .strip_prefix(':')
+                .is_none_or(|p| p.parse::<u16>().is_err())
+        {
+            return false;
+        }
+        ipv6.to_ascii_lowercase()
+    } else {
+        let (h, port_opt) = match authority.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() => (h, Some(p)),
+            Some(_) => return false,
+            None => (authority, None),
+        };
+        let _ = port_opt;
+        h.trim_end_matches('.').to_ascii_lowercase()
+    };
+    if host.is_empty() {
+        return false;
+    }
+    let is_loopback = host == "localhost"
+        || host == "::1"
+        || host == "0:0:0:0:0:0:0:1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    if is_loopback {
+        return true;
+    }
+    if !is_https {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                !v4.is_private()
+                    && !v4.is_loopback()
+                    && !v4.is_link_local()
+                    && !v4.is_unspecified()
+                    && !v4.is_broadcast()
+                    && !v4.is_multicast()
+                    && !(v4.octets()[0] == 100 && (v4.octets()[1] & 0b1100_0000) == 64)
+            }
+            std::net::IpAddr::V6(v6) => {
+                !v6.is_loopback()
+                    && !v6.is_unspecified()
+                    && !v6.is_multicast()
+                    && (v6.segments()[0] & 0xfe00) != 0xfc00
+                    && (v6.segments()[0] & 0xffc0) != 0xfe80
+            }
+        };
+    }
+    host.contains('.')
+        && !matches!(
+            host.rsplit('.').next(),
+            Some("localhost" | "local" | "internal" | "arpa" | "localdomain" | "lan" | "corp")
+        )
+}
+
 /// Syntactic check for [`WORKSPACE_ROOT_KEY`]: a non-empty path up to
 /// [`WORKSPACE_ROOT_MAX_LEN`] chars with no null byte.
 ///
@@ -526,6 +705,7 @@ pub fn is_valid_workspace_path_list(value: &str, cap: Option<usize>) -> bool {
 /// Returns the [`Rejection`] that explains which check failed and carries the
 /// exact user-facing message. Inspect [`Rejection::reason`] to distinguish an
 /// unknown key from an out-of-domain value.
+#[allow(clippy::too_many_lines)] // Exhaustive single-table allowlist match over all ConfigKey variants.
 pub fn validate_setting(
     registry: &ConfigRegistry<'_>,
     key: &str,
@@ -576,6 +756,30 @@ pub fn validate_setting(
             .then_some(())
             .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::SubagentMaxConcurrency) => is_valid_subagent_max_concurrency(value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::WebEnabled) => parse_global_bool(value)
+            .map(|_| ())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::WebSearchBackend) => is_valid_web_search_backend(value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::WebSearxngUrl) => {
+            if is_valid_searxng_url(value) {
+                Ok(())
+            } else {
+                // Value-free: a rejected URL may carry embedded credentials or private hosts.
+                Err(Rejection {
+                    reason: RejectionReason::InvalidWebSearxngUrl {
+                        key: key.to_string(),
+                    },
+                })
+            }
+        }
+        Some(ConfigKey::WebMaxResults) => is_valid_web_max_results(value)
+            .then_some(())
+            .ok_or_else(|| invalid_value(key, value)),
+        Some(ConfigKey::WebMaxChars) => is_valid_web_max_chars(value)
             .then_some(())
             .ok_or_else(|| invalid_value(key, value)),
         Some(ConfigKey::WorkspaceRoot) => is_valid_workspace_root_syntax(value)
@@ -680,7 +884,7 @@ mod tests {
         }
         assert_eq!(
             BASE_KEYS.len(),
-            17,
+            22,
             "the allowlist is closed; keep it in sync"
         );
     }
@@ -1023,5 +1227,87 @@ mod tests {
             .message(),
             "value for 'mcp.servers' is not a valid MCP server list"
         );
+    }
+
+    #[test]
+    fn web_access_setting_domains_are_strictly_validated() {
+        for v in ["true", "false", " TRUE "] {
+            assert_accepted(WEB_ENABLED_KEY, v);
+        }
+        for v in ["yes", "1", "enabled", ""] {
+            assert_rejected(WEB_ENABLED_KEY, v);
+        }
+
+        for backend in VALID_WEB_SEARCH_BACKENDS {
+            assert_accepted(WEB_SEARCH_BACKEND_KEY, backend);
+        }
+        for bad in ["google", "bing", "", "ddg "] {
+            assert_rejected(WEB_SEARCH_BACKEND_KEY, bad);
+        }
+
+        for n in ["1", "5", "8"] {
+            assert_accepted(WEB_MAX_RESULTS_KEY, n);
+        }
+        for bad in ["0", "9", "-1", "abc"] {
+            assert_rejected(WEB_MAX_RESULTS_KEY, bad);
+        }
+
+        for n in ["1000", "20000", "48000"] {
+            assert_accepted(WEB_MAX_CHARS_KEY, n);
+        }
+        for bad in ["999", "48001", "0", "abc"] {
+            assert_rejected(WEB_MAX_CHARS_KEY, bad);
+        }
+
+        for ok in [
+            "https://search.example.org",
+            "http://127.0.0.1:8080",
+            "http://localhost:8888",
+            "http://[::1]:8080",
+        ] {
+            assert_accepted(WEB_SEARXNG_URL_KEY, ok);
+        }
+        for bad in [
+            "http://search.example.org",
+            "https://192.168.1.5",
+            "https://169.254.169.254",
+            "https://user:pass@search.example.org",
+            "https://search.example.org?q=1",
+            "https://search.example.org#frag",
+            "https://internal.local",
+            "https://example.com:/secret",
+            "https://[::1]:",
+            "http://localhost:/",
+        ] {
+            assert_rejected(WEB_SEARXNG_URL_KEY, bad);
+        }
+    }
+
+    #[test]
+    fn web_searxng_url_rejection_never_echoes_url_or_userinfo() {
+        for bad in [
+            "https://alice:top-secret-pw@search.example.org/private",
+            "https://example.com:/secret-path",
+            "https://[::1]:",
+            "http://192.168.1.99:8080/internal-endpoint",
+        ] {
+            let err =
+                validate(WEB_SEARXNG_URL_KEY, Some(bad)).expect_err("invalid URL must be rejected");
+            assert_eq!(err.kind(), CoreErrorKind::InvalidInput);
+            assert_eq!(
+                err.reason,
+                RejectionReason::InvalidWebSearxngUrl {
+                    key: WEB_SEARXNG_URL_KEY.to_string(),
+                }
+            );
+            let msg = err.message();
+            assert!(msg.contains(WEB_SEARXNG_URL_KEY));
+            assert!(!msg.contains(bad));
+            assert!(!msg.contains("alice"));
+            assert!(!msg.contains("top-secret-pw"));
+            assert!(!msg.contains("secret-path"));
+            assert!(!msg.contains("192.168.1.99"));
+            assert!(!msg.contains("example.com"));
+        }
     }
 }

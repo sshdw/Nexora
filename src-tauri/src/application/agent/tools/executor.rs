@@ -223,6 +223,9 @@ impl ToolRegistry {
             "ask_user_question" => Err(ToolError::Io(
                 "ask_user_question requires an active interactive run context".into(),
             )),
+            "web_search" | "web_fetch" => Err(ToolError::Io(
+                "web tools require web access to be enabled with an active web runtime".into(),
+            )),
             other => Err(ToolError::UnknownTool(other.to_string())),
         }
     }

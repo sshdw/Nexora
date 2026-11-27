@@ -19,6 +19,7 @@
 pub(crate) mod extract;
 pub(crate) mod fetch;
 pub(crate) mod safety;
+pub(crate) mod search;
 
 use std::fmt;
 use std::time::Duration;

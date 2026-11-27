@@ -356,6 +356,46 @@ impl AccessContext {
         let args: serde_json::Value = serde_json::from_str(&call.arguments)
             .map_err(|_| super::tools::ToolError::InvalidArguments("invalid JSON".into()))?;
         let target = tool_scope(workspace, &call.name, &args)?;
+        let web_host_binding = match call.name.as_str() {
+            "web_fetch" => {
+                let raw_url = args
+                    .get("url")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| {
+                        super::tools::ToolError::InvalidArguments(
+                            "missing required field 'url'".into(),
+                        )
+                    })?;
+                let validated = crate::application::web::safety::validate_fetch_url(raw_url)
+                    .map_err(|err| super::tools::ToolError::InvalidArguments(err.to_string()))?;
+                format!("web-fetch-host:{}", validated.host())
+            }
+            "web_search" => {
+                let raw_query = args
+                    .get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        super::tools::ToolError::InvalidArguments(
+                            "missing required field 'query'".into(),
+                        )
+                    })?;
+                crate::application::web::search::validate_query(raw_query)
+                    .map_err(|err| super::tools::ToolError::InvalidArguments(err.to_string()))?;
+                let backend_host = self.0.db.as_ref().map_or_else(
+                    || "html.duckduckgo.com".to_string(),
+                    |db| {
+                        let cfg = crate::application::settings::resolve_web_access_config(
+                            db,
+                            self.0.workspace_root.as_deref(),
+                        );
+                        cfg.search_backend.target_host(cfg.searxng_url.as_deref())
+                    },
+                );
+                format!("web-search-host:{backend_host}")
+            }
+            _ => String::new(),
+        };
         let mut hash = Sha256::new();
         let (sandbox_posture, sandbox_id) = if self.0.sandbox_enabled {
             super::sandbox::posture_and_identity(workspace)
@@ -370,6 +410,7 @@ impl AccessContext {
             &path_to_comparable_string(&canonical_root(workspace)),
             &call.name,
             &path_to_comparable_string(&target),
+            &web_host_binding,
             &call.arguments,
             &self.environment_identity(),
             &posture,

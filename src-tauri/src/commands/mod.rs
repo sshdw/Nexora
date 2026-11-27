@@ -41,6 +41,7 @@ pub mod tasks;
 pub mod terminal;
 pub mod testgen;
 pub mod version_control;
+pub mod web;
 pub mod workspace;
 
 pub(crate) mod sandbox;

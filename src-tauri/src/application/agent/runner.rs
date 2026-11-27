@@ -200,6 +200,8 @@ pub(crate) struct AgentRunner<'a> {
     active_plan: Option<String>,
     /// Optional run-scoped user-added MCP tool runtime (`M18` / `P26`).
     mcp_runtime: Option<Arc<dyn crate::application::mcp::McpToolRuntime>>,
+    /// Optional run-scoped native web tool runtime (`Stage 12 PR 6`, default-off).
+    web_runtime: Option<Arc<dyn super::tools::WebToolRuntime>>,
     /// Optional parent-run subagent manager (`M19` / `P27`). Always `None`
     /// inside child subagents (`subagent_depth >= 1`).
     subagent_manager: Option<Arc<SubagentManager>>,
@@ -284,6 +286,7 @@ impl<'a> AgentRunner<'a> {
             is_plan: false,
             active_plan: None,
             mcp_runtime: None,
+            web_runtime: None,
             subagent_manager: None,
             subagent_depth: 0,
             subagent_id: None,
@@ -345,6 +348,17 @@ impl<'a> AgentRunner<'a> {
         runtime: Arc<dyn crate::application::mcp::McpToolRuntime>,
     ) -> Self {
         self.mcp_runtime = Some(runtime);
+        self
+    }
+
+    /// Attach a run-scoped native web tool runtime (`Stage 12 PR 6`, default-off).
+    /// Ignored structurally when `is_plan == true`.
+    #[must_use]
+    pub(crate) fn with_web_runtime(
+        mut self,
+        runtime: Arc<dyn super::tools::WebToolRuntime>,
+    ) -> Self {
+        self.web_runtime = Some(runtime);
         self
     }
 
@@ -878,14 +892,19 @@ impl<'a> AgentRunner<'a> {
             .map(|rt| rt.definitions())
             .unwrap_or_default();
         let include_subagents = self.subagent_manager.is_some() && self.subagent_depth == 0;
-        let tools: Arc<Vec<ToolDefinition>> =
-            Arc::new(ToolRegistry::definitions_for_run_with_capability(
-                self.preset,
-                self.is_plan,
-                self.capability,
-                &mcp_defs,
-                include_subagents,
-            ));
+        let is_read_only = self
+            .approval_gate
+            .as_ref()
+            .is_some_and(ApprovalGate::is_read_only);
+        let include_web = self.web_runtime.is_some() && !self.is_plan && !is_read_only;
+        let tools: Arc<Vec<ToolDefinition>> = Arc::new(ToolRegistry::definitions_for_run_complete(
+            self.preset,
+            self.is_plan,
+            self.capability,
+            &mcp_defs,
+            include_subagents,
+            include_web,
+        ));
         let fallback_step_seq = AtomicUsize::new(0);
         let subagent_step_seq: &AtomicUsize = self
             .subagent_step_seq
@@ -1366,6 +1385,13 @@ impl<'a> AgentRunner<'a> {
                 turn_index: steps_taken.saturating_sub(1),
                 question_ctx: self.question_ctx.as_ref(),
                 mcp_runtime: self.mcp_runtime.as_deref(),
+                web_runtime: (!self.is_plan
+                    && !self
+                        .approval_gate
+                        .as_ref()
+                        .is_some_and(ApprovalGate::is_read_only))
+                .then_some(self.web_runtime.as_deref())
+                .flatten(),
                 subagent_manager: self.subagent_manager.as_ref(),
                 subagent_depth: self.subagent_depth,
                 subagent_id: self.subagent_id.as_deref(),
@@ -2692,6 +2718,82 @@ mod tests {
             .find_map(|msg| msg.tool_result.as_ref())
             .expect("tool result sent on second turn");
         assert!(tool_msg.content.contains("SQLite"));
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn read_only_access_profile_hides_and_blocks_web_tools_without_plan_mode() {
+        use std::sync::atomic::AtomicUsize;
+
+        use crate::application::agent::access::{AccessContext, AccessProfile};
+        use crate::application::agent::permissions::is_web_tool;
+        use crate::application::agent::tools::{ToolError, WebToolRuntime};
+
+        struct CountingWebRuntime(Arc<AtomicUsize>);
+        impl WebToolRuntime for CountingWebRuntime {
+            fn search_target_host(&self) -> String {
+                "html.duckduckgo.com".to_string()
+            }
+            fn execute_web_search(
+                &self,
+                _query: &str,
+                _max_results: Option<usize>,
+                _token: &CancellationToken,
+            ) -> Result<String, ToolError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("should not run".to_string())
+            }
+            fn execute_web_fetch(
+                &self,
+                _url: &str,
+                _max_chars: Option<usize>,
+                _token: &CancellationToken,
+            ) -> Result<String, ToolError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok("should not run".to_string())
+            }
+        }
+
+        let ws = temp_workspace();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let web_rt: Arc<dyn WebToolRuntime> = Arc::new(CountingWebRuntime(Arc::clone(&calls)));
+        let gate = ApprovalGate::new(AutonomyMode::Supervised)
+            .with_access(AccessContext::fixed(AccessProfile::ReadOnly));
+        let fake = FakeExecutor::new(vec![
+            Ok(AiResponse {
+                content: String::new(),
+                model: "m".to_string(),
+                tool_calls: vec![call_tool(
+                    "w1",
+                    "web_search",
+                    serde_json::json!({"query": "rust"}),
+                )],
+                usage: None,
+            }),
+            Ok(text_response("done")),
+        ]);
+
+        // Not Plan mode (`is_plan == false`), yet `AccessProfile::ReadOnly` must
+        // omit web tools from tool definitions and refuse execution on dispatch.
+        let runner = AgentRunner::new(&fake, &ws)
+            .with_approval_gate(gate)
+            .with_web_runtime(web_rt);
+        let answer = runner
+            .run("openai", "m", "cred", "search docs")
+            .expect("run should finish cleanly");
+        assert_eq!(answer, "done");
+
+        let requests = fake.requests.borrow();
+        assert!(!requests.is_empty());
+        assert!(
+            requests[0].tools.iter().all(|t| !is_web_tool(&t.name)),
+            "ReadOnly access profile must omit web_search and web_fetch from tool definitions even when !is_plan"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "ReadOnly access profile must never execute web runtime on dispatch"
+        );
         let _ = fs::remove_dir_all(&ws);
     }
 }

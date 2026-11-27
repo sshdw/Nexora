@@ -26,6 +26,7 @@ export interface ApprovalMetadata {
     uncertain: boolean;
     sandbox_posture: "Verified" | "PerCommandConsent";
   } | null;
+  web_target_host?: string | null;
 }
 export async function getAccessProfile(): Promise<AccessProfile> {
   const raw = await getSetting("agent.access_profile");

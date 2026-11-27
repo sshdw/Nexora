@@ -116,12 +116,46 @@ impl ToolRegistry {
         mcp_tools: &[ToolDefinition],
         include_subagents: bool,
     ) -> Vec<ToolDefinition> {
+        Self::definitions_for_run_complete(
+            preset,
+            is_plan,
+            capability,
+            mcp_tools,
+            include_subagents,
+            false,
+        )
+    }
+
+    /// Complete tool definition assembly including opt-in native web tools
+    /// (`Stage 12 PR 6`).
+    ///
+    /// Web tools (`web_search`, `web_fetch`) are default-off (`include_web = false`)
+    /// and are NEVER exposed when `is_plan == true` or when `capability` denies them.
+    pub(crate) fn definitions_for_run_complete(
+        preset: RunPreset,
+        is_plan: bool,
+        capability: Option<TaskCapability>,
+        mcp_tools: &[ToolDefinition],
+        include_subagents: bool,
+        include_web: bool,
+    ) -> Vec<ToolDefinition> {
         let mut defs =
             Self::definitions_for_run_full(preset, is_plan, mcp_tools, include_subagents);
+        if include_web && !is_plan {
+            defs.extend(Self::web_definitions());
+        }
         if let Some(cap) = capability {
             defs.retain(|def| cap.allows_tool(&def.name));
         }
         defs
+    }
+
+    /// Opt-in native web tools (`web_search`, `web_fetch`).
+    pub(crate) fn web_definitions() -> Vec<ToolDefinition> {
+        vec![
+            super::web::web_search_definition(),
+            super::web::web_fetch_definition(),
+        ]
     }
 
     /// Parent-only subagent orchestration tools (`M19` / `P27`, `S11-07`).

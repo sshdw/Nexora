@@ -30,10 +30,19 @@ use super::prompts::{
     trusted_denial_message, DOCUMENT_SHELL_DENIAL,
 };
 
-/// Wrap one tool observation for context: the WS-C.2 envelope when the
-/// `injection` flag is on (and unconditionally for external MCP tools), or the
-/// raw pre-2.0 shape when it is off for native tools.
+/// Wrap one tool observation for context:
+/// - External web tools (`web_search`, `web_fetch`) ALWAYS pass through
+///   `sanitize_web_content` -> `redact_secrets` -> `tool_message` envelope
+///   (never `tool_message_raw`, even if the `injection` flag is off).
+/// - External MCP tools always use the `tool_message` envelope.
+/// - Native workspace tools use the envelope when `injection` is on, or raw
+///   pre-2.0 shape when it is off.
 fn observation_message(ctx: &DispatchCtx<'_>, call: &ToolCall, observation: &str) -> AiMessage {
+    if permissions::is_web_tool(&call.name) {
+        let sanitized = injection::sanitize_web_content(observation);
+        let (redacted, _) = injection::redact_secrets(&sanitized);
+        return tool_message(call, &redacted);
+    }
     if ctx.injection_enabled || permissions::is_mcp_tool(&call.name) {
         tool_message(call, observation)
     } else {
@@ -45,6 +54,7 @@ fn is_dispatchable_tool(ctx: &DispatchCtx<'_>, name: &str) -> bool {
     permissions::is_known_tool(name)
         || permissions::is_subagent_tool(name)
         || (permissions::is_mcp_tool(name) && ctx.mcp_runtime.is_some_and(|rt| rt.has_tool(name)))
+        || (permissions::is_web_tool(name) && ctx.web_runtime.is_some())
 }
 
 /// Read-only view of runner state for one dispatch batch.
@@ -88,6 +98,8 @@ pub(crate) struct DispatchCtx<'a> {
     pub question_ctx: Option<&'a QuestionRunContext>,
     /// Optional run-scoped user-added MCP tool runtime (`M18` / `P26`).
     pub mcp_runtime: Option<&'a dyn crate::application::mcp::McpToolRuntime>,
+    /// Optional run-scoped native web tool runtime (`Stage 12 PR 6`, default-off).
+    pub web_runtime: Option<&'a dyn super::tools::WebToolRuntime>,
     /// Optional parent-run subagent manager (`M19` / `P27`). Always `None`
     /// inside subagents (`subagent_depth >= 1`).
     pub subagent_manager: Option<&'a Arc<SubagentManager>>,
@@ -174,6 +186,10 @@ pub(crate) fn dispatch_tool_calls(
     let (dispatchable, over_cap) = calls.split_at(calls.len().min(MAX_TOOL_CALLS_PER_TURN));
     if let Some(gate) = ctx.approval_gate {
         gate.bind_workspace(ctx.workspace_root);
+        gate.bind_web_search_host(
+            ctx.web_runtime
+                .map(super::tools::WebToolRuntime::search_target_host),
+        );
     }
     let preset = ctx.preset.as_str();
     let batch_groups: Vec<String> = dispatchable
@@ -427,9 +443,11 @@ fn dispatch_one(
             }
         }
     }
-    // M18 / Invariant 4 fail-closed gate: external MCP tools can NEVER execute
-    // without an active interactive ApprovalGate (never auto-approved).
-    if permissions::is_mcp_tool(&call.name) && ctx.approval_gate.is_none() {
+    // M18 / Stage 12 PR 6 fail-closed gate: external MCP and external web tools
+    // can NEVER execute without an active interactive ApprovalGate.
+    if (permissions::is_mcp_tool(&call.name) || permissions::is_web_tool(&call.name))
+        && ctx.approval_gate.is_none()
+    {
         messages.push(denied_tool_message(call));
         if let Some(rec) = record.as_mut() {
             rec.tool_call_with_provenance(
@@ -671,7 +689,7 @@ fn handle_sticky_group_decision(
             if approved
                 && matches!(
                     RiskClass::classify(&call.name),
-                    RiskClass::DangerousShell | RiskClass::ExternalMcp
+                    RiskClass::DangerousShell | RiskClass::ExternalMcp | RiskClass::ExternalWebRead
                 )
             {
                 return false;
@@ -758,7 +776,9 @@ fn handle_permission_store_decision(
                             .is_some_and(|gate| !gate.needs_approval(call));
                         let never_auto = matches!(
                             RiskClass::classify(&call.name),
-                            RiskClass::DangerousShell | RiskClass::ExternalMcp
+                            RiskClass::DangerousShell
+                                | RiskClass::ExternalMcp
+                                | RiskClass::ExternalWebRead
                         );
                         if ladder_auto
                             && !never_auto
@@ -774,6 +794,7 @@ fn handle_permission_store_decision(
                                     RiskClass::Mutating
                                         | RiskClass::DangerousShell
                                         | RiskClass::ExternalMcp
+                                        | RiskClass::ExternalWebRead
                                 )
                             {
                                 audit_auto_approved_full_access(ctx.audit);
@@ -875,7 +896,10 @@ fn park_for_approval(
         if gate.is_full_access_active()
             && matches!(
                 RiskClass::classify(&call.name),
-                RiskClass::Mutating | RiskClass::DangerousShell | RiskClass::ExternalMcp
+                RiskClass::Mutating
+                    | RiskClass::DangerousShell
+                    | RiskClass::ExternalMcp
+                    | RiskClass::ExternalWebRead
             )
         {
             audit_auto_approved_full_access(ctx.audit);
@@ -1128,6 +1152,18 @@ fn execute_bound(
                 .map_err(super::tools::ToolError::Io)
         });
     }
+    if permissions::is_web_tool(&call.name) {
+        let Some(gate) = ctx.approval_gate else {
+            return Err(super::tools::ToolError::ConsentInvalidated);
+        };
+        let Some(runtime) = ctx.web_runtime else {
+            return Err(super::tools::ToolError::UnknownTool(call.name.clone()));
+        };
+        return gate.execute_authorized(call, ctx.workspace_root, |_target, started| {
+            started();
+            super::tools::web::dispatch_web_tool(runtime, call, ctx.token)
+        });
+    }
     if call.name == "execute_command" && ctx.sender.is_some() {
         let mut sink = |update: super::tools::CommandStreamUpdate| {
             let event = match update {
@@ -1198,7 +1234,13 @@ fn execute_and_record_bound(
     let captured_checkpoint_id = hook.as_ref().and_then(CheckpointHook::captured_id);
     let invalidated = matches!(outcome, Err(super::tools::ToolError::ConsentInvalidated));
     let dispatch_ms = i64::try_from(dispatch_started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    let (observation, tool_status) = classify_outcome(outcome, ctx.token);
+    let (raw_observation, tool_status) = classify_outcome(outcome, ctx.token);
+    let observation = if permissions::is_web_tool(&call.name) {
+        let sanitized = injection::sanitize_web_content(&raw_observation);
+        injection::redact_secrets(&sanitized).0
+    } else {
+        raw_observation
+    };
     messages.push(observation_message(ctx, call, &observation));
     emit_subagent_tool_step(ctx, call, tool_status, Some(&observation));
     if let Some(rec) = record.as_mut() {
@@ -1240,7 +1282,10 @@ fn execute_tool_call(
             .is_some_and(ApprovalGate::is_full_access_active)
         && matches!(
             RiskClass::classify(&call.name),
-            RiskClass::Mutating | RiskClass::DangerousShell | RiskClass::ExternalMcp
+            RiskClass::Mutating
+                | RiskClass::DangerousShell
+                | RiskClass::ExternalMcp
+                | RiskClass::ExternalWebRead
         );
     let valid_provenance = if user_approved {
         StepProvenance::user(Some(group_key))
